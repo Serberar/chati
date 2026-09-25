@@ -13,10 +13,10 @@ import time
 import requests
 import webview
 
-from paths import PROJECT_ROOT
+from paths import CODE_ROOT
 
 URL = "http://127.0.0.1:8899"
-ICON_PATH = str(PROJECT_ROOT / "icono.ico")
+ICON_PATH = str(CODE_ROOT / "icono.ico")
 
 
 def _wait_for_backend(timeout: int = 120) -> bool:

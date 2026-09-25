@@ -23,11 +23,15 @@ param(
     [int]$Mantener = 14  # cuantas copias recientes conservar
 )
 
-# Se calcula a partir de donde vive este script, no fijo a C:\AI - para que
-# la carpeta entera se pueda mover o vivir en un disco externo (ver
-# ROADMAP.md, punto 3b).
+# AiRoot (codigo, orchestrator/) se calcula a partir de donde vive este
+# script; DataRoot (los datos de verdad, lo que hace falta copiar - ver
+# install.ps1) por defecto en AppData, salvo que se haya instalado en modo
+# "todo junto" (ver ROADMAP.md punto 3b / 8b).
 $AiRoot = Split-Path -Parent $PSScriptRoot
-$origen = "$AiRoot\data"
+$DataRoot = if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+            elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
+            else { $AiRoot }
+$origen = "$DataRoot\data"
 $fecha = Get-Date -Format "yyyy-MM-dd_HHmm"
 $nombreZip = "ia-personal-data_$fecha.zip"
 

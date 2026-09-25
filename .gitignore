@@ -23,9 +23,19 @@ __pycache__/
 .pytest_cache/
 
 # Contenido generado en vivo (imagenes/videos de prueba, nunca datos de
-# entrenamiento reales)
+# entrenamiento reales) - /outputs/ en la raiz desde que se separaron
+# codigo y datos (ver paths.py), /orchestrator/outputs/ es la ubicacion
+# vieja, por si queda alguna instalacion sin actualizar
+/outputs/
 /orchestrator/outputs/
 /orchestrator/_persona_upload_*/
+
+# Instalador compilado (.exe de varios MB, se recompila con ISCC - ver
+# setup/chati_installer.iss)
+/setup/Output/
+
+# Capturas/artefactos sueltos de depuracion manual en la raiz del repo
+/_*.png
 
 # Logs y estado de los scripts de setup/watchdog
 *.log

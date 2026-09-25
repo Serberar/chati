@@ -7,10 +7,14 @@ Scheduler (ver install_watchdog.ps1).
 Log de reinicios: watchdog.log, en esta misma carpeta.
 #>
 
-# Se calcula a partir de donde vive este script, no fijo a C:\AI - para que
-# la carpeta entera se pueda mover o vivir en un disco externo (ver
-# ROADMAP.md, punto 3b).
+# AiRoot (codigo, orchestrator/) se calcula a partir de donde vive este
+# script; DataRoot (ComfyUI - ver install.ps1) por defecto en AppData,
+# salvo que se haya instalado en modo "todo junto" (ver ROADMAP.md punto
+# 3b / 8b).
 $AiRoot = Split-Path -Parent $PSScriptRoot
+$DataRoot = if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+            elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
+            else { $AiRoot }
 $LogFile = "$PSScriptRoot\watchdog.log"
 $CheckIntervalSeconds = 30
 
@@ -63,8 +67,8 @@ function Ensure-ComfyUI {
         Write-Log "ComfyUI caido. Reiniciando..."
         Stop-ByPort 8188
         Start-Sleep -Seconds 2
-        Start-Process -FilePath "$AiRoot\ComfyUI\venv\Scripts\python.exe" -ArgumentList "main.py" `
-            -WorkingDirectory "$AiRoot\ComfyUI" -WindowStyle Hidden
+        Start-Process -FilePath "$DataRoot\ComfyUI\venv\Scripts\python.exe" -ArgumentList "main.py" `
+            -WorkingDirectory "$DataRoot\ComfyUI" -WindowStyle Hidden
         Write-Log "ComfyUI reiniciado (tardara ~20-30s en responder)."
     }
 }

@@ -8,10 +8,16 @@ Uso:  powershell -ExecutionPolicy Bypass -File start_all.ps1
 Luego abre http://localhost:8899 en el navegador.
 #>
 
-# Se calcula a partir de donde vive este script, no fijo a C:\AI - para que
-# la carpeta entera se pueda mover o vivir en un disco externo (ver
-# ROADMAP.md, punto 3b).
-$AiRoot = Split-Path -Parent $PSScriptRoot
+# AiRoot (codigo, orchestrator/) se calcula a partir de donde vive este
+# script; DataRoot (ComfyUI, modelos - ver install.ps1) por defecto en
+# AppData, salvo que se haya instalado en modo "todo junto" (ver ROADMAP.md
+# punto 3b / 8b).
+param(
+    [string]$AiRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$DataRoot = $(if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+                           elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
+                           else { (Split-Path -Parent $PSScriptRoot) })
+)
 
 function Test-Url($url) {
     try {
@@ -35,7 +41,7 @@ if (-not (Test-Url "http://localhost:11434/api/tags")) {
 
 Write-Host "=== Arrancando ComfyUI ===" -ForegroundColor Cyan
 if (-not (Test-Url "http://127.0.0.1:8188/system_stats")) {
-    Start-Process -FilePath "$AiRoot\ComfyUI\venv\Scripts\python.exe" -ArgumentList "main.py" -WorkingDirectory "$AiRoot\ComfyUI" -WindowStyle Hidden
+    Start-Process -FilePath "$DataRoot\ComfyUI\venv\Scripts\python.exe" -ArgumentList "main.py" -WorkingDirectory "$DataRoot\ComfyUI" -WindowStyle Hidden
     Write-Host "ComfyUI arrancando (tarda ~20-30s en estar listo)..." -ForegroundColor Yellow
 } else {
     Write-Host "ComfyUI ya esta corriendo." -ForegroundColor Green

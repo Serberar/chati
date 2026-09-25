@@ -18,6 +18,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import auth
 import auth_sessions
 import model_registry
+import paths
 import persona_trainer
 import users
 
@@ -102,8 +103,8 @@ def _ensure_active_model(model: str) -> None:
             ollama.unload(old_heavy)
         _active_heavy_model = new_heavy
 
-OUTPUT_DIR = Path(__file__).parent / "outputs"
-OUTPUT_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR = paths.OUTPUT_DIR
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="IA personal - orquestador")
 

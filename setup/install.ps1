@@ -1,40 +1,54 @@
 <#
-Instala el "motor" de la IA personal en un equipo nuevo, asumiendo que la
-carpeta C:\AI ya ha sido copiada aqui (o esta en otra ruta, pasala con -AiRoot).
+Instala el "motor" de Chati IA en un equipo nuevo. Dos raices separadas
+(ver ROADMAP.md, "instalador"):
 
-QUE COPIAR al mover de equipo (los pesos, lo caro):
-    C:\AI\models\  (la voz de Piper es la unica excepcion - se descarga sola
-                    aqui abajo, no hace falta copiarla)
-    C:\AI\ComfyUI\  (el codigo fuente esta bien copiarlo, PERO borra antes
-                     C:\AI\ComfyUI\venv y C:\AI\ComfyUI\models si van vacios/placeholders)
-    C:\AI\setup\
+  -AiRoot    donde vive el CODIGO (orchestrator/, setup/) - con el
+             instalador .exe esto es C:\Program Files\Chati IA\, de solo
+             lectura en uso normal.
+  -DataRoot  donde vive todo lo que la app ESCRIBE (modelos, datos de
+             usuarios, imagenes/videos generados, y tambien ComfyUI y
+             sd-scripts enteros - necesitan escribir mucho, venv+paquetes+
+             modelos, no tiene sentido meterlos donde el codigo es de solo
+             lectura). Por defecto %LOCALAPPDATA%\ChatiIA - nunca pide
+             permisos de administrador para escribir ahi, a diferencia de
+             Archivos de Programa.
 
-QUE NO COPIAR (se genera de nuevo con este script, depende de cada maquina/GPU):
-    C:\AI\ComfyUI\venv
-    C:\AI\orchestrator\venv
-    C:\AI\sd-scripts\  (entrenamiento de LoRA de persona, ver ROADMAP.md punto
-                        8b - se clona de nuevo con "git clone
-                        https://github.com/kohya-ss/sd-scripts")
+Si quieres el modo antiguo "todo en una sola carpeta" (llevarla a mano a
+otro equipo, ver punto 3b), pasa el mismo valor en -AiRoot y -DataRoot.
 
-Las dependencias de Python del orquestador se instalan desde
-requirements.lock.txt (versiones exactas fijadas con pip freeze), no desde
-requirements.txt, para que la instalacion sea reproducible entre equipos.
+QUE COPIAR al mover de equipo (los pesos, lo caro - lo unico que este
+script no puede recrear por su cuenta):
+    <DataRoot>\models\  (la voz de Piper es la unica excepcion - se
+                         descarga sola aqui abajo)
+    <AiRoot>\setup\
 
-Pensado para llevar la carpeta entera a otro equipo (disco externo, otro
-ordenador con GPU NVIDIA similar) - ver ROADMAP.md, punto 3b. Por defecto usa
-la ubicacion donde vive esta carpeta ahora mismo (no C:\AI fijo), asi que
-basta con copiarla donde sea y ejecutar este script ahi.
+QUE NO HACE FALTA COPIAR (este script lo clona/genera de nuevo si falta):
+    <DataRoot>\ComfyUI\   (se clona de Comfy-Org/ComfyUI + 3 nodos
+                           personalizados: GGUF, IPAdapter, Manager)
+    <DataRoot>\sd-scripts\ (entrenamiento de LoRA de persona, punto 8b -
+                            se clona de kohya-ss/sd-scripts)
+    <DataRoot>\ComfyUI\venv, <DataRoot>\sd-scripts\venv, <AiRoot>\orchestrator\venv
 
-Uso:  powershell -ExecutionPolicy Bypass -File install.ps1 [-AiRoot D:\IA]
+Uso:  powershell -ExecutionPolicy Bypass -File install.ps1 [-AiRoot D:\IA] [-DataRoot D:\IA]
 #>
 
 param(
-    [string]$AiRoot = (Split-Path -Parent $PSScriptRoot)
+    [string]$AiRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$DataRoot = $(if ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" } else { (Split-Path -Parent $PSScriptRoot) })
 )
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Instalando IA personal en $AiRoot ===" -ForegroundColor Cyan
+Write-Host "=== Instalando Chati IA ===" -ForegroundColor Cyan
+Write-Host "Codigo: $AiRoot" -ForegroundColor Cyan
+Write-Host "Datos y modelos: $DataRoot" -ForegroundColor Cyan
+
+# La app en si (main.py -> paths.py) lee esta variable para saber donde
+# escribir - fijarla aqui garantiza que coincide exactamente con lo que
+# este script acaba de preparar, sin depender de que el calculo por
+# defecto de paths.py llegue al mismo sitio por su cuenta.
+setx CHATI_DATA_ROOT "$DataRoot" | Out-Null
+$env:CHATI_DATA_ROOT = $DataRoot
 
 # 1. Ollama (nucleo de texto y codigo)
 if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
@@ -45,20 +59,20 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     Write-Host "Ollama ya instalado." -ForegroundColor Green
 }
 
-setx OLLAMA_MODELS "$AiRoot\models\text" | Out-Null
-$env:OLLAMA_MODELS = "$AiRoot\models\text"
-Write-Host "OLLAMA_MODELS -> $AiRoot\models\text" -ForegroundColor Green
+setx OLLAMA_MODELS "$DataRoot\models\text" | Out-Null
+$env:OLLAMA_MODELS = "$DataRoot\models\text"
+Write-Host "OLLAMA_MODELS -> $DataRoot\models\text" -ForegroundColor Green
 
-setx HF_HOME "$AiRoot\models\voice\hf_cache" | Out-Null
-$env:HF_HOME = "$AiRoot\models\voice\hf_cache"
-Write-Host "HF_HOME -> $AiRoot\models\voice\hf_cache" -ForegroundColor Green
+setx HF_HOME "$DataRoot\models\voice\hf_cache" | Out-Null
+$env:HF_HOME = "$DataRoot\models\voice\hf_cache"
+Write-Host "HF_HOME -> $DataRoot\models\voice\hf_cache" -ForegroundColor Green
 
 # Voz de Piper (TTS en espanol) - no se copia entre equipos, se descarga sola
 # aqui del repositorio oficial de voces de Piper (investigado y confirmado
 # real en el punto 7 del ROADMAP: es_ES/davefx es la unica voz "medium" en
 # castellano de España de ese repo). faster_whisper (STT) no necesita este
 # paso, se descarga solo la primera vez que se usa.
-$piperDir = "$AiRoot\models\voice\piper"
+$piperDir = "$DataRoot\models\voice\piper"
 $piperOnnx = "$piperDir\es_ES-davefx-medium.onnx"
 if (-not (Test-Path $piperOnnx)) {
     Write-Host "Descargando voz de Piper (es_ES-davefx-medium, ~63MB)..." -ForegroundColor Yellow
@@ -86,39 +100,101 @@ Start-Process -FilePath (Get-Command ollama).Source -ArgumentList "serve" -Windo
 Start-Sleep -Seconds 3
 ollama list
 
-# 2. ComfyUI (imagen y video) - recrea el entorno Python, NO se copia entre equipos
-$comfy = "$AiRoot\ComfyUI"
-if (Test-Path $comfy) {
-    if (-not (Test-Path "$comfy\venv")) {
-        Write-Host "Creando entorno virtual de ComfyUI..." -ForegroundColor Yellow
-        python -m venv "$comfy\venv"
-        & "$comfy\venv\Scripts\python.exe" -m pip install --upgrade pip
-
-        # AJUSTA esta linea segun la GPU del equipo nuevo (esto asume NVIDIA/CUDA).
-        & "$comfy\venv\Scripts\python.exe" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-        & "$comfy\venv\Scripts\python.exe" -m pip install -r "$comfy\requirements.txt"
-
-        foreach ($node in Get-ChildItem "$comfy\custom_nodes" -Directory -ErrorAction SilentlyContinue) {
-            $req = Join-Path $node.FullName "requirements.txt"
-            if (Test-Path $req) {
-                & "$comfy\venv\Scripts\python.exe" -m pip install -r $req
-            }
-        }
-        Write-Host "Entorno de ComfyUI creado." -ForegroundColor Green
-    } else {
-        Write-Host "El venv de ComfyUI ya existe, no se toca." -ForegroundColor Green
-    }
-
-    if (-not (Test-Path "$comfy\extra_model_paths.yaml")) {
-        Write-Host "AVISO: falta extra_model_paths.yaml en $comfy - sin el, ComfyUI no encontrara los modelos en $AiRoot\models\img y \vid" -ForegroundColor Red
-    }
-} else {
-    Write-Host "No se encontro $comfy - copia la carpeta ComfyUI (sin venv) antes de ejecutar esto." -ForegroundColor Red
+# 2. ComfyUI (imagen y video) - se clona solo si falta, recrea el entorno
+# Python siempre (NO se copia entre equipos, depende de la GPU). Vive en
+# DataRoot: necesita escribir su venv y los custom_nodes libremente.
+$comfy = "$DataRoot\ComfyUI"
+if (-not (Test-Path $comfy)) {
+    Write-Host "Clonando ComfyUI..." -ForegroundColor Yellow
+    git clone https://github.com/Comfy-Org/ComfyUI.git $comfy
 }
 
+$comfyNodes = @{
+    "ComfyUI-GGUF"           = "https://github.com/city96/ComfyUI-GGUF.git"          # necesario para FLUX (GGUF)
+    "ComfyUI-Manager"        = "https://github.com/Comfy-Org/ComfyUI-Manager.git"     # gestion de nodos desde la propia interfaz
+    "ComfyUI_IPAdapter_plus" = "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git"  # necesario para preservar caras (FaceID)
+}
+foreach ($name in $comfyNodes.Keys) {
+    $nodeDir = "$comfy\custom_nodes\$name"
+    if (-not (Test-Path $nodeDir)) {
+        Write-Host "Clonando nodo personalizado $name..." -ForegroundColor Yellow
+        git clone $comfyNodes[$name] $nodeDir
+    }
+}
 
-# 3. Orquestador (texto/codigo/imagen/video/voz/RAG/memoria/auth) - su propio venv
+if (-not (Test-Path "$comfy\venv")) {
+    Write-Host "Creando entorno virtual de ComfyUI..." -ForegroundColor Yellow
+    python -m venv "$comfy\venv"
+    & "$comfy\venv\Scripts\python.exe" -m pip install --upgrade pip
+
+    # Mismo PyTorch nightly que el resto del sistema (cu128, no cu121) - las
+    # GPUs Blackwell (RTX 50 series) necesitan esta version concreta, ver
+    # AGENTS.md y ROADMAP.md. AJUSTA el index-url si el equipo nuevo tiene
+    # una GPU mas antigua que ya soporte una version estable de PyTorch.
+    & "$comfy\venv\Scripts\python.exe" -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+
+    & "$comfy\venv\Scripts\python.exe" -m pip install -r "$comfy\requirements.txt"
+
+    foreach ($node in Get-ChildItem "$comfy\custom_nodes" -Directory -ErrorAction SilentlyContinue) {
+        $req = Join-Path $node.FullName "requirements.txt"
+        if (Test-Path $req) {
+            & "$comfy\venv\Scripts\python.exe" -m pip install -r $req
+        }
+    }
+    Write-Host "Entorno de ComfyUI creado." -ForegroundColor Green
+} else {
+    Write-Host "El venv de ComfyUI ya existe, no se toca." -ForegroundColor Green
+}
+
+$extraModelPaths = @'
+# Rutas centralizadas de modelos - Chati IA
+# Los pesos viven fuera de ComfyUI, organizados por agente (img/vid), para
+# poder actualizarlos/copiarlos sin depender de la instalacion de ComfyUI.
+
+img_models:
+    base_path: {0}\models\img\
+    checkpoints: checkpoints
+    diffusion_models: diffusion_models
+    text_encoders: text_encoders
+    vae: vae
+    ipadapter: ipadapter
+    loras: loras
+    clip_vision: clip_vision
+    upscale_models: upscale_models
+    controlnet: controlnet
+
+vid_models:
+    base_path: {0}\models\vid\
+    checkpoints: checkpoints
+'@ -f $DataRoot
+$extraModelPathsFile = "$comfy\extra_model_paths.yaml"
+if (-not (Test-Path $extraModelPathsFile)) {
+    Set-Content -Path $extraModelPathsFile -Value $extraModelPaths -Encoding utf8
+    Write-Host "extra_model_paths.yaml generado." -ForegroundColor Green
+}
+
+# 2b. sd-scripts (entrenamiento de LoRA de persona, ver ROADMAP.md punto 8b)
+# - se clona solo si falta, mismo patron de venv+torch que ComfyUI, tambien
+# en DataRoot (venv + paquetes propios, necesita escribir libremente)
+$sdScripts = "$DataRoot\sd-scripts"
+if (-not (Test-Path $sdScripts)) {
+    Write-Host "Clonando sd-scripts..." -ForegroundColor Yellow
+    git clone https://github.com/kohya-ss/sd-scripts.git $sdScripts
+}
+if (-not (Test-Path "$sdScripts\venv")) {
+    Write-Host "Creando entorno virtual de sd-scripts..." -ForegroundColor Yellow
+    python -m venv "$sdScripts\venv"
+    & "$sdScripts\venv\Scripts\python.exe" -m pip install --upgrade pip
+    & "$sdScripts\venv\Scripts\python.exe" -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+    & "$sdScripts\venv\Scripts\python.exe" -m pip install -r "$sdScripts\requirements.txt"
+    Write-Host "Entorno de sd-scripts creado." -ForegroundColor Green
+} else {
+    Write-Host "El venv de sd-scripts ya existe, no se toca." -ForegroundColor Green
+}
+
+# 3. Orquestador (texto/codigo/imagen/video/voz/RAG/memoria/auth) - vive en
+# AiRoot (codigo), su venv tambien - un venv es "codigo instalado", no dato
+# de usuario, y no cambia salvo que se reinstale la app.
 $orch = "$AiRoot\orchestrator"
 if (Test-Path $orch) {
     if (-not (Test-Path "$orch\venv")) {
@@ -204,7 +280,7 @@ $desktop = [Environment]::GetFolderPath("Desktop")
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut("$desktop\Chati IA.lnk")
 $shortcut.TargetPath = "powershell.exe"
-$shortcut.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$AiRoot\setup\launch_and_open.ps1`""
+$shortcut.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$AiRoot\setup\launch_and_open.ps1`" -AiRoot `"$AiRoot`""
 $shortcut.IconLocation = "$AiRoot\icono.ico"
 $shortcut.Save()
 Write-Host "Acceso directo 'Chati IA' creado en el escritorio." -ForegroundColor Green
@@ -212,6 +288,6 @@ Write-Host "Acceso directo 'Chati IA' creado en el escritorio." -ForegroundColor
 & powershell -ExecutionPolicy Bypass -File "$AiRoot\setup\install_watchdog.ps1"
 
 Write-Host "`n=== Listo. Modelos de texto/codigo disponibles via 'ollama list'. ===" -ForegroundColor Cyan
-Write-Host "Para arrancar todo: doble clic en 'Arrancar IA Personal' del escritorio," -ForegroundColor Cyan
+Write-Host "Para arrancar todo: doble clic en 'Chati IA' del escritorio," -ForegroundColor Cyan
 Write-Host "o powershell -ExecutionPolicy Bypass -File $AiRoot\setup\start_all.ps1" -ForegroundColor Cyan
-Write-Host "La clave API se genera sola en $AiRoot\data\api_key.txt la primera vez que arranca el orquestador." -ForegroundColor Cyan
+Write-Host "Los datos de usuarios se generan solos en $DataRoot\data la primera vez que arranca el orquestador." -ForegroundColor Cyan
