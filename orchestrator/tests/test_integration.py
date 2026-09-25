@@ -697,3 +697,40 @@ def test_get_personas_lists_them():
         resp = client.get("/personas")
     assert resp.status_code == 200
     assert resp.json()["personas"][0]["name"] == "ana"
+
+
+# --- Vision nunca usa el perfil de chat de texto (bug real, encontrado en
+# vivo 2026-09-25: con el perfil "rapido" activo, subir una foto y pedir
+# describirla usaba qwen2.5:7b - sin soporte de imagenes - en vez del
+# modelo de vision configurado, y Ollama lo rechazaba con "Multimodal data
+# provided, but model does not support multimodal requests.").
+
+def test_vision_chat_ignores_the_text_model_profile():
+    """Aunque el perfil activo sea 'rapido' (texto, sin vision), la peticion
+    a Ollama debe seguir usando el modelo de vision configurado."""
+    with patch.object(main.vision_agent, "respond_with_image_stream",
+                       return_value=iter(["describe algo"])) as mock_respond:
+        resp = client.post("/chat", json={
+            "message": "describeme esta imagen",
+            "image_base64": "aWdub3JhZG8=",
+            "model_profile": "rapido",
+        })
+    assert resp.status_code == 200
+    assert resp.json()["agent_used"] == "vision"
+    mock_respond.assert_called_once()
+    assert "model" not in mock_respond.call_args.kwargs
+    assert len(mock_respond.call_args.args) == 2  # (mensaje, imagen) - nunca un tercer arg de modelo
+
+
+def test_vision_chat_stream_ignores_the_text_model_profile():
+    with patch.object(main.vision_agent, "respond_with_image_stream",
+                       return_value=iter(["describe algo"])) as mock_respond:
+        with client.stream("POST", "/chat/stream", json={
+            "message": "describeme esta imagen",
+            "image_base64": "aWdub3JhZG8=",
+            "model_profile": "seguridad",
+        }) as resp:
+            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    assert lines[-1]["type"] == "done"
+    mock_respond.assert_called_once()
+    assert "model" not in mock_respond.call_args.kwargs

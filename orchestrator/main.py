@@ -853,20 +853,22 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
     return resp
 
 
-def _run_vision_chat(message: str, image_base64: str, session_id: str | None, auth_session: dict,
-                      model_profile: str | None = None) -> ChatResponse:
+def _run_vision_chat(message: str, image_base64: str, session_id: str | None, auth_session: dict) -> ChatResponse:
     """Comenta una imagen subida - bypasea el router normal (ningun otro
     modelo sabe procesar imagenes), sin herramientas ni bucle. Ver
-    ROADMAP.md, punto 5c."""
+    ROADMAP.md, punto 5c. Sin model_profile: eso son los perfiles de TEXTO
+    (rapido/bueno/seguridad) - aplicarlos aqui era un bug real (encontrado
+    en vivo, 2026-09-25): si el perfil de chat activo era "rapido", vision
+    intentaba usar qwen2.5:7b (sin soporte de imagenes) en vez del modelo
+    de vision configurado, y Ollama lo rechazaba con un 400."""
     session_id = session_id or memory.new_session_id()
     dek, key_generation, user_id = auth_session["dek"], auth_session["key_generation"], auth_session["user_id"]
     memory.add_message(session_id, "user", message or "[imagen adjunta]",
                         dek=dek, key_generation=key_generation, user_id=user_id)
-    override_model = _resolve_model_profile(model_profile)
-    _ensure_active_model(override_model or vision_agent.model)
+    _ensure_active_model(vision_agent.model)
     start = time.perf_counter()
     try:
-        full_text = "".join(vision_agent.respond_with_image_stream(message, image_base64, model=override_model))
+        full_text = "".join(vision_agent.respond_with_image_stream(message, image_base64))
     except Exception as exc:
         metrics.log_event("vision", (time.perf_counter() - start) * 1000, False, error=str(exc))
         full_text = f"Fallo analizando la imagen: {exc}"
@@ -879,19 +881,21 @@ def _run_vision_chat(message: str, image_base64: str, session_id: str | None, au
     return ChatResponse(agent_used="vision", response=full_text, verifier_gated=False, session_id=session_id)
 
 
-def _stream_vision_chat(message: str, image_base64: str, session_id: str | None, auth_session: dict,
-                         model_profile: str | None = None):
+def _stream_vision_chat(message: str, image_base64: str, session_id: str | None, auth_session: dict):
+    """Sin model_profile a proposito - ver _run_vision_chat: los perfiles de
+    chat (rapido/bueno/seguridad) son de texto, aplicarlos aqui rompia
+    vision con un 400 de Ollama si el perfil activo no era el modelo de
+    vision."""
     session_id = session_id or memory.new_session_id()
     dek, key_generation, user_id = auth_session["dek"], auth_session["key_generation"], auth_session["user_id"]
     memory.add_message(session_id, "user", message or "[imagen adjunta]",
                         dek=dek, key_generation=key_generation, user_id=user_id)
     yield json.dumps({"type": "start", "agent_used": "vision", "session_id": session_id}) + "\n"
-    override_model = _resolve_model_profile(model_profile)
-    _ensure_active_model(override_model or vision_agent.model)
+    _ensure_active_model(vision_agent.model)
     start = time.perf_counter()
     full_text = ""
     try:
-        for chunk in vision_agent.respond_with_image_stream(message, image_base64, model=override_model):
+        for chunk in vision_agent.respond_with_image_stream(message, image_base64):
             full_text += chunk
             yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
     except Exception as exc:
@@ -925,7 +929,7 @@ def _run_chat(message: str, agent_override: str | None, session_id: str | None, 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, request: Request):
     if req.image_base64:
-        return _run_vision_chat(req.message, req.image_base64, req.session_id, request.state.session, req.model_profile)
+        return _run_vision_chat(req.message, req.image_base64, req.session_id, request.state.session)
     return _run_chat(req.message, req.agent, req.session_id, request.state.session, req.model_profile, req.verify,
                       req.image_model, req.video_model)
 
@@ -1015,7 +1019,7 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
 def chat_stream(req: ChatRequest, request: Request):
     if req.image_base64:
         return StreamingResponse(
-            _stream_vision_chat(req.message, req.image_base64, req.session_id, request.state.session, req.model_profile),
+            _stream_vision_chat(req.message, req.image_base64, req.session_id, request.state.session),
             media_type="application/x-ndjson",
         )
     return StreamingResponse(
