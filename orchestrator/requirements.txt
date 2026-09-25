@@ -12,3 +12,4 @@ argon2-cffi
 cryptography
 opencv-python-headless
 pytest
+pywebview

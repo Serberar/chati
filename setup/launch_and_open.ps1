@@ -1,18 +1,13 @@
 <#
-Arranca todo (Ollama, ComfyUI, orquestador) y abre el navegador cuando este
-listo. Esto es lo que ejecuta el acceso directo del escritorio.
+Arranca todo (Ollama, ComfyUI, orquestador) y abre Chati en su propia
+ventana (no una pestaña del navegador normal - ver orchestrator/desktop_app.py)
+cuando este listo. Esto es lo que ejecuta el acceso directo del escritorio.
 #>
+
+param(
+    [string]$AiRoot = (Split-Path -Parent $PSScriptRoot)
+)
 
 & powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\start_all.ps1"
 
-Write-Host "Esperando a que el orquestador responda..." -ForegroundColor Cyan
-$deadline = (Get-Date).AddSeconds(120)
-while ((Get-Date) -lt $deadline) {
-    try {
-        $r = Invoke-WebRequest -Uri "http://127.0.0.1:8899/health" -UseBasicParsing -TimeoutSec 3
-        if ($r.StatusCode -eq 200) { break }
-    } catch {}
-    Start-Sleep -Seconds 2
-}
-
-Start-Process "http://127.0.0.1:8899"
+& "$AiRoot\orchestrator\venv\Scripts\python.exe" "$AiRoot\orchestrator\desktop_app.py"

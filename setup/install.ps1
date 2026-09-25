@@ -202,11 +202,12 @@ Write-Host "Config de OpenCode escrita en $opencodeConfigDir\opencode.json" -For
 # 5. Acceso directo del escritorio + vigilante automatico
 $desktop = [Environment]::GetFolderPath("Desktop")
 $shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut("$desktop\Arrancar IA Personal.lnk")
+$shortcut = $shell.CreateShortcut("$desktop\Chati IA.lnk")
 $shortcut.TargetPath = "powershell.exe"
-$shortcut.Arguments = "-ExecutionPolicy Bypass -File `"$AiRoot\setup\launch_and_open.ps1`""
+$shortcut.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$AiRoot\setup\launch_and_open.ps1`""
+$shortcut.IconLocation = "$AiRoot\icono.ico"
 $shortcut.Save()
-Write-Host "Acceso directo creado en el escritorio." -ForegroundColor Green
+Write-Host "Acceso directo 'Chati IA' creado en el escritorio." -ForegroundColor Green
 
 & powershell -ExecutionPolicy Bypass -File "$AiRoot\setup\install_watchdog.ps1"
 

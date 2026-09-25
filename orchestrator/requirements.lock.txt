@@ -13,6 +13,7 @@ av==18.1.0
 backoff==2.2.1
 bcrypt==5.0.0
 beautifulsoup4==4.15.0
+bottle==0.13.4
 browser-harness==0.1.13
 browser-use==0.13.10
 browser-use-sdk==3.4.2
@@ -25,6 +26,7 @@ charset-normalizer==3.5.1
 chromadb==1.5.9
 click==8.5.0
 cloudpickle==3.1.2
+clr_loader==0.3.1
 colorama==0.4.6
 cryptography==50.0.1
 ctranslate2==4.8.2
@@ -100,6 +102,7 @@ prompt_toolkit==3.0.53
 propcache==0.5.4
 proto-plus==1.28.4
 protobuf==6.33.6
+proxy_tools==0.1.0
 psutil==7.2.2
 pyasn1==0.6.4
 pyasn1_modules==0.4.2
@@ -121,6 +124,8 @@ python-dateutil==2.9.0.post0
 python-docx==1.2.0
 python-dotenv==1.2.2
 python-multipart==0.0.32
+pythonnet==3.1.0
+pywebview==6.2.1
 pywin32==312
 PyYAML==6.0.3
 referencing==0.37.0
