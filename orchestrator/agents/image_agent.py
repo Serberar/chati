@@ -193,8 +193,7 @@ class ImageAgent:
                             model_id: str | None = None) -> bytes:
         """Genera una imagen a partir de un prompt preservando la cara de la
         persona (IPAdapter FaceID, SDXL). model_id: checkpoint SDXL concreto
-        a usar (p.ej. uno fotorrealista/NSFW), o None para el primero
-        instalado."""
+        a usar, o None para el primero instalado."""
         uploaded_filename = self.upload_image_bytes(reference_image_bytes, "reference.png")
         seed = int(time.time() * 1000) % (2**32)
 
