@@ -1,0 +1,75 @@
+ollama:
+  base_url: "http://localhost:11434"
+
+comfyui:
+  base_url: "http://127.0.0.1:8188"
+
+opencode:
+  base_url: "http://127.0.0.1:8901"
+  web_url: "http://127.0.0.1:8901"
+
+agents:
+  text:
+    # qwen3-coder:30b-cpu: MoE, fijado a CPU (ver AGENTS.md - Ollama malcalcula
+    # la VRAM para MoE grandes en esta GPU de 8GB). Se eligio sobre qwen2.5:14b
+    # y qwen3:30b tras pruebas en vivo: qwen2.5:14b falla el formato de
+    # tool-calling cuando se le ofrecen varias herramientas a la vez (aunque
+    # funcione con una sola), y qwen3:30b "piensa" en voz alta siempre (~20-50s
+    # extra por respuesta, sin forma fiable de desactivarlo). Este es el unico
+    # de los tres que paso la prueba real con las 4 herramientas a la vez.
+    model: "qwen3-coder:30b-cpu"
+    description: "conversacion general, razonamiento, preguntas abiertas"
+    # Perfiles seleccionables desde la interfaz (ver ROADMAP.md, punto 5c) -
+    # el "model" de arriba sigue siendo el default/fallback si no se pide un
+    # perfil concreto.
+    profiles:
+      rapido:
+        model: "qwen2.5:7b"
+        label: "Rapido"
+      bueno:
+        model: "qwen3-coder:30b-cpu"
+        label: "Mejor calidad"
+      seguridad:
+        # denso, no MoE -> mas lento que "bueno" (~6 tok/s vs ~20 tok/s) pero
+        # no se niega a hablar de vulnerabilidades/payloads sobre TU PROPIO
+        # codigo, verificado en vivo el 2026-09-24 con una pregunta real de
+        # inyeccion SQL que un modelo alineado normal a veces rechaza.
+        model: "qwen3-abliterated:14b-cpu"
+        label: "Sin limite"
+        # este modelo soporta un modo de "pensamiento" (capabilities: thinking)
+        # que puede consumir toda la respuesta pensando y dejar el contenido
+        # real vacio - probado en vivo el 2026-09-24 (una respuesta de "hola"
+        # tardo 93.7s con 280 caracteres de pensamiento antes del texto real).
+        # Desactivado aqui: el valor de este perfil es "responde sin
+        # negarse", no "enseña su razonamiento".
+        think: false
+    default_profile: "bueno"
+  code:
+    model: "qwen3-coder:30b-cpu"
+    description: "programacion, depuracion, explicacion de codigo"
+  vision:
+    # qwen2.5vl:7b-cpu: unico modelo con vision disponible probado - permite
+    # subir una foto y comentarla en el chat (distinto de "imagen con cara
+    # real", que GENERA, esto ANALIZA una imagen que subes). Verificado en
+    # vivo: describio correctamente forma y color de una imagen de prueba.
+    model: "qwen2.5vl:7b-cpu"
+    description: "analizar y comentar una foto que subes"
+  image:
+    description: "generar imagenes a partir de una descripcion"
+  video:
+    description: "generar video corto a partir de una descripcion"
+
+router:
+  # Modelo rapido y pequeno para clasificar cada mensaje (que agente, es
+  # factual) - es una tarea de un JSON corto, no necesita el modelo grande de
+  # texto/codigo. Antes usaba el mismo modelo que el agente de texto, lo que
+  # significaba pagar 20-40s de clasificacion ANTES de generar la respuesta.
+  model: "qwen2.5:7b"
+
+verifier:
+  enabled: true
+  model: "qwen2.5:7b"
+  # modo estricto: si el verificador no confia en la respuesta factual, la BLOQUEA
+  # en vez de solo avisar. Sin RAG/busqueda todavia conectada, esto es lo mas
+  # honesto (Fase 1 no tiene fuentes reales que consultar todavia).
+  strict: true

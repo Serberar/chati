@@ -1,0 +1,2452 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chati IA</title>
+<link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+<link rel="stylesheet" href="/static/vendor/highlight-dark.min.css">
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --panel-2: #242832;
+    --panel-3: #2b2f3a;
+    --border: #333844;
+    --text: #e8e9ec;
+    --muted: #9099a8;
+    --accent: #5b8cff;
+    --accent-dim: rgba(91, 140, 255, 0.14);
+    --warn: #e0a83a;
+    --error: #e0553a;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    --sidebar-w: 264px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--panel-3); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border); }
+  button { font-family: inherit; }
+
+  /* ---------- Sidebar ---------- */
+  #sidebar {
+    width: var(--sidebar-w);
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #sidebarHeader {
+    display: flex; align-items: center; gap: 10px;
+    padding: 16px 16px 12px;
+  }
+  #sidebarHeader img { border-radius: 7px; }
+  #sidebarHeader h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; flex: 1; }
+  #themeToggle {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+  }
+  #themeToggle:hover { background: var(--panel-3); color: var(--text); }
+
+  #modeRow { padding: 0 16px 14px; }
+  #modeRowLabel { display: block; font-size: 10.5px; color: var(--muted); margin-bottom: 5px; }
+  #modeSelect {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; cursor: pointer;
+    font-family: inherit; transition: border-color 0.15s;
+  }
+  #modeSelect:hover, #modeSelect:focus { border-color: var(--accent); outline: none; }
+
+  #newChatBtn {
+    margin: 4px 16px 10px;
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    padding: 9px; border-radius: var(--radius-sm); cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+    font-size: 13px; font-weight: 600; transition: background 0.15s, border-color 0.15s;
+  }
+  #newChatBtn:hover { background: var(--panel-3); border-color: var(--accent); }
+
+  #convSectionLabel {
+    padding: 4px 20px 6px; font-size: 11px; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--muted); font-weight: 600;
+  }
+  #convList { flex: 1; overflow-y: auto; padding: 0 10px 8px; min-height: 60px; }
+  .conv-row {
+    position: relative; padding: 9px 56px 9px 12px; border-radius: var(--radius-sm);
+    cursor: pointer; margin-bottom: 2px; font-size: 12.5px; transition: background 0.12s;
+  }
+  .conv-row:hover { background: var(--panel-2); }
+  .conv-row.current { background: var(--accent-dim); }
+  .conv-row .conv-title { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv-row .conv-meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .conv-row .conv-del, .conv-row .conv-rename {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    display: none; background: none; border: none; color: var(--muted); cursor: pointer;
+    width: 22px; height: 22px; border-radius: 6px; font-size: 12px; line-height: 1;
+  }
+  .conv-row .conv-del { right: 6px; }
+  .conv-row .conv-rename { right: 28px; }
+  .conv-row:hover .conv-del, .conv-row:hover .conv-rename { display: block; }
+  .conv-row .conv-del:hover { background: var(--error); color: white; }
+  .conv-row .conv-rename:hover { background: var(--accent); color: white; }
+  .conv-rename-input {
+    width: 100%; background: var(--panel-3); border: 1px solid var(--accent); color: var(--text);
+    border-radius: 5px; padding: 2px 5px; font-size: 12.5px; font-family: inherit;
+  }
+  #convEmpty { padding: 10px 12px; font-size: 12px; color: var(--muted); }
+
+  #sidebarTools {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+    padding: 10px 16px; border-top: 1px solid var(--border);
+  }
+  .tool-btn {
+    display: flex; align-items: center; gap: 6px; text-align: left;
+    padding: 7px 9px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--muted); cursor: pointer; font-size: 11.5px;
+    text-decoration: none; transition: background 0.15s, color 0.15s;
+  }
+  .tool-btn:hover { background: var(--panel-3); color: var(--text); }
+  .tool-btn .ic { font-size: 13px; flex-shrink: 0; }
+
+  .options-row {
+    display: flex; align-items: center; gap: 9px; width: 100%; box-sizing: border-box;
+    text-align: left; padding: 9px 10px; border-radius: var(--radius-sm); border: none;
+    background: none; color: var(--text); cursor: pointer; font-size: 13px;
+    text-decoration: none; transition: background 0.15s; font-family: inherit;
+  }
+  .options-row:hover { background: var(--panel-2); }
+  .options-row .ic { font-size: 14px; flex-shrink: 0; width: 18px; text-align: center; }
+  .options-divider { height: 1px; background: var(--border); margin: 8px 4px; }
+  .options-section-label {
+    font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 4px 10px 2px;
+  }
+
+  .model-section-title {
+    font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 14px 16px 6px; border-top: 1px solid var(--border);
+  }
+  .model-arch-row { padding: 10px 0; border-top: 1px solid var(--border); }
+  .model-arch-row:first-child { border-top: none; }
+  .model-arch-folder {
+    flex: 1; font-size: 11px; background: var(--panel-2); padding: 4px 8px; border-radius: 6px;
+    overflow-x: auto; white-space: nowrap; color: var(--text);
+  }
+  .copyFolderBtn {
+    font-size: 11px; padding: 4px 8px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; cursor: pointer; flex-shrink: 0;
+  }
+
+  #accountBox { padding: 12px 16px 16px; border-top: 1px solid var(--border); }
+  #accountBox .whoami { font-size: 11.5px; color: var(--muted); margin-bottom: 8px; }
+  #accountBox .whoami strong { color: var(--text); }
+  .account-btn {
+    display: block; width: 100%; text-align: left; padding: 7px 10px; margin-bottom: 5px;
+    border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--panel-2);
+    color: var(--text); cursor: pointer; font-size: 11.5px; transition: background 0.15s;
+  }
+  .account-btn:hover { background: var(--panel-3); }
+
+  /* ---------- Main ---------- */
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+  #topbar {
+    display: none; align-items: center; gap: 10px; padding: 10px 24px;
+    border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--muted);
+    flex-shrink: 0;
+  }
+  #topbar.show { display: flex; }
+  #modelStatusPill {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; font-size: 11px;
+  }
+  #modelStatusPill .dot { width: 6px; height: 6px; border-radius: 50%; background: #3ecf6c; flex-shrink: 0; }
+  #profileSelect, #modelSelect {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius-sm); padding: 5px 8px; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  #verifyToggleLabel {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer;
+  }
+  #verifyToggleLabel input { cursor: pointer; }
+
+  #log { flex: 1; overflow-y: auto; padding: 24px; }
+  #emptyState {
+    max-width: 560px; margin: 10vh auto 0; text-align: center; color: var(--muted);
+  }
+  #emptyState img { opacity: 0.85; margin-bottom: 14px; }
+  #emptyState h2 { color: var(--text); font-size: 20px; margin: 0 0 8px; }
+  #emptyState p { font-size: 13.5px; line-height: 1.6; }
+
+  .msg { max-width: 760px; margin: 0 auto 22px; animation: msgIn 0.28s ease; position: relative; }
+  @keyframes msgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .msg .role { font-size: 11.5px; color: var(--muted); margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+  .msg .bubble {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 13px 16px;
+    line-height: 1.6;
+    font-size: 14.5px;
+  }
+  .msg.user .bubble { background: var(--panel-2); white-space: pre-wrap; }
+  .msg .bubble.error { border-color: var(--error); color: var(--error); }
+  .msg .bubble.gated { border-color: var(--warn); }
+  .msg .tag {
+    display: inline-block;
+    font-size: 10.5px;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 7px;
+  }
+  .msg img.attach, .msg video { max-width: 100%; border-radius: var(--radius-sm); margin-top: 10px; display: block; }
+  .msg .msg-actions { display: none; gap: 4px; margin-left: auto; }
+  .msg:hover .msg-actions { display: flex; }
+  .msg .msg-actions button {
+    background: none; border: 1px solid var(--border); color: var(--muted); cursor: pointer;
+    border-radius: 6px; width: 20px; height: 20px; font-size: 11px; line-height: 1; padding: 0;
+  }
+  .msg .msg-actions button:hover { color: var(--text); border-color: var(--accent); }
+
+  /* markdown rendering */
+  .markdown p { margin: 0 0 10px; }
+  .markdown p:last-child { margin-bottom: 0; }
+  .markdown ul, .markdown ol { margin: 0 0 10px; padding-left: 22px; }
+  .markdown li { margin-bottom: 3px; }
+  .markdown a { color: var(--accent); }
+  .markdown strong { color: var(--text); }
+  .markdown h1, .markdown h2, .markdown h3 { margin: 14px 0 8px; line-height: 1.3; }
+  .markdown h1:first-child, .markdown h2:first-child, .markdown h3:first-child { margin-top: 0; }
+  .markdown blockquote {
+    margin: 0 0 10px; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--muted);
+  }
+  .markdown code:not(pre code) {
+    background: var(--panel-3); padding: 1px 5px; border-radius: 5px;
+    font-size: 0.9em; font-family: "SF Mono", Consolas, monospace;
+  }
+  .markdown pre {
+    position: relative; margin: 0 0 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); overflow: hidden;
+  }
+  .markdown pre code.hljs { font-size: 12.5px; padding: 14px 16px; display: block; overflow-x: auto; }
+  .copy-code-btn {
+    position: absolute; top: 7px; right: 7px; font-size: 11px; padding: 4px 9px;
+    background: rgba(255,255,255,0.08); color: #e8e9ec; border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 6px; cursor: pointer; opacity: 0; transition: opacity 0.15s;
+  }
+  .markdown pre:hover .copy-code-btn { opacity: 1; }
+
+  .typing-wrap { display: inline-flex; align-items: center; gap: 8px; padding: 2px 0; }
+  .typing-dots { display: inline-flex; gap: 3px; align-items: center; }
+  .typing-dots span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+    animation: typingBounce 1.2s ease-in-out infinite;
+  }
+  .typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes typingBounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
+  .typing-elapsed { font-size: 11.5px; color: var(--muted); }
+  .typing-hint { font-size: 11px; color: var(--muted); margin-top: 4px; display: block; }
+
+  #inputbar {
+    border-top: 1px solid var(--border);
+    padding: 14px 24px 18px;
+    background: var(--panel);
+    flex-shrink: 0;
+  }
+  #inputbar .inner { max-width: 760px; margin: 0 auto; }
+
+  #attachPreviewRow { display: none; margin-bottom: 8px; }
+  #attachPreviewRow.show { display: flex; }
+  #attachPreviewRow .chip {
+    display: inline-flex; align-items: center; gap: 8px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 8px 5px 5px;
+  }
+  #attachPreviewRow img { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; }
+  #attachPreviewRow .chip-label { font-size: 11.5px; color: var(--muted); }
+  #attachPreviewRow button {
+    background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0 3px;
+  }
+  #attachPreviewRow button:hover { color: var(--error); }
+
+  #row { display: flex; gap: 8px; align-items: flex-end; }
+  #row .field-wrap {
+    flex: 1; display: flex; align-items: flex-end; gap: 4px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 6px 6px 6px 12px; transition: border-color 0.15s;
+  }
+  #row .field-wrap:focus-within { border-color: var(--accent); }
+  #attachBtn {
+    background: none; border: none; color: var(--muted); cursor: pointer; font-size: 17px;
+    width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  }
+  #attachBtn:hover { color: var(--text); background: var(--panel-3); }
+  #prompt {
+    flex: 1;
+    padding: 6px 4px;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    font-size: 14.5px;
+    resize: none;
+    font-family: inherit;
+    max-height: 200px;
+  }
+  #prompt:focus { outline: none; }
+  #send {
+    padding: 0 18px; height: 40px;
+    border-radius: var(--radius-sm);
+    border: none;
+    background: var(--accent);
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s;
+    flex-shrink: 0;
+  }
+  #send:hover:not(:disabled) { filter: brightness(1.1); }
+  #send:disabled { opacity: 0.5; cursor: default; }
+  #micBtn {
+    padding: 0 18px; height: 40px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #micBtn.recording { background: var(--error); color: white; border-color: var(--error); animation: recPulse 1s ease-in-out infinite; }
+  @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+  #cancelBtn { flex-shrink: 0; height: 40px; border-radius: var(--radius-sm); border: none; padding: 0 16px; cursor: pointer; }
+  #inputFooter { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 10px; }
+  #inputFooter .hint { font-size: 11px; color: var(--muted); }
+
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.4); border-top-color: white;
+    border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #planPanel {
+    display: none;
+    margin: 16px 24px 0;
+    padding: 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    animation: planIn 0.25s ease;
+    max-width: 760px;
+  }
+  @keyframes planIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  #planPanel .plan-title {
+    font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px; font-weight: 600;
+  }
+  .plan-step {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13.5px; padding: 4px 0; color: var(--text);
+  }
+  .plan-step .dot {
+    flex: none; width: 16px; height: 16px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; line-height: 1; border: 1.5px solid var(--border);
+    transition: all 0.2s ease;
+  }
+  .plan-step.pendiente .dot { color: transparent; }
+  .plan-step.en_progreso .dot {
+    border-color: var(--accent); background: var(--accent); color: white;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .plan-step.hecho .dot { border-color: var(--accent); background: var(--accent); color: white; }
+  .plan-step.hecho .texto { color: var(--muted); text-decoration: line-through; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+  #loginScreen {
+    position: fixed; inset: 0; z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg);
+  }
+  #loginBox {
+    width: 100%; max-width: 340px; padding: 32px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow);
+  }
+  #loginBox h1 { font-size: 18px; margin: 0 0 4px; }
+  #loginBox .sub { font-size: 12.5px; color: var(--muted); margin-bottom: 20px; }
+  #loginBox input {
+    width: 100%; box-sizing: border-box; padding: 10px 12px; margin-bottom: 10px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); font-size: 14px; font-family: inherit;
+  }
+  #loginBox input:focus { outline: none; border-color: var(--accent); }
+  #loginBox .primary-btn {
+    width: 100%; padding: 11px; border: none; border-radius: 8px;
+    background: var(--accent); color: white; font-size: 14px; cursor: pointer; margin-top: 4px; font-weight: 600;
+  }
+  #loginBox .primary-btn:hover { filter: brightness(1.1); }
+  #loginBox .link-btn {
+    width: 100%; padding: 9px; border: none; background: none; color: var(--muted);
+    font-size: 12.5px; cursor: pointer; text-decoration: underline; margin-top: 6px;
+  }
+  #loginBox .error-msg { color: var(--error); font-size: 12.5px; margin: 6px 0 0; min-height: 16px; }
+  #loginBox .hidden { display: none; }
+
+  /* Modales genericos */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; animation: fadeIn 0.15s ease; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .modal-box { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+  .modal-header strong { font-size: 14px; }
+  .modal-close { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; width: 28px; height: 28px; border-radius: 8px; }
+  .modal-close:hover { background: var(--panel-2); color: var(--text); }
+</style>
+</head>
+<body>
+
+<div id="loginScreen" style="display:none;">
+  <div id="loginBox">
+    <div style="text-align:center; margin-bottom:12px;">
+      <img src="/static/logo.svg" alt="" width="56" height="56">
+    </div>
+    <h1 style="text-align:center;">CHATI IA</h1>
+    <div class="sub" id="loginSubtitle" style="text-align:center;">Inicia sesion para continuar.</div>
+
+    <div id="loginFormBox">
+      <input type="text" id="loginUsername" placeholder="Usuario" autocomplete="username">
+      <input type="password" id="loginPassword" placeholder="Contraseña" autocomplete="current-password">
+      <button class="primary-btn" id="loginSubmitBtn">Entrar</button>
+      <div class="error-msg" id="loginError"></div>
+      <button class="link-btn" id="showRegisterBtn">Crear una cuenta nueva</button>
+      <button class="link-btn" id="showForgotBtn">He olvidado mi contraseña</button>
+      <button class="link-btn" id="guestBtn">Entrar como invitado</button>
+    </div>
+
+    <div id="registerFormBox" class="hidden">
+      <input type="text" id="regUsername" placeholder="Usuario" autocomplete="username">
+      <input type="password" id="regPassword" placeholder="Contraseña (minimo 8 caracteres)" autocomplete="new-password">
+      <input type="text" id="regKey" placeholder="Clave de registro (te la da el admin)">
+      <input type="text" id="regQuestion" placeholder="Pregunta de seguridad (opcional)">
+      <input type="text" id="regAnswer" placeholder="Respuesta (opcional)">
+      <button class="primary-btn" id="registerSubmitBtn">Crear cuenta</button>
+      <div class="error-msg" id="registerError"></div>
+      <button class="link-btn" id="backToLoginFromRegisterBtn">Volver a iniciar sesion</button>
+    </div>
+
+    <div id="forgotFormBox" class="hidden">
+      <input type="text" id="forgotUsername" placeholder="Usuario">
+      <button class="link-btn" id="forgotLoadQuestionBtn" style="text-decoration:none; color:var(--text); background:var(--panel-2); border:1px solid var(--border); border-radius:8px; margin-bottom:10px;">Ver mi pregunta de seguridad</button>
+      <div id="forgotQuestionText" class="sub" style="margin-bottom:10px;"></div>
+      <input type="text" id="forgotAnswer" placeholder="Respuesta" class="hidden">
+      <input type="password" id="forgotNewPassword" placeholder="Contraseña nueva (minimo 8 caracteres)" class="hidden">
+      <button class="primary-btn hidden" id="forgotSubmitBtn">Restablecer contraseña</button>
+      <div class="error-msg" id="forgotError"></div>
+      <div class="sub" id="forgotWarning" style="color:var(--warn);"></div>
+      <button class="link-btn" id="backToLoginFromForgotBtn">Volver a iniciar sesion</button>
+    </div>
+  </div>
+</div>
+
+<div id="sidebar">
+  <div id="sidebarHeader">
+    <img src="/static/logo.svg" alt="" width="28" height="28">
+    <h1>Chati IA</h1>
+    <button id="themeToggle" title="Cambiar tema">&#9789;</button>
+  </div>
+
+  <div id="modeRow">
+    <label for="modeSelect" id="modeRowLabel">Modo (chat usa un router automatico)</label>
+    <select id="modeSelect">
+      <option value="chat">Chat</option>
+      <option value="image">Imagen</option>
+      <option value="video">Video</option>
+      <option value="agente">Agente de codigo</option>
+      <option value="voice">Voz</option>
+    </select>
+  </div>
+
+  <button id="newChatBtn">+ Nueva conversacion</button>
+  <div id="convSectionLabel">Conversaciones</div>
+  <div id="convList"></div>
+
+  <div id="sidebarTools">
+    <button class="tool-btn" id="knowledgeBtn"><span class="ic">&#128218;</span>Documentos</button>
+    <button class="tool-btn" id="optionsBtn"><span class="ic">&#9881;</span>Opciones</button>
+  </div>
+
+  <div id="accountBox">
+    <div class="whoami">Conectado como <strong id="whoamiLabel">...</strong></div>
+    <button id="adminBtn" class="account-btn" style="display:none;">Administracion</button>
+    <button id="changePasswordBtn" class="account-btn">Cambiar contraseña</button>
+    <button id="logoutBtn" class="account-btn">Cerrar sesion</button>
+  </div>
+</div>
+
+<div id="adminModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:600px; margin:60px auto; max-height:75vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Administracion</strong>
+      <button id="closeAdminBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:16px; overflow-y:auto;">
+      <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+        Clave de registro (dasela a quien quieras que se cree una cuenta):
+        <div id="regKeyDisplay" style="margin-top:4px; padding:8px; background:var(--panel-2); border-radius:6px; font-family:monospace; word-break:break-all;">...</div>
+      </div>
+      <div style="font-size:12px; color:var(--muted); margin:16px 0 8px;">USUARIOS</div>
+      <div id="adminUsersList"></div>
+      <div style="font-size:12px; color:var(--muted); margin:20px 0 8px;">EVENTOS DE SEGURIDAD RECIENTES</div>
+      <div id="adminSecurityEvents" style="font-size:12px;"></div>
+    </div>
+  </div>
+</div>
+
+<div id="changePasswordModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:340px; margin:80px auto; padding:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <strong>Cambiar contraseña</strong>
+      <button id="closeChangePasswordBtn" class="modal-close">&times;</button>
+    </div>
+    <input type="password" id="oldPasswordInput" placeholder="Contraseña actual" style="width:100%; box-sizing:border-box; padding:10px; margin-bottom:8px; background:var(--panel-2); border:1px solid var(--border); border-radius:8px; color:var(--text);">
+    <input type="password" id="newPasswordInput" placeholder="Contraseña nueva (min. 8 caracteres)" style="width:100%; box-sizing:border-box; padding:10px; margin-bottom:8px; background:var(--panel-2); border:1px solid var(--border); border-radius:8px; color:var(--text);">
+    <button id="submitChangePasswordBtn" style="width:100%; padding:10px; background:var(--accent); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600;">Cambiar</button>
+    <div class="error-msg" id="changePasswordError" style="color:var(--error); font-size:12px; margin-top:6px;"></div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="topbar">
+    <span id="profileSelectLabel">Perfil de chat:</span>
+    <select id="profileSelect"></select>
+    <label id="verifyToggleLabel" title="Comprueba que la respuesta no se invente datos. Desactivalo para consultas puntuales donde prefieras velocidad; dejalo activo en conversaciones donde te importe la fiabilidad.">
+      <input type="checkbox" id="verifyToggle" checked> Verificar respuestas
+    </label>
+    <span id="modelSelectLabel">Modelo:</span>
+    <select id="modelSelect"><option value="">Automatico</option></select>
+    <span id="modelStatusPill" style="margin-left:auto;"><span class="dot"></span><span id="modelStatusText">...</span></span>
+  </div>
+  <div id="planPanel"></div>
+  <div id="log">
+    <div id="emptyState">
+      <img src="/static/logo.svg" alt="" width="52" height="52">
+      <h2>Empieza una conversacion</h2>
+      <p>Elige un modo a la izquierda y escribe abajo. Todo corre en local: nada sale de este ordenador.</p>
+    </div>
+  </div>
+  <div id="inputbar">
+    <div class="inner">
+      <div id="attachPreviewRow">
+        <span class="chip">
+          <img id="attachPreviewImg" src="" alt="">
+          <span class="chip-label">imagen adjunta</span>
+          <button id="removeAttachBtn" title="Quitar">&times;</button>
+        </span>
+      </div>
+      <div id="row">
+        <div class="field-wrap">
+          <button id="attachBtn" title="Adjuntar imagen (comentarla en chat, o preservar esa cara al generar imagen/video)">&#128206;</button>
+          <textarea id="prompt" rows="1" placeholder="Escribe aqui..."></textarea>
+        </div>
+        <button id="send">Enviar</button>
+        <button id="cancelBtn" style="display:none; background:var(--error); color:white;">Cancelar generacion</button>
+        <button id="micBtn" style="display:none;">Grabar</button>
+      </div>
+      <div id="inputFooter">
+        <span class="hint" id="modeDesc"></span>
+      </div>
+      <input type="file" id="visionImageInput" accept="image/*" style="display:none;">
+    </div>
+  </div>
+</div>
+
+<div id="knowledgeModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:600px; margin:60px auto; max-height:75vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Base de conocimiento</strong>
+      <button id="closeKnowledgeBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:16px; border-bottom:1px solid var(--border);">
+      <label for="knowledgeFileInput" style="display:inline-block; font-size:13px; padding:8px 14px; background:var(--accent); color:white; border-radius:6px; cursor:pointer; font-weight:600;">Subir documento (.pdf, .docx, .txt, .md)</label>
+      <input type="file" id="knowledgeFileInput" accept=".pdf,.docx,.txt,.md" style="display:none;">
+      <div style="font-size:12px; color:var(--muted); margin-top:8px;">Estos documentos se usan como contexto real en el chat de texto, con fuente citada.</div>
+    </div>
+    <div id="knowledgeListBox" style="flex:1; overflow-y:auto; padding:16px;"></div>
+  </div>
+</div>
+
+<div id="optionsModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:340px; margin:60px auto;">
+    <div class="modal-header">
+      <strong>Opciones</strong>
+      <button id="closeOptionsBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:10px;">
+      <button class="options-row" id="optMetricsBtn"><span class="ic">&#128202;</span>Metricas</button>
+      <button class="options-row" id="optModelUpdatesBtn"><span class="ic">&#8635;</span>Modelos</button>
+      <a class="options-row" id="optCodeAgentLink" href="http://127.0.0.1:8901" target="_blank" rel="noopener"><span class="ic">&#128187;</span>Agente de codigo ↗</a>
+      <button class="options-row" id="optMemoryBtn"><span class="ic">&#129504;</span>Memoria</button>
+      <button class="options-row" id="optPersonasBtn"><span class="ic">&#128100;</span>Personas</button>
+      <div id="profileSection">
+        <div class="options-divider"></div>
+        <div class="options-section-label">Perfil</div>
+        <div id="cvStatus" style="padding:0 10px; font-size:12.5px; color:var(--muted);">Sin CV</div>
+        <label for="cvInput" id="cvInputLabel" class="options-row" style="cursor:pointer;">Subir / sustituir CV</label>
+        <input type="file" id="cvInput" accept=".pdf,.doc,.docx" style="display:none;">
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="memoryModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:600px; margin:50px auto; max-height:80vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Memoria</strong>
+      <button id="closeMemoryBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:14px 16px; border-bottom:1px solid var(--border);">
+      <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+        Contexto que quieras que Chati recuerde siempre (tu rol, tus preferencias, datos de tu proyecto...),
+        ademas de lo que ya va guardando solo de tus conversaciones.
+      </div>
+      <textarea id="memoryNoteInput" rows="2" placeholder="Escribe algo que quieras que recuerde siempre..."
+        style="width:100%; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px; font-family:inherit; resize:vertical; box-sizing:border-box;"></textarea>
+      <button id="addMemoryNoteBtn" style="margin-top:8px; padding:8px 16px; background:var(--accent); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px;">Añadir</button>
+    </div>
+    <div id="memoryListBox" style="flex:1; overflow-y:auto; padding:16px;"></div>
+  </div>
+</div>
+
+<div id="personasModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:600px; margin:50px auto; max-height:80vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Personas</strong>
+      <button id="closePersonasBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:14px 16px; border-bottom:1px solid var(--border);">
+      <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+        Crea una persona a partir de varias fotos tuyas (o de alguien que te haya dado permiso) - luego podras
+        usarla al generar imagenes para mantener siempre la misma cara. Sube al menos 5-10 fotos claras de la
+        cara desde angulos distintos para mejor resultado. El entrenamiento tarda un buen rato (puede que horas)
+        y corre en segundo plano - puedes cerrar esta ventana y seguir usando Chati mientras tanto.
+      </div>
+      <input type="text" id="personaNameInput" placeholder="Nombre de la persona (p.ej. Sergio)"
+        style="width:100%; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px; font-family:inherit; box-sizing:border-box; margin-bottom:8px;">
+      <input type="file" id="personaPhotosInput" accept="image/*" multiple
+        style="width:100%; font-size:12.5px; margin-bottom:8px;">
+      <div id="personaPhotosCount" style="font-size:11.5px; color:var(--muted); margin-bottom:8px;"></div>
+      <button id="createPersonaBtn" style="padding:8px 16px; background:var(--accent); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px;">Crear persona</button>
+    </div>
+    <div id="personasListBox" style="flex:1; overflow-y:auto; padding:16px;"></div>
+  </div>
+</div>
+
+<div id="metricsModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:600px; margin:60px auto; max-height:75vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Metricas (ultimos eventos)</strong>
+      <button id="closeMetricsBtn" class="modal-close">&times;</button>
+    </div>
+    <div id="metricsBox" style="flex:1; overflow-y:auto; padding:16px; font-size:13px;"></div>
+  </div>
+</div>
+
+<div id="modelUpdatesModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:640px; margin:50px auto; max-height:80vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Modelos</strong>
+      <button id="closeModelUpdatesBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="flex:1; overflow-y:auto;">
+
+      <div class="model-section-title">Texto (chat)</div>
+      <div id="modelStatusBox" style="padding:10px 16px; font-size:12.5px; color:var(--muted);"></div>
+      <div style="padding:0 16px 8px;">
+        <button id="checkModelUpdatesBtn" style="font-size:12px; padding:6px 10px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Comprobar actualizaciones</button>
+        <span style="font-size:11px; color:var(--muted); margin-left:8px;">Solo mira si hay una version nueva (unos KB). No descarga nada hasta que tu le des a "Actualizar".</span>
+      </div>
+      <div id="modelUpdatesBox" style="padding:0 16px 16px; font-size:13px;"></div>
+
+      <div class="model-section-title">Imagen</div>
+      <div id="imageModelsBox" style="padding:0 16px 16px; font-size:13px;"></div>
+
+      <div class="model-section-title">Video</div>
+      <div id="videoModelsBox" style="padding:0 16px 16px; font-size:13px;"></div>
+
+    </div>
+  </div>
+</div>
+
+<div id="inpaintModal" class="modal-overlay" style="background:rgba(0,0,0,0.75);">
+  <div class="modal-box" style="max-width:700px; margin:30px auto; max-height:90vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Editar imagen - pinta la zona a repintar</strong>
+      <button id="closeInpaintBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:12px 16px; display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--border); font-size:12px; color:var(--muted);">
+      <label>Pincel: <input type="range" id="brushSize" min="8" max="120" value="35"></label>
+      <button id="clearMaskBtn" style="font-size:12px; padding:4px 10px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Borrar trazo</button>
+      <span>Arrastra sobre la imagen para marcar en rojo lo que quieres que se regenere.</span>
+    </div>
+    <div style="position:relative; overflow:auto; padding:16px; text-align:center;">
+      <div id="inpaintCanvasWrap" style="position:relative; display:inline-block;">
+        <img id="inpaintBaseImg" style="display:block; max-width:100%;">
+        <canvas id="inpaintCanvas" style="position:absolute; top:0; left:0; cursor:crosshair;"></canvas>
+      </div>
+    </div>
+    <div style="padding:16px; border-top:1px solid var(--border);">
+      <textarea id="inpaintPrompt" rows="2" placeholder="Describe que debe aparecer en la zona marcada..." style="width:100%; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px; font-family:inherit; resize:vertical;"></textarea>
+      <button id="submitInpaintBtn" style="margin-top:8px; padding:10px 20px; background:var(--accent); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600;">Repintar zona marcada</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/highlight.min.js"></script>
+<script>
+// --- Tema claro/oscuro ---
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.getElementById("themeToggle").innerHTML = theme === "light" ? "&#9788;" : "&#9789;";
+}
+function initTheme() {
+  const saved = localStorage.getItem("ia_theme") || "dark";
+  applyTheme(saved);
+}
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme") || "dark";
+  const next = current === "light" ? "dark" : "light";
+  localStorage.setItem("ia_theme", next);
+  applyTheme(next);
+});
+initTheme();
+</script>
+<style>
+  html[data-theme="light"] {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --panel-2: #f0f1f4;
+    --panel-3: #e6e8ec;
+    --border: #dde1e8;
+    --text: #1c1f26;
+    --muted: #6b7280;
+    --accent: #3b6fe0;
+    --accent-dim: rgba(59, 111, 224, 0.1);
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  }
+</style>
+<script>
+// --- Autenticacion por sesion de usuario (ver ROADMAP.md, punto 0) ---
+function getSessionToken() {
+  return (localStorage.getItem("ia_session_token") || "").trim();
+}
+function setSessionToken(token, role) {
+  if (token) {
+    localStorage.setItem("ia_session_token", token);
+    localStorage.setItem("ia_session_role", role || "user");
+  }
+}
+function clearSessionToken() {
+  localStorage.removeItem("ia_session_token");
+  localStorage.removeItem("ia_session_role");
+}
+function getSessionRole() {
+  return localStorage.getItem("ia_session_role") || "user";
+}
+
+function withKey(url) {
+  if (!url) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}session=${encodeURIComponent(getSessionToken())}`;
+}
+
+const _originalFetch = window.fetch;
+window.fetch = function (input, init) {
+  init = init || {};
+  init.headers = new Headers(init.headers || {});
+  init.headers.set("X-Session-Token", getSessionToken());
+  return _originalFetch(input, init).then((resp) => {
+    if (resp.status === 401) {
+      clearSessionToken();
+      showLoginScreen("Tu sesion ha caducado. Inicia sesion de nuevo.");
+    }
+    return resp;
+  });
+};
+
+// --- Pantalla de login/registro/invitado/recuperacion ---
+const loginScreen = document.getElementById("loginScreen");
+const loginSubtitle = document.getElementById("loginSubtitle");
+const loginFormBox = document.getElementById("loginFormBox");
+const registerFormBox = document.getElementById("registerFormBox");
+const forgotFormBox = document.getElementById("forgotFormBox");
+
+function showLoginScreen(message) {
+  loginScreen.style.display = "flex";
+  loginFormBox.classList.remove("hidden");
+  registerFormBox.classList.add("hidden");
+  forgotFormBox.classList.add("hidden");
+  if (message) loginSubtitle.textContent = message;
+}
+function hideLoginScreen() {
+  loginScreen.style.display = "none";
+}
+
+// Intro para enviar en los formularios de login/registro/recuperacion, no
+// solo con el raton - pedido explicito por Sergio.
+function enterSubmits(inputIds, buttonId) {
+  inputIds.forEach((inputId) => {
+    document.getElementById(inputId).addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      document.getElementById(buttonId).click();
+    });
+  });
+}
+enterSubmits(["loginUsername", "loginPassword"], "loginSubmitBtn");
+enterSubmits(["regUsername", "regPassword", "regKey", "regQuestion", "regAnswer"], "registerSubmitBtn");
+enterSubmits(["forgotUsername"], "forgotLoadQuestionBtn");
+enterSubmits(["forgotAnswer", "forgotNewPassword"], "forgotSubmitBtn");
+
+document.getElementById("loginSubmitBtn").addEventListener("click", async () => {
+  const username = document.getElementById("loginUsername").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const errEl = document.getElementById("loginError");
+  errEl.textContent = "";
+  try {
+    const resp = await _originalFetch("/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { errEl.textContent = data.detail || "No se pudo iniciar sesion."; return; }
+    setSessionToken(data.token, data.role);
+    hideLoginScreen();
+    location.reload();
+  } catch (e) { errEl.textContent = "No se pudo contactar con el servidor."; }
+});
+
+document.getElementById("guestBtn").addEventListener("click", async () => {
+  const resp = await _originalFetch("/auth/guest", { method: "POST" });
+  const data = await resp.json();
+  setSessionToken(data.token, data.role);
+  hideLoginScreen();
+  location.reload();
+});
+
+document.getElementById("showRegisterBtn").addEventListener("click", () => {
+  loginFormBox.classList.add("hidden");
+  registerFormBox.classList.remove("hidden");
+});
+document.getElementById("backToLoginFromRegisterBtn").addEventListener("click", () => {
+  registerFormBox.classList.add("hidden");
+  loginFormBox.classList.remove("hidden");
+});
+
+document.getElementById("registerSubmitBtn").addEventListener("click", async () => {
+  const body = {
+    username: document.getElementById("regUsername").value.trim(),
+    password: document.getElementById("regPassword").value,
+    registration_key: document.getElementById("regKey").value.trim(),
+    security_question: document.getElementById("regQuestion").value.trim() || null,
+    security_answer: document.getElementById("regAnswer").value.trim() || null,
+  };
+  const errEl = document.getElementById("registerError");
+  errEl.textContent = "";
+  const resp = await _originalFetch("/auth/register", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  if (!resp.ok) { errEl.textContent = data.detail || "No se pudo crear la cuenta."; return; }
+  setSessionToken(data.token, data.role);
+  hideLoginScreen();
+  location.reload();
+});
+
+document.getElementById("showForgotBtn").addEventListener("click", () => {
+  loginFormBox.classList.add("hidden");
+  forgotFormBox.classList.remove("hidden");
+});
+document.getElementById("backToLoginFromForgotBtn").addEventListener("click", () => {
+  forgotFormBox.classList.add("hidden");
+  loginFormBox.classList.remove("hidden");
+});
+
+document.getElementById("forgotLoadQuestionBtn").addEventListener("click", async () => {
+  const username = document.getElementById("forgotUsername").value.trim();
+  const errEl = document.getElementById("forgotError");
+  errEl.textContent = "";
+  const resp = await _originalFetch(`/auth/security-question/${encodeURIComponent(username)}`);
+  const data = await resp.json();
+  if (!resp.ok) { errEl.textContent = data.detail || "No se encontro la pregunta."; return; }
+  document.getElementById("forgotQuestionText").textContent = data.security_question;
+  document.getElementById("forgotAnswer").classList.remove("hidden");
+  document.getElementById("forgotNewPassword").classList.remove("hidden");
+  document.getElementById("forgotSubmitBtn").classList.remove("hidden");
+  document.getElementById("forgotWarning").textContent =
+    "Aviso: si respondes bien, entraras con una cuenta limpia. Tus conversaciones e imagenes cifradas con la contraseña anterior quedaran inaccesibles para siempre (no hay forma de recuperarlas).";
+});
+
+document.getElementById("forgotSubmitBtn").addEventListener("click", async () => {
+  const body = {
+    username: document.getElementById("forgotUsername").value.trim(),
+    security_answer: document.getElementById("forgotAnswer").value,
+    new_password: document.getElementById("forgotNewPassword").value,
+  };
+  const errEl = document.getElementById("forgotError");
+  errEl.textContent = "";
+  const resp = await _originalFetch("/auth/reset-password", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  if (!resp.ok) { errEl.textContent = data.detail || "No se pudo restablecer."; return; }
+  alert("Contraseña restablecida. Inicia sesion con la nueva contraseña.");
+  forgotFormBox.classList.add("hidden");
+  loginFormBox.classList.remove("hidden");
+});
+
+if (!getSessionToken()) {
+  showLoginScreen();
+}
+
+// --- Estado de sesion en el sidebar, panel de admin, cambio de contraseña ---
+async function initSessionUI() {
+  if (!getSessionToken()) return;
+  const resp = await fetch("/auth/me");
+  if (!resp.ok) { clearSessionToken(); showLoginScreen(); return; }
+  const me = await resp.json();
+  setSessionToken(getSessionToken(), me.role); // refresca el rol guardado por si cambio
+
+  document.getElementById("whoamiLabel").textContent = me.username || "invitado";
+  if (me.role === "admin") document.getElementById("adminBtn").style.display = "block";
+  if (me.role === "guest") {
+    document.getElementById("profileSection").style.display = "none";
+    document.getElementById("optMemoryBtn").style.display = "none";
+    document.getElementById("optPersonasBtn").style.display = "none";
+    document.getElementById("knowledgeBtn").style.display = "none";
+    document.getElementById("changePasswordBtn").style.display = "none";
+    document.getElementById("newChatBtn").style.display = "none";
+    document.getElementById("convSectionLabel").style.display = "none";
+    document.getElementById("convList").innerHTML = '<div id="convEmpty">Modo invitado: sin historial guardado.</div>';
+  } else {
+    await loadConversations();
+  }
+}
+
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  await fetch("/auth/logout", { method: "POST" });
+  clearSessionToken();
+  location.reload();
+});
+
+const changePasswordModal = document.getElementById("changePasswordModal");
+document.getElementById("changePasswordBtn").addEventListener("click", () => {
+  changePasswordModal.style.display = "block";
+});
+document.getElementById("closeChangePasswordBtn").addEventListener("click", () => {
+  changePasswordModal.style.display = "none";
+});
+document.getElementById("submitChangePasswordBtn").addEventListener("click", async () => {
+  const old_password = document.getElementById("oldPasswordInput").value;
+  const new_password = document.getElementById("newPasswordInput").value;
+  const errEl = document.getElementById("changePasswordError");
+  errEl.textContent = "";
+  const resp = await fetch("/auth/change-password", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ old_password, new_password }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) { errEl.textContent = data.detail || "No se pudo cambiar."; return; }
+  setSessionToken(data.token, getSessionRole());
+  changePasswordModal.style.display = "none";
+  alert("Contraseña cambiada correctamente.");
+});
+
+const adminModal = document.getElementById("adminModal");
+document.getElementById("adminBtn").addEventListener("click", async () => {
+  adminModal.style.display = "block";
+  await loadAdminPanel();
+});
+document.getElementById("closeAdminBtn").addEventListener("click", () => { adminModal.style.display = "none"; });
+
+async function loadAdminPanel() {
+  const [usersResp, eventsResp, regKeyResp] = await Promise.all([
+    fetch("/auth/users"), fetch("/auth/security-events"), fetch("/auth/registration-key"),
+  ]);
+  const usersData = await usersResp.json();
+  const eventsData = await eventsResp.json();
+  const regKeyData = await regKeyResp.json();
+  document.getElementById("regKeyDisplay").textContent = regKeyData.registration_key;
+
+  const meResp = await fetch("/auth/me");
+  const me = await meResp.json();
+
+  const usersBox = document.getElementById("adminUsersList");
+  usersBox.innerHTML = usersData.users.map((u) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:1px solid var(--border); font-size:13px;">
+      <span>${u.username} <span style="color:var(--muted);">(${u.role})</span></span>
+      ${u.username === me.username ? "" : `<button data-username="${u.username}" class="deleteUserBtn" style="font-size:11px; padding:3px 8px; background:var(--error); color:white; border:none; border-radius:6px; cursor:pointer;">Eliminar</button>`}
+    </div>
+  `).join("") || '<div style="color:var(--muted); font-size:12px;">Sin usuarios.</div>';
+
+  usersBox.querySelectorAll(".deleteUserBtn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(`¿Eliminar la cuenta de "${btn.dataset.username}"? Se borraran tambien todos sus datos (conversaciones, caras, documentos). No se puede deshacer.`)) return;
+      await fetch(`/auth/users/${encodeURIComponent(btn.dataset.username)}`, { method: "DELETE" });
+      await loadAdminPanel();
+    });
+  });
+
+  const eventsBox = document.getElementById("adminSecurityEvents");
+  eventsBox.innerHTML = eventsData.events.slice().reverse().map((e) => `
+    <div style="padding:4px 0; color:var(--muted);">${e.at} - ${e.event} (${e.username})</div>
+  `).join("") || '<div style="color:var(--muted);">Sin eventos.</div>';
+}
+
+const MODES = {
+  chat: { desc: "Router automatico: detecta si es conversacion, codigo, imagen o video. Adjunta una foto para comentarla (vision).", endpoint: "/chat/stream", showTopbar: true, allowAttach: true },
+  image: { desc: "Genera una imagen a partir de una descripcion (FLUX). Adjunta una foto para preservar esa cara.", endpoint: "/chat/stream", agent: "image", showTopbar: true, allowAttach: true, faceEndpoint: "/image_with_face", modelsEndpoint: "/models/image" },
+  video: { desc: "Genera un video corto a partir de una descripcion (LTX-Video). Adjunta una foto para preservar esa cara.", endpoint: "/chat/stream", agent: "video", showTopbar: true, allowAttach: true, faceEndpoint: "/video_with_face", modelsEndpoint: "/models/video" },
+  agente: { desc: "Manda la tarea al agente de codigo (OpenCode) para que toque archivos de verdad - tarda varios minutos, sigue el progreso en su propia ventana.", endpoint: "/chat/stream", agent: "opencode" },
+  voice: { desc: "Pulsa grabar, habla, y pulsa de nuevo para enviar. Responde con voz.", isVoice: true },
+};
+
+let currentMode = "chat";
+
+function getSessionId() {
+  return localStorage.getItem("ia_session_id") || null;
+}
+function setSessionId(sid) {
+  if (sid) {
+    const isNew = sid !== localStorage.getItem("ia_session_id");
+    localStorage.setItem("ia_session_id", sid);
+    if (isNew) loadConversations();
+  }
+}
+
+const planPanel = document.getElementById("planPanel");
+const ESTADO_ICONO = { pendiente: "", en_progreso: "●", hecho: "✓" };
+
+async function refreshPlan() {
+  const sid = getSessionId();
+  if (!sid) return;
+  let data;
+  try {
+    const resp = await fetch(`/plan/${sid}`);
+    data = await resp.json();
+  } catch (e) { return; }
+
+  const pasos = data.pasos || [];
+  if (!pasos.length) { planPanel.style.display = "none"; return; }
+
+  planPanel.innerHTML = '<div class="plan-title">Plan de la tarea</div>' + pasos.map((p) => `
+    <div class="plan-step ${p.estado}">
+      <span class="dot">${ESTADO_ICONO[p.estado] || ""}</span>
+      <span class="texto">${p.texto.replace(/</g, "&lt;")}</span>
+    </div>
+  `).join("");
+  planPanel.style.display = "block";
+}
+
+// --- Markdown + resaltado de sintaxis + boton de copiar ---
+marked.setOptions({ breaks: true, gfm: true });
+
+function renderMarkdownInto(container, text, { highlight } = { highlight: true }) {
+  container.innerHTML = marked.parse(text || "");
+  container.classList.add("markdown");
+  if (!highlight) return;
+  container.querySelectorAll("pre code").forEach((block) => {
+    hljs.highlightElement(block);
+    const pre = block.parentElement;
+    const btn = document.createElement("button");
+    btn.className = "copy-code-btn";
+    btn.textContent = "Copiar";
+    btn.addEventListener("click", () => {
+      navigator.clipboard.writeText(block.textContent).then(() => {
+        btn.textContent = "Copiado";
+        setTimeout(() => { btn.textContent = "Copiar"; }, 1200);
+      });
+    });
+    pre.appendChild(btn);
+  });
+}
+
+const log = document.getElementById("log");
+const emptyState = document.getElementById("emptyState");
+const promptEl = document.getElementById("prompt");
+const sendBtn = document.getElementById("send");
+const cancelBtn = document.getElementById("cancelBtn");
+const modeDesc = document.getElementById("modeDesc");
+const micBtn = document.getElementById("micBtn");
+const cvInput = document.getElementById("cvInput");
+const cvStatus = document.getElementById("cvStatus");
+const topbar = document.getElementById("topbar");
+const profileSelectLabel = document.getElementById("profileSelectLabel");
+const profileSelect = document.getElementById("profileSelect");
+const verifyToggleLabel = document.getElementById("verifyToggleLabel");
+const modelStatusText = document.getElementById("modelStatusText");
+const attachBtn = document.getElementById("attachBtn");
+const visionImageInput = document.getElementById("visionImageInput");
+const attachPreviewRow = document.getElementById("attachPreviewRow");
+const attachPreviewImg = document.getElementById("attachPreviewImg");
+const removeAttachBtn = document.getElementById("removeAttachBtn");
+const verifyToggle = document.getElementById("verifyToggle");
+
+function hideEmptyState() { if (emptyState) emptyState.style.display = "none"; }
+
+// --- Verificar respuestas (anti-alucinacion) por mensaje, elegible por el
+// usuario - ver ROADMAP.md: consultas puntuales pueden ir sin verificar
+// (mas rapido), conversaciones donde importe la fiabilidad lo mantienen activo.
+verifyToggle.checked = localStorage.getItem("ia_verify") !== "off";
+verifyToggle.addEventListener("change", () => {
+  localStorage.setItem("ia_verify", verifyToggle.checked ? "on" : "off");
+});
+
+// --- Perfil de modelo (rapido/bueno/seguridad) ---
+async function loadProfiles() {
+  try {
+    const resp = await fetch("/models/profiles");
+    const data = await resp.json();
+    profileSelect.innerHTML = "";
+    (data.profiles || []).forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.label;
+      profileSelect.appendChild(opt);
+    });
+    const saved = localStorage.getItem("ia_model_profile");
+    profileSelect.value = (saved && data.profiles.some(p => p.id === saved)) ? saved : (data.default || "");
+  } catch (err) { /* la interfaz sigue usable con el perfil por defecto del servidor */ }
+}
+profileSelect.addEventListener("change", () => {
+  localStorage.setItem("ia_model_profile", profileSelect.value);
+});
+
+async function refreshModelStatus() {
+  try {
+    const resp = await fetch("/models/status");
+    const data = await resp.json();
+    const names = (data.models || []).map(m => m.name);
+    modelStatusText.textContent = names.length ? names.join(", ") : "sin modelos cargados";
+  } catch (err) {
+    modelStatusText.textContent = "sin datos";
+  }
+}
+
+// --- Imagen adjunta para vision (modo chat) ---
+let visionImageBase64 = null;
+attachBtn.addEventListener("click", () => visionImageInput.click());
+visionImageInput.addEventListener("change", () => {
+  const file = visionImageInput.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    visionImageBase64 = reader.result.split(",")[1];
+    attachPreviewImg.src = reader.result;
+    attachPreviewRow.classList.add("show");
+  };
+  reader.readAsDataURL(file);
+});
+removeAttachBtn.addEventListener("click", () => {
+  visionImageBase64 = null;
+  visionImageInput.value = "";
+  attachPreviewRow.classList.remove("show");
+});
+
+async function loadCvStatus() {
+  try {
+    const resp = await fetch("/cv");
+    const data = await resp.json();
+    cvStatus.textContent = data.has_cv ? ("CV: " + data.filename) : "Sin CV";
+  } catch (err) { /* silencioso */ }
+}
+
+cvInput.addEventListener("change", async () => {
+  if (!cvInput.files[0]) return;
+  const form = new FormData();
+  form.append("file", cvInput.files[0]);
+  cvStatus.textContent = "Subiendo...";
+  try {
+    await fetch("/cv", { method: "POST", body: form });
+    await loadCvStatus();
+  } catch (err) {
+    cvStatus.textContent = "Error subiendo CV";
+  }
+});
+
+if (getSessionToken()) {
+  loadCvStatus();
+  loadProfiles();
+  refreshModelStatus();
+}
+setInterval(() => { if (getSessionToken()) refreshModelStatus(); }, 20000);
+
+const modeSelect = document.getElementById("modeSelect");
+const modelSelectLabel = document.getElementById("modelSelectLabel");
+const modelSelect = document.getElementById("modelSelect");
+const modelsCache = {};
+
+async function loadModelsFor(mode) {
+  const m = MODES[mode];
+  if (!m || !m.modelsEndpoint) {
+    return;
+  }
+  if (!modelsCache[mode]) {
+    try {
+      const resp = await fetch(m.modelsEndpoint);
+      const data = await resp.json();
+      modelsCache[mode] = data.models || [];
+    } catch (err) {
+      modelsCache[mode] = [];
+    }
+  }
+  modelSelect.innerHTML = "";
+  const autoOpt = document.createElement("option");
+  autoOpt.value = "";
+  autoOpt.textContent = "Automatico";
+  modelSelect.appendChild(autoOpt);
+  for (const model of modelsCache[mode]) {
+    const opt = document.createElement("option");
+    opt.value = model.id;
+    opt.textContent = `${model.architecture_label} - ${model.label}`;
+    modelSelect.appendChild(opt);
+  }
+  if (modelsCache[mode].length === 0) {
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.disabled = true;
+    noneOpt.textContent = "No hay modelos instalados";
+    modelSelect.appendChild(noneOpt);
+  }
+}
+
+function updateTopbarForMode(m) {
+  const showModelPicker = !!m.modelsEndpoint;
+  profileSelectLabel.style.display = showModelPicker ? "none" : "inline";
+  profileSelect.style.display = showModelPicker ? "none" : "inline-block";
+  verifyToggleLabel.style.display = showModelPicker ? "none" : "inline-flex";
+  modelSelectLabel.style.display = showModelPicker ? "inline" : "none";
+  modelSelect.style.display = showModelPicker ? "inline-block" : "none";
+}
+
+modeSelect.addEventListener("change", () => {
+  currentMode = modeSelect.value;
+  const m = MODES[currentMode];
+  modeDesc.textContent = m.desc;
+  promptEl.style.display = m.isVoice ? "none" : "block";
+  sendBtn.style.display = m.isVoice ? "none" : "block";
+  micBtn.style.display = m.isVoice ? "block" : "none";
+  attachBtn.style.display = m.allowAttach ? "flex" : "none";
+  topbar.classList.toggle("show", !!m.showTopbar);
+  updateTopbarForMode(m);
+  if (!m.allowAttach) {
+    visionImageBase64 = null;
+    visionImageInput.value = "";
+    attachPreviewRow.classList.remove("show");
+  }
+  loadModelsFor(currentMode);
+});
+modeDesc.textContent = MODES.chat.desc;
+topbar.classList.add("show");
+updateTopbarForMode(MODES.chat);
+attachBtn.style.display = "flex";
+
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+
+async function toggleRecording() {
+  if (!isRecording) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+      mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        sendVoice(new Blob(audioChunks, { type: "audio/webm" }));
+      };
+      mediaRecorder.start();
+      isRecording = true;
+      micBtn.textContent = "Detener y enviar";
+      micBtn.classList.add("recording");
+    } catch (err) {
+      alert("No se pudo acceder al microfono: " + err);
+    }
+  } else {
+    mediaRecorder.stop();
+    isRecording = false;
+    micBtn.textContent = "Grabar";
+    micBtn.classList.remove("recording");
+  }
+}
+
+async function sendVoice(blob) {
+  hideEmptyState();
+  addMessage("user").textContent = "(mensaje de voz)";
+  const bubble = addMessage("assistant", "voz");
+  const stopTyping = startTypingIndicator(bubble);
+
+  const form = new FormData();
+  form.append("audio", blob, "recording.webm");
+  const sid = getSessionId();
+  if (sid) form.append("session_id", sid);
+
+  try {
+    const resp = await fetch("/voice_chat", { method: "POST", body: form });
+    const data = await resp.json();
+    setSessionId(data.session_id);
+
+    const userMsgs = document.querySelectorAll(".msg.user .bubble");
+    if (userMsgs.length) userMsgs[userMsgs.length - 1].textContent = data.transcript || "(no se entendio)";
+
+    bubble.innerHTML = "";
+    const tagWrap = bubble.parentElement.querySelector(".tag");
+    if (tagWrap && data.agent_used) tagWrap.textContent = data.agent_used;
+    if (data.verifier_gated) bubble.classList.add("gated");
+
+    const textNode = document.createElement("div");
+    textNode.textContent = data.response;
+    bubble.appendChild(textNode);
+
+    if (data.file_url) {
+      const audio = document.createElement("audio");
+      audio.src = withKey(data.file_url);
+      audio.controls = true;
+      audio.autoplay = true;
+      bubble.appendChild(audio);
+    }
+  } catch (err) {
+    bubble.className = "bubble error";
+    bubble.textContent = "Error de conexion: " + err;
+  } finally {
+    stopTyping();
+  }
+}
+
+micBtn.addEventListener("click", toggleRecording);
+
+function startTypingIndicator(bubble) {
+  // el spinner solo no basta cuando un perfil tarda de verdad (p.ej.
+  // "Uncensored" en CPU) - un contador que sube deja claro que sigue vivo,
+  // no que se ha quedado colgado. A partir de 20s se añade una pista sobre
+  // por que puede estar tardando.
+  const startedAt = Date.now();
+  bubble.innerHTML =
+    '<div class="typing-wrap">' +
+    '<span class="typing-dots"><span></span><span></span><span></span></span>' +
+    '<span class="typing-elapsed"></span>' +
+    '</div>';
+  const tick = () => {
+    const wrap = bubble.querySelector(".typing-wrap");
+    if (!wrap) return false; // ya se reemplazo el contenido con la respuesta real
+    const secs = Math.floor((Date.now() - startedAt) / 1000);
+    const elapsedEl = wrap.querySelector(".typing-elapsed");
+    if (elapsedEl) elapsedEl.textContent = secs >= 2 ? `${secs}s` : "";
+    let hintEl = bubble.querySelector(".typing-hint");
+    if (secs >= 20 && !hintEl) {
+      hintEl = document.createElement("span");
+      hintEl.className = "typing-hint";
+      hintEl.textContent = "Algunos perfiles/modelos tardan bastante en CPU - sigue en marcha.";
+      bubble.appendChild(hintEl);
+    }
+    return true;
+  };
+  tick();
+  const interval = setInterval(() => { if (!tick()) clearInterval(interval); }, 1000);
+  return () => clearInterval(interval);
+}
+
+function addMessage(role, tag) {
+  hideEmptyState();
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const roleEl = document.createElement("div");
+  roleEl.className = "role";
+  roleEl.textContent = role === "user" ? "Tu" : "Chati";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  if (tag) {
+    const tagEl = document.createElement("span");
+    tagEl.className = "tag";
+    tagEl.textContent = tag;
+    wrap.appendChild(roleEl);
+    wrap.appendChild(tagEl);
+  } else {
+    wrap.appendChild(roleEl);
+  }
+  wrap.appendChild(bubble);
+  log.appendChild(wrap);
+  log.scrollTop = log.scrollHeight;
+  return bubble;
+}
+
+async function send() {
+  const text = promptEl.value.trim();
+  if (!text) return;
+  const mode = MODES[currentMode];
+
+  addMessage("user").textContent = text;
+  const attachedImageB64 = mode.allowAttach ? visionImageBase64 : null;
+  const attachedFile = mode.allowAttach ? visionImageInput.files[0] : null;
+  if (attachedImageB64) {
+    const img = document.createElement("img");
+    img.className = "attach";
+    img.src = attachPreviewImg.src;
+    log.lastElementChild.querySelector(".bubble").appendChild(img);
+  }
+  promptEl.value = "";
+  promptEl.style.height = "auto";
+  sendBtn.disabled = true;
+  visionImageBase64 = null;
+  visionImageInput.value = "";
+  attachPreviewRow.classList.remove("show");
+
+  // en modo imagen/video, una foto adjunta preserva esa cara (IPAdapter
+  // FaceID); sin foto, genera normal a partir solo del texto
+  const useFaceEndpoint = mode.faceEndpoint && attachedFile;
+  if (mode.agent === "image" || mode.agent === "video" || useFaceEndpoint) {
+    cancelBtn.style.display = "inline-block";
+  }
+
+  const bubble = addMessage("assistant", "generando...");
+  const stopTyping = startTypingIndicator(bubble);
+
+  try {
+    if (useFaceEndpoint) {
+      const form = new FormData();
+      form.append("prompt", text);
+      form.append("image", attachedFile);
+      if (currentMode === "image" && modelSelect.value) form.append("model_id", modelSelect.value);
+      const resp = await fetch(mode.faceEndpoint, { method: "POST", body: form });
+      const data = await resp.json();
+      renderResult(bubble, data);
+    } else {
+      const imgForVision = currentMode === "chat" ? attachedImageB64 : null;
+      await streamChatInto(bubble, mode.endpoint, text, mode.agent, imgForVision);
+    }
+  } catch (err) {
+    bubble.className = "bubble error";
+    bubble.textContent = "Error de conexion: " + err;
+  } finally {
+    stopTyping();
+    sendBtn.disabled = false;
+    cancelBtn.style.display = "none";
+  }
+}
+
+cancelBtn.addEventListener("click", async () => {
+  cancelBtn.disabled = true;
+  cancelBtn.textContent = "Cancelando...";
+  try {
+    await fetch("/cancel", { method: "POST" });
+  } catch (err) { /* si falla la llamada, el spinner seguira hasta que el propio timeout lo resuelva */ }
+  cancelBtn.disabled = false;
+  cancelBtn.textContent = "Cancelar generacion";
+});
+
+async function streamChatInto(bubble, endpoint, text, agentOverride, imageBase64) {
+  const body = { message: text, agent: agentOverride || null, session_id: getSessionId(), verify: verifyToggle.checked };
+  if (currentMode === "chat" && profileSelect.value) body.model_profile = profileSelect.value;
+  if (imageBase64) body.image_base64 = imageBase64;
+  if (currentMode === "image" && modelSelect.value) body.image_model = modelSelect.value;
+  if (currentMode === "video" && modelSelect.value) body.video_model = modelSelect.value;
+
+  const resp = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok || !resp.body) {
+    bubble.className = "bubble error";
+    bubble.textContent = "Error de conexion (" + resp.status + ")";
+    return;
+  }
+
+  // OJO: el fetch() se resuelve en cuanto llegan las cabeceras HTTP, mucho
+  // antes de que el servidor mande el primer trozo de texto de verdad (antes
+  // tiene que pasar el router, y a veces una ronda de decision de
+  // herramientas) - si se borra aqui el indicador de "escribiendo", el
+  // cuadro se queda vacio y sin animacion durante ese hueco, pareciendo
+  // colgado. Se deja el indicador tal cual hasta que llegue contenido real.
+  let textNode = null;
+  let liveText = "";
+  let finalData = null;
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let evt;
+      try { evt = JSON.parse(line); } catch (e) { continue; }
+      if (evt.type === "start") {
+        setSessionId(evt.session_id);
+        const tagWrap = bubble.parentElement.querySelector(".tag");
+        if (tagWrap) tagWrap.textContent = evt.agent_used;
+        if (evt.agent_used === "image" || evt.agent_used === "video") {
+          cancelBtn.style.display = "inline-block";
+        }
+      } else if (evt.type === "chunk") {
+        if (!textNode) {
+          bubble.innerHTML = "";
+          textNode = document.createElement("div");
+          bubble.appendChild(textNode);
+        }
+        liveText += evt.text;
+        renderMarkdownInto(textNode, liveText, { highlight: false });
+        log.scrollTop = log.scrollHeight;
+      } else if (evt.type === "done") {
+        finalData = evt;
+      }
+    }
+  }
+
+  if (!textNode) {
+    bubble.innerHTML = "";
+    textNode = document.createElement("div");
+    bubble.appendChild(textNode);
+  }
+
+  if (finalData) {
+    setSessionId(finalData.session_id);
+    refreshPlan();
+    refreshModelStatus();
+    const shown = (!liveText || finalData.corrected) ? finalData.response : liveText;
+    renderMarkdownInto(textNode, shown, { highlight: true });
+    if (finalData.verifier_gated) bubble.classList.add("gated");
+    if (finalData.verifier_reason) {
+      const reasonNode = document.createElement("div");
+      reasonNode.style.fontSize = "12px";
+      reasonNode.style.color = "var(--warn)";
+      reasonNode.style.marginTop = "6px";
+      reasonNode.textContent = "Verificador: " + finalData.verifier_reason;
+      bubble.appendChild(reasonNode);
+    }
+    if (finalData.file_url) {
+      appendMediaWithActions(bubble, finalData.file_url, finalData.file_path);
+    }
+  }
+}
+
+function renderResult(bubble, data) {
+  setSessionId(data.session_id);
+  refreshPlan();
+  bubble.innerHTML = "";
+  const tagWrap = bubble.parentElement.querySelector(".tag");
+  if (tagWrap) tagWrap.textContent = data.agent_used;
+
+  if (data.verifier_gated) bubble.classList.add("gated");
+
+  const textNode = document.createElement("div");
+  renderMarkdownInto(textNode, data.response, { highlight: true });
+  bubble.appendChild(textNode);
+
+  if (data.verifier_reason) {
+    const reasonNode = document.createElement("div");
+    reasonNode.style.fontSize = "12px";
+    reasonNode.style.color = "var(--warn)";
+    reasonNode.style.marginTop = "6px";
+    reasonNode.textContent = "Verificador: " + data.verifier_reason;
+    bubble.appendChild(reasonNode);
+  }
+
+  if (data.file_url) {
+    appendMediaWithActions(bubble, data.file_url, data.file_path);
+  }
+}
+
+function appendMediaWithActions(bubble, fileUrl, filePath) {
+  if (fileUrl.endsWith(".mp4")) {
+    const vid = document.createElement("video");
+    vid.src = withKey(fileUrl);
+    vid.controls = true;
+    vid.autoplay = true;
+    vid.loop = true;
+    bubble.appendChild(vid);
+    return;
+  }
+
+  const img = document.createElement("img");
+  img.className = "attach";
+  img.src = withKey(fileUrl);
+  bubble.appendChild(img);
+
+  if (!filePath) return;  // sin ruta del servidor no se puede reutilizar (p.ej. audio no aplica aqui)
+
+  const actionsRow = document.createElement("div");
+  actionsRow.style.cssText = "margin-top:8px; display:flex; gap:6px;";
+
+  const upscaleBtn = document.createElement("button");
+  upscaleBtn.textContent = "Escalar x4";
+  upscaleBtn.style.cssText = "font-size:12px; padding:4px 10px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;";
+  upscaleBtn.addEventListener("click", async () => {
+    upscaleBtn.disabled = true;
+    upscaleBtn.textContent = "Escalando...";
+    const form = new FormData();
+    form.append("file_path", filePath);
+    try {
+      const resp = await fetch("/image/upscale", { method: "POST", body: form });
+      const data = await resp.json();
+      if (data.file_url) {
+        const resultBubble = addMessage("assistant", "image_upscale");
+        resultBubble.textContent = data.response;
+        appendMediaWithActions(resultBubble, data.file_url, data.file_path);
+      } else {
+        alert(data.response || "Fallo al escalar.");
+      }
+    } finally {
+      upscaleBtn.disabled = false;
+      upscaleBtn.textContent = "Escalar x4";
+    }
+  });
+
+  const editBtn = document.createElement("button");
+  editBtn.textContent = "Editar (repintar zona)";
+  editBtn.style.cssText = upscaleBtn.style.cssText;
+  editBtn.addEventListener("click", () => openInpaintEditor(fileUrl, filePath));
+
+  actionsRow.appendChild(upscaleBtn);
+  actionsRow.appendChild(editBtn);
+  bubble.appendChild(actionsRow);
+}
+
+// --- Sidebar: conversaciones (siempre visibles, tipo ChatGPT) ---
+const newChatBtn = document.getElementById("newChatBtn");
+const convList = document.getElementById("convList");
+
+function formatRelativeTime(iso) {
+  if (!iso) return "";
+  const then = new Date(iso.includes("T") ? iso : iso.replace(" ", "T"));
+  if (isNaN(then)) return iso;
+  const diffMin = Math.round((Date.now() - then.getTime()) / 60000);
+  if (diffMin < 1) return "ahora mismo";
+  if (diffMin < 60) return `hace ${diffMin} min`;
+  const diffH = Math.round(diffMin / 60);
+  if (diffH < 24) return `hace ${diffH} h`;
+  const diffD = Math.round(diffH / 24);
+  if (diffD < 7) return `hace ${diffD} d`;
+  return then.toLocaleDateString();
+}
+
+async function loadConversations() {
+  let sessions;
+  try {
+    const resp = await fetch("/sessions");
+    sessions = await resp.json();
+  } catch (err) { return; }
+
+  convList.innerHTML = "";
+  if (!sessions.length) {
+    convList.innerHTML = '<div id="convEmpty">Sin conversaciones todavia. Escribe algo para empezar una.</div>';
+    return;
+  }
+  const currentSid = getSessionId();
+  sessions.forEach((s) => {
+    const row = document.createElement("div");
+    row.className = "conv-row" + (s.session_id === currentSid ? " current" : "");
+    const defaultTitle = `Conversacion · ${s.messages} mensajes`;
+    const titleEl = document.createElement("div");
+    titleEl.className = "conv-title";
+    titleEl.textContent = s.title || defaultTitle;
+    const metaEl = document.createElement("div");
+    metaEl.className = "conv-meta";
+    metaEl.textContent = formatRelativeTime(s.last_used);
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "conv-rename";
+    renameBtn.title = "Renombrar";
+    renameBtn.textContent = "✎";
+    const delBtn = document.createElement("button");
+    delBtn.className = "conv-del";
+    delBtn.title = "Borrar conversacion";
+    delBtn.textContent = "×";
+    row.appendChild(titleEl);
+    row.appendChild(metaEl);
+    row.appendChild(renameBtn);
+    row.appendChild(delBtn);
+
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".conv-del") || e.target.closest(".conv-rename")) return;
+      loadConversationIntoLog(s.session_id);
+    });
+
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = s.title || "";
+      input.placeholder = defaultTitle;
+      input.maxLength = 80;
+      input.className = "conv-rename-input";
+      row.replaceChild(input, titleEl);
+      input.focus();
+      input.select();
+
+      const finishRename = async (save) => {
+        const newTitle = input.value.trim();
+        if (save && newTitle && newTitle !== s.title) {
+          const form = new FormData();
+          form.append("title", newTitle);
+          await fetch(`/sessions/${s.session_id}/title`, { method: "PUT", body: form });
+        }
+        await loadConversations();
+      };
+      input.addEventListener("keydown", (ke) => {
+        if (ke.key === "Enter") finishRename(true);
+        if (ke.key === "Escape") finishRename(false);
+      });
+      input.addEventListener("blur", () => finishRename(true));
+    });
+
+    delBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("¿Borrar toda esta conversacion? No se puede deshacer.")) return;
+      await fetch(`/sessions/${s.session_id}`, { method: "DELETE" });
+      if (s.session_id === currentSid) {
+        localStorage.removeItem("ia_session_id");
+        startNewConversation(false);
+      }
+      await loadConversations();
+    });
+    convList.appendChild(row);
+  });
+}
+
+function startNewConversation(clearStorage = true) {
+  if (clearStorage) localStorage.removeItem("ia_session_id");
+  log.innerHTML = "";
+  log.appendChild(emptyState);
+  emptyState.style.display = "block";
+  planPanel.style.display = "none";
+  document.querySelectorAll(".conv-row").forEach(r => r.classList.remove("current"));
+}
+newChatBtn.addEventListener("click", () => startNewConversation());
+
+function addLoadedMessage(role, content, agent, messageId, sessionId) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const roleEl = document.createElement("div");
+  roleEl.className = "role";
+  roleEl.textContent = role === "user" ? "Tu" : ("Chati" + (agent ? ` (${agent})` : ""));
+
+  const actions = document.createElement("span");
+  actions.className = "msg-actions";
+  const editBtn = document.createElement("button");
+  editBtn.textContent = "✎";
+  editBtn.title = "Editar";
+  const delBtn = document.createElement("button");
+  delBtn.textContent = "🗑";
+  delBtn.title = "Borrar mensaje";
+  actions.appendChild(editBtn);
+  actions.appendChild(delBtn);
+  roleEl.appendChild(actions);
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  if (role === "assistant") {
+    renderMarkdownInto(bubble, content, { highlight: true });
+  } else {
+    bubble.textContent = content;
+  }
+
+  wrap.appendChild(roleEl);
+  wrap.appendChild(bubble);
+  log.appendChild(wrap);
+
+  editBtn.addEventListener("click", () => {
+    const textarea = document.createElement("textarea");
+    textarea.value = content;
+    textarea.style.cssText = "width:100%; min-height:60px; background:var(--panel-3); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:8px; font-family:inherit; font-size:13.5px; resize:vertical;";
+    const saveRow = document.createElement("div");
+    saveRow.style.cssText = "margin-top:6px; display:flex; gap:6px;";
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "Guardar";
+    saveBtn.style.cssText = "font-size:12px; padding:4px 10px; background:var(--accent); color:white; border:none; border-radius:6px; cursor:pointer;";
+    const cancelEditBtn = document.createElement("button");
+    cancelEditBtn.textContent = "Cancelar";
+    cancelEditBtn.style.cssText = "font-size:12px; padding:4px 10px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;";
+    saveRow.appendChild(saveBtn);
+    saveRow.appendChild(cancelEditBtn);
+    bubble.innerHTML = "";
+    bubble.appendChild(textarea);
+    bubble.appendChild(saveRow);
+    textarea.focus();
+
+    cancelEditBtn.addEventListener("click", () => loadConversationIntoLog(sessionId));
+    saveBtn.addEventListener("click", async () => {
+      const form = new FormData();
+      form.append("content", textarea.value);
+      await fetch(`/sessions/${sessionId}/messages/${messageId}`, { method: "PUT", body: form });
+      await loadConversationIntoLog(sessionId);
+    });
+  });
+
+  delBtn.addEventListener("click", async () => {
+    if (!confirm("¿Borrar este mensaje?")) return;
+    await fetch(`/sessions/${sessionId}/messages/${messageId}`, { method: "DELETE" });
+    wrap.remove();
+  });
+
+  return bubble;
+}
+
+async function loadConversationIntoLog(sessionId) {
+  let messages;
+  try {
+    const resp = await fetch(`/sessions/${sessionId}`);
+    messages = await resp.json();
+  } catch (err) { return; }
+
+  setSessionId(sessionId);
+  localStorage.setItem("ia_session_id", sessionId);
+  log.innerHTML = "";
+  messages.forEach(m => addLoadedMessage(m.role, m.content, m.agent, m.id, sessionId));
+  log.scrollTop = log.scrollHeight;
+  planPanel.style.display = "none";
+  document.querySelectorAll(".conv-row").forEach(r => r.classList.remove("current"));
+  document.querySelectorAll(".conv-row").forEach(r => {
+    if (r.querySelector(".conv-title") && r.contains(document.activeElement)) return;
+  });
+  await loadConversations();
+}
+
+const knowledgeBtn = document.getElementById("knowledgeBtn");
+const knowledgeModal = document.getElementById("knowledgeModal");
+const closeKnowledgeBtn = document.getElementById("closeKnowledgeBtn");
+const knowledgeFileInput = document.getElementById("knowledgeFileInput");
+const knowledgeListBox = document.getElementById("knowledgeListBox");
+
+knowledgeBtn.addEventListener("click", async () => {
+  knowledgeModal.style.display = "block";
+  await loadKnowledgeList();
+});
+closeKnowledgeBtn.addEventListener("click", () => { knowledgeModal.style.display = "none"; });
+knowledgeModal.addEventListener("click", (e) => { if (e.target === knowledgeModal) knowledgeModal.style.display = "none"; });
+
+async function loadKnowledgeList() {
+  const resp = await fetch("/knowledge");
+  const docs = await resp.json();
+  knowledgeListBox.innerHTML = "";
+  if (!docs.length) {
+    knowledgeListBox.innerHTML = '<div style="color:var(--muted); font-size:12px;">No hay documentos todavia.</div>';
+    return;
+  }
+  docs.forEach(d => {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border); font-size:13px;";
+    row.innerHTML = `<div>${d.filename} <span style="color:var(--muted); font-size:11px;">(${d.chunks} fragmentos)</span></div>`;
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "Borrar";
+    delBtn.style.cssText = "font-size:12px; padding:4px 10px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;";
+    delBtn.addEventListener("click", async () => {
+      await fetch(`/knowledge/${encodeURIComponent(d.filename)}`, { method: "DELETE" });
+      await loadKnowledgeList();
+    });
+    row.appendChild(delBtn);
+    knowledgeListBox.appendChild(row);
+  });
+}
+
+knowledgeFileInput.addEventListener("change", async () => {
+  if (!knowledgeFileInput.files[0]) return;
+  const form = new FormData();
+  form.append("file", knowledgeFileInput.files[0]);
+  knowledgeListBox.innerHTML = '<div style="color:var(--muted); font-size:12px;"><span class="spinner"></span> procesando documento...</div>';
+  try {
+    await fetch("/knowledge", { method: "POST", body: form });
+  } catch (err) { /* se refleja al recargar la lista */ }
+  knowledgeFileInput.value = "";
+  await loadKnowledgeList();
+});
+
+// --- Opciones (menu que agrupa Metricas/Modelos/Codigo/Perfil) ---
+const optionsBtn = document.getElementById("optionsBtn");
+const optionsModal = document.getElementById("optionsModal");
+const closeOptionsBtn = document.getElementById("closeOptionsBtn");
+
+optionsBtn.addEventListener("click", () => { optionsModal.style.display = "block"; });
+closeOptionsBtn.addEventListener("click", () => { optionsModal.style.display = "none"; });
+optionsModal.addEventListener("click", (e) => { if (e.target === optionsModal) optionsModal.style.display = "none"; });
+
+// --- Memoria (contexto manual + lo que ya se indexa solo de las conversaciones) ---
+const optMemoryBtn = document.getElementById("optMemoryBtn");
+const memoryModal = document.getElementById("memoryModal");
+const closeMemoryBtn = document.getElementById("closeMemoryBtn");
+const memoryListBox = document.getElementById("memoryListBox");
+const memoryNoteInput = document.getElementById("memoryNoteInput");
+const addMemoryNoteBtn = document.getElementById("addMemoryNoteBtn");
+
+const MEMORY_TYPE_LABEL = { note: "Nota tuya", conversation: "De una conversacion" };
+
+optMemoryBtn.addEventListener("click", async () => {
+  optionsModal.style.display = "none";
+  memoryModal.style.display = "block";
+  await loadMemoryEntries();
+});
+closeMemoryBtn.addEventListener("click", () => { memoryModal.style.display = "none"; });
+memoryModal.addEventListener("click", (e) => { if (e.target === memoryModal) memoryModal.style.display = "none"; });
+
+async function loadMemoryEntries() {
+  memoryListBox.innerHTML = '<span class="spinner"></span> cargando...';
+  const resp = await fetch("/memory/entries");
+  const entries = await resp.json();
+
+  if (!entries.length) {
+    memoryListBox.innerHTML = '<div style="color:var(--muted); font-size:12px;">Todavia no hay nada guardado en la memoria a largo plazo.</div>';
+    return;
+  }
+
+  memoryListBox.innerHTML = "";
+  entries.forEach((entry) => {
+    const row = document.createElement("div");
+    row.style.cssText = "padding:10px 0; border-top:1px solid var(--border);";
+
+    const label = document.createElement("div");
+    label.style.cssText = "font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;";
+    label.textContent = MEMORY_TYPE_LABEL[entry.type] || entry.type;
+    row.appendChild(label);
+
+    const textEl = document.createElement("div");
+    textEl.style.cssText = "font-size:13px; white-space:pre-wrap; margin-bottom:6px;";
+    textEl.textContent = entry.text;
+    row.appendChild(textEl);
+
+    if (entry.type === "note") {
+      const btnRow = document.createElement("div");
+      btnRow.style.cssText = "display:flex; gap:6px;";
+
+      const editBtn = document.createElement("button");
+      editBtn.textContent = "Editar";
+      editBtn.style.cssText = "font-size:11.5px; padding:3px 9px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;";
+      editBtn.addEventListener("click", () => {
+        const textarea = document.createElement("textarea");
+        textarea.value = entry.text;
+        textarea.rows = 2;
+        textarea.style.cssText = "width:100%; background:var(--panel-3); color:var(--text); border:1px solid var(--accent); border-radius:6px; padding:8px; font-family:inherit; resize:vertical; box-sizing:border-box; margin-bottom:6px;";
+        row.replaceChild(textarea, textEl);
+        textarea.focus();
+        editBtn.textContent = "Guardar";
+        editBtn.addEventListener("click", async () => {
+          const form = new FormData();
+          form.append("text", textarea.value.trim());
+          await fetch(`/memory/entries/${encodeURIComponent(entry.id)}`, { method: "PUT", body: form });
+          await loadMemoryEntries();
+        }, { once: true });
+      }, { once: true });
+
+      const delBtn = document.createElement("button");
+      delBtn.textContent = "Borrar";
+      delBtn.style.cssText = editBtn.style.cssText;
+      delBtn.addEventListener("click", async () => {
+        if (!confirm("¿Borrar esta nota de la memoria?")) return;
+        await fetch(`/memory/entries/${encodeURIComponent(entry.id)}`, { method: "DELETE" });
+        await loadMemoryEntries();
+      });
+
+      btnRow.appendChild(editBtn);
+      btnRow.appendChild(delBtn);
+      row.appendChild(btnRow);
+    }
+
+    memoryListBox.appendChild(row);
+  });
+}
+
+addMemoryNoteBtn.addEventListener("click", async () => {
+  const text = memoryNoteInput.value.trim();
+  if (!text) return;
+  addMemoryNoteBtn.disabled = true;
+  try {
+    const form = new FormData();
+    form.append("text", text);
+    await fetch("/memory/entries", { method: "POST", body: form });
+    memoryNoteInput.value = "";
+    await loadMemoryEntries();
+  } finally {
+    addMemoryNoteBtn.disabled = false;
+  }
+});
+
+// --- Personas (crear LoRA a partir de fotos, fase 1 solo SDXL - ver
+// ROADMAP.md y pendiente/pendiente.md) ---
+const optPersonasBtn = document.getElementById("optPersonasBtn");
+const personasModal = document.getElementById("personasModal");
+const closePersonasBtn = document.getElementById("closePersonasBtn");
+const personasListBox = document.getElementById("personasListBox");
+const personaNameInput = document.getElementById("personaNameInput");
+const personaPhotosInput = document.getElementById("personaPhotosInput");
+const personaPhotosCount = document.getElementById("personaPhotosCount");
+const createPersonaBtn = document.getElementById("createPersonaBtn");
+let personasPollTimer = null;
+
+const PERSONA_STATUS_LABEL = {
+  sin_empezar: "sin empezar", training: "entrenando...", listo: "lista", error: "error",
+};
+
+optPersonasBtn.addEventListener("click", async () => {
+  optionsModal.style.display = "none";
+  personasModal.style.display = "block";
+  await loadPersonas();
+  if (personasPollTimer) clearInterval(personasPollTimer);
+  personasPollTimer = setInterval(() => {
+    if (personasModal.style.display === "block") loadPersonas();
+  }, 15000);
+});
+closePersonasBtn.addEventListener("click", () => {
+  personasModal.style.display = "none";
+  if (personasPollTimer) { clearInterval(personasPollTimer); personasPollTimer = null; }
+});
+personasModal.addEventListener("click", (e) => {
+  if (e.target === personasModal) closePersonasBtn.click();
+});
+
+personaPhotosInput.addEventListener("change", () => {
+  const n = personaPhotosInput.files.length;
+  personaPhotosCount.textContent = n ? `${n} foto${n === 1 ? "" : "s"} seleccionada${n === 1 ? "" : "s"}` : "";
+});
+
+async function loadPersonas() {
+  const resp = await fetch("/personas");
+  const data = await resp.json();
+  const personas = data.personas || [];
+  if (!personas.length) {
+    personasListBox.innerHTML = '<div style="color:var(--muted);">Todavia no has creado ninguna persona.</div>';
+    return;
+  }
+  personasListBox.innerHTML = personas.map((p) => {
+    const st = p.sdxl || { status: "sin_empezar" };
+    const label = PERSONA_STATUS_LABEL[st.status] || st.status;
+    const color = st.status === "listo" ? "var(--accent, #4caf50)" : st.status === "error" ? "var(--error, #e05252)" : "var(--muted)";
+    const errorLine = st.status === "error" && st.error
+      ? `<div style="font-size:11.5px; color:var(--error, #e05252); margin-top:2px;">${st.error}</div>` : "";
+    return `<div style="padding:8px 0; border-top:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong>${p.name}</strong>
+        <span style="font-size:11.5px; color:${color};">SDXL: ${label}</span>
+      </div>
+      ${errorLine}
+    </div>`;
+  }).join("");
+}
+
+createPersonaBtn.addEventListener("click", async () => {
+  const name = personaNameInput.value.trim();
+  const files = personaPhotosInput.files;
+  if (!name) { alert("Falta el nombre de la persona."); return; }
+  if (files.length < 3) { alert("Hacen falta al menos 3 fotos."); return; }
+
+  createPersonaBtn.disabled = true;
+  createPersonaBtn.textContent = "Creando...";
+  try {
+    const form = new FormData();
+    form.append("name", name);
+    for (const file of files) form.append("photos", file);
+    const resp = await fetch("/personas", { method: "POST", body: form });
+    const result = await resp.json();
+    if (!resp.ok) {
+      alert(result.detail || "No se pudo crear la persona.");
+      return;
+    }
+    personaNameInput.value = "";
+    personaPhotosInput.value = "";
+    personaPhotosCount.textContent = "";
+    await loadPersonas();
+  } catch (err) {
+    alert("Error de conexion al crear la persona.");
+  } finally {
+    createPersonaBtn.disabled = false;
+    createPersonaBtn.textContent = "Crear persona";
+  }
+});
+
+const metricsBtn = document.getElementById("optMetricsBtn");
+const metricsModal = document.getElementById("metricsModal");
+const closeMetricsBtn = document.getElementById("closeMetricsBtn");
+const metricsBox = document.getElementById("metricsBox");
+
+metricsBtn.addEventListener("click", async () => {
+  optionsModal.style.display = "none";
+  metricsModal.style.display = "block";
+  await loadMetrics();
+});
+closeMetricsBtn.addEventListener("click", () => { metricsModal.style.display = "none"; });
+metricsModal.addEventListener("click", (e) => { if (e.target === metricsModal) metricsModal.style.display = "none"; });
+
+async function loadMetrics() {
+  metricsBox.innerHTML = '<span class="spinner"></span> cargando...';
+  const resp = await fetch("/metrics/summary");
+  const data = await resp.json();
+
+  if (!data.total_requests) {
+    metricsBox.innerHTML = '<div style="color:var(--muted);">Todavia no hay peticiones registradas.</div>';
+    return;
+  }
+
+  let html = `<div style="margin-bottom:12px; color:var(--muted);">${data.window} · ${data.total_requests} peticiones · ${data.errors} errores · ${data.verifier_gated} bloqueadas por el verificador</div>`;
+  html += '<table style="width:100%; border-collapse:collapse;">';
+  html += '<tr style="text-align:left; color:var(--muted); font-size:11px;"><th style="padding:6px 0;">Agente</th><th>Peticiones</th><th>Latencia media</th><th>Errores</th><th>Bloqueadas</th></tr>';
+  for (const [agent, s] of Object.entries(data.by_agent)) {
+    html += `<tr style="border-top:1px solid var(--border);">
+      <td style="padding:6px 0;">${agent}</td>
+      <td>${s.count}</td>
+      <td>${(s.avg_latency_ms / 1000).toFixed(1)}s</td>
+      <td>${s.errors}</td>
+      <td>${s.gated}</td>
+    </tr>`;
+  }
+  html += '</table>';
+  metricsBox.innerHTML = html;
+}
+
+const modelUpdatesBtn = document.getElementById("optModelUpdatesBtn");
+const modelUpdatesModal = document.getElementById("modelUpdatesModal");
+const closeModelUpdatesBtn = document.getElementById("closeModelUpdatesBtn");
+const checkModelUpdatesBtn = document.getElementById("checkModelUpdatesBtn");
+const modelUpdatesBox = document.getElementById("modelUpdatesBox");
+const modelStatusBox = document.getElementById("modelStatusBox");
+const imageModelsBox = document.getElementById("imageModelsBox");
+const videoModelsBox = document.getElementById("videoModelsBox");
+
+modelUpdatesBtn.addEventListener("click", async () => {
+  optionsModal.style.display = "none";
+  modelUpdatesModal.style.display = "block";
+  await loadModelUpdates(false);
+  await loadModelStatusBox();
+  await loadImageVideoModelsBox();
+});
+closeModelUpdatesBtn.addEventListener("click", () => { modelUpdatesModal.style.display = "none"; });
+modelUpdatesModal.addEventListener("click", (e) => { if (e.target === modelUpdatesModal) modelUpdatesModal.style.display = "none"; });
+checkModelUpdatesBtn.addEventListener("click", () => loadModelUpdates(true));
+
+async function loadModelStatusBox() {
+  modelStatusBox.textContent = "Cargando estado...";
+  try {
+    const resp = await fetch("/models/status");
+    const data = await resp.json();
+    const models = data.models || [];
+    modelStatusBox.innerHTML = models.length
+      ? "Cargados ahora mismo: " + models.map(m => `<strong style="color:var(--text);">${m.name}</strong>`).join(", ")
+      : "Ningun modelo cargado en memoria ahora mismo.";
+  } catch (err) {
+    modelStatusBox.textContent = "No se pudo consultar el estado de Ollama.";
+  }
+}
+
+function _modelStatusLabel(u) {
+  return u.local_only
+    ? `<span style="color:var(--muted);">variante local (uso interno, sin version en el registro)</span>`
+    : u.error
+      ? `<span style="color:var(--muted);">no se pudo comprobar (${u.error})</span>`
+      : u.update_available
+        ? `<span style="color:var(--accent, #4caf50);">actualizacion disponible</span>`
+        : `<span style="color:var(--muted);">al dia</span>`;
+}
+
+function _modelRowHtml(u, roleText) {
+  const updateBtn = u.update_available
+    ? `<button data-model="${u.model}" class="updateModelBtn" style="font-size:12px; padding:4px 10px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Actualizar</button>`
+    : "";
+  const deleteBtn = !roleText
+    ? `<button data-model="${u.model}" class="deleteModelBtn" style="font-size:12px; padding:4px 10px; background:var(--panel-2); color:var(--error, #e05252); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Borrar</button>`
+    : "";
+  const role = roleText
+    ? `<div style="font-size:11.5px; color:var(--accent); margin-top:2px;">${roleText}</div>`
+    : "";
+  return `<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-top:1px solid var(--border);">
+    <div><strong>${u.model}</strong>${role}<div style="margin-top:2px;">${_modelStatusLabel(u)}</div></div>
+    <div style="display:flex; gap:6px; flex-shrink:0;">${updateBtn}${deleteBtn}</div>
+  </div>`;
+}
+
+async function loadModelUpdates(force) {
+  modelUpdatesBox.innerHTML = '<span class="spinner"></span> comprobando...';
+  const [updatesResp, rolesResp] = await Promise.all([
+    fetch(`/models/updates${force ? "?force=true" : ""}`),
+    fetch("/models/roles"),
+  ]);
+  const data = await updatesResp.json();
+  const roles = await rolesResp.json().catch(() => ({}));
+
+  if (!data.updates || !data.updates.length) {
+    modelUpdatesBox.innerHTML = '<div style="color:var(--muted);">No se encontraron modelos instalados de la biblioteca oficial de Ollama.</div>';
+    return;
+  }
+
+  const inUse = data.updates.filter((u) => roles[u.model]);
+  const unused = data.updates.filter((u) => !roles[u.model]);
+
+  let html = `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; padding:4px 0;">En uso (${inUse.length})</div>`;
+  html += inUse.map((u) => _modelRowHtml(u, roles[u.model])).join("");
+  if (unused.length) {
+    html += `<div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; padding:14px 0 4px;">Sin usar - candidatos a borrar (${unused.length})</div>`;
+    html += unused.map((u) => _modelRowHtml(u, null)).join("");
+  }
+  modelUpdatesBox.innerHTML = html;
+
+  modelUpdatesBox.querySelectorAll(".updateModelBtn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const model = btn.dataset.model;
+      if (!confirm(`Se va a descargar la ultima version de ${model}. Puede tardar varios minutos y ocupar varios GB. ¿Continuar?`)) return;
+      btn.disabled = true;
+      btn.textContent = "Descargando...";
+      const resp = await fetch("/models/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `model=${encodeURIComponent(model)}`,
+      });
+      const data = await resp.json();
+      alert(data.message || data.detail || "Descarga iniciada.");
+    });
+  });
+
+  modelUpdatesBox.querySelectorAll(".deleteModelBtn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const model = btn.dataset.model;
+      if (!confirm(`Se va a borrar '${model}' de este ordenador para liberar disco. Para volver a usarlo habria que descargarlo de nuevo. ¿Continuar?`)) return;
+      btn.disabled = true;
+      btn.textContent = "Borrando...";
+      try {
+        const resp = await fetch(`/models/text/${encodeURIComponent(model)}`, { method: "DELETE" });
+        const result = await resp.json();
+        if (!resp.ok) {
+          alert(result.detail || "No se pudo borrar.");
+          btn.disabled = false;
+          btn.textContent = "Borrar";
+          return;
+        }
+        await loadModelUpdates(true);
+      } catch (err) {
+        alert("Error de conexion al borrar.");
+        btn.disabled = false;
+        btn.textContent = "Borrar";
+      }
+    });
+  });
+}
+
+function renderModelArchSection(container, data, kindLabel, endpointKind) {
+  const archs = data.architectures || [];
+  const models = data.models || [];
+  if (!archs.length) {
+    container.innerHTML = '<div style="color:var(--muted); padding-top:8px;">Nada soportado todavia.</div>';
+    return;
+  }
+  let html = data.base_folder
+    ? `<div style="font-size:12px; color:var(--muted); padding-bottom:10px;">Si quieres añadir modelos nuevos de ${kindLabel}, copia el archivo dentro de <code class="model-arch-folder" style="display:inline;">${data.base_folder}\\subcarpeta-de-tipo\\nombre-del-modelo</code> (subcarpetas abajo).</div>`
+    : "";
+  for (const arch of archs) {
+    const installedForArch = models.filter((m) => m.architecture === arch.id);
+    const installedHtml = installedForArch.length
+      ? installedForArch.map((m) => `<div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+          <span>${m.label}</span>
+          <button class="deleteArchModelBtn" data-model-id="${m.id}" data-label="${m.label}" style="font-size:10.5px; padding:2px 6px; background:var(--panel-2); color:var(--error, #e05252); border:1px solid var(--border); border-radius:5px; cursor:pointer;">Borrar</button>
+        </div>`).join("")
+      : `<div style="color:var(--muted); margin-top:4px;">(ninguno instalado)</div>`;
+    html += `<div class="model-arch-row">
+      <div><strong>${arch.label}:</strong></div>
+      ${installedHtml}
+      <div style="display:flex; gap:6px; align-items:center; margin-top:8px;">
+        <code class="model-arch-folder">${arch.folder}</code>
+        <button class="copyFolderBtn" data-folder="${arch.folder}">Copiar</button>
+      </div>
+    </div>`;
+  }
+  container.innerHTML = html;
+
+  container.querySelectorAll(".copyFolderBtn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.folder);
+        btn.textContent = "Copiado";
+        setTimeout(() => { btn.textContent = "Copiar ruta"; }, 1500);
+      } catch (err) {
+        // portapapeles no disponible (p.ej. sin HTTPS) - la ruta ya esta visible para seleccionar a mano
+      }
+    });
+  });
+
+  container.querySelectorAll(".deleteArchModelBtn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const modelId = btn.dataset.modelId;
+      const label = btn.dataset.label;
+      if (!confirm(`Se va a borrar el archivo de '${label}' de este ordenador. Para volver a usarlo habria que descargarlo de nuevo. ¿Continuar?`)) return;
+      btn.disabled = true;
+      btn.textContent = "...";
+      try {
+        const resp = await fetch(`/models/${endpointKind}/${encodeURIComponent(modelId)}`, { method: "DELETE" });
+        const result = await resp.json();
+        if (!resp.ok) {
+          alert(result.detail || "No se pudo borrar.");
+          btn.disabled = false;
+          btn.textContent = "Borrar";
+          return;
+        }
+        await loadImageVideoModelsBox();
+      } catch (err) {
+        alert("Error de conexion al borrar.");
+        btn.disabled = false;
+        btn.textContent = "Borrar";
+      }
+    });
+  });
+}
+
+async function loadImageVideoModelsBox() {
+  imageModelsBox.innerHTML = '<span class="spinner"></span> cargando...';
+  videoModelsBox.innerHTML = '<span class="spinner"></span> cargando...';
+  try {
+    const [imgResp, vidResp] = await Promise.all([fetch("/models/image"), fetch("/models/video")]);
+    renderModelArchSection(imageModelsBox, await imgResp.json(), "imagen", "image");
+    renderModelArchSection(videoModelsBox, await vidResp.json(), "video", "video");
+  } catch (err) {
+    imageModelsBox.textContent = "No se pudo cargar.";
+    videoModelsBox.textContent = "No se pudo cargar.";
+  }
+}
+
+// --- Editor de inpainting (pintar mascara sobre una imagen ya generada) ---
+const inpaintModal = document.getElementById("inpaintModal");
+const closeInpaintBtn = document.getElementById("closeInpaintBtn");
+const inpaintBaseImg = document.getElementById("inpaintBaseImg");
+const inpaintCanvas = document.getElementById("inpaintCanvas");
+const inpaintCtx = inpaintCanvas.getContext("2d");
+const brushSize = document.getElementById("brushSize");
+const clearMaskBtn = document.getElementById("clearMaskBtn");
+const inpaintPrompt = document.getElementById("inpaintPrompt");
+const submitInpaintBtn = document.getElementById("submitInpaintBtn");
+
+let inpaintFilePath = null;
+let isPainting = false;
+
+function openInpaintEditor(fileUrl, filePath) {
+  inpaintFilePath = filePath;
+  inpaintPrompt.value = "";
+  inpaintModal.style.display = "block";
+
+  inpaintBaseImg.onload = () => {
+    // el canvas usa el tamaño real de la imagen (no el tamaño mostrado en pantalla)
+    // para que la mascara sea precisa aunque la imagen se vea escalada en el modal
+    inpaintCanvas.width = inpaintBaseImg.naturalWidth;
+    inpaintCanvas.height = inpaintBaseImg.naturalHeight;
+    inpaintCanvas.style.width = inpaintBaseImg.clientWidth + "px";
+    inpaintCanvas.style.height = inpaintBaseImg.clientHeight + "px";
+    inpaintCtx.clearRect(0, 0, inpaintCanvas.width, inpaintCanvas.height);
+  };
+  inpaintBaseImg.src = withKey(fileUrl);
+}
+
+closeInpaintBtn.addEventListener("click", () => { inpaintModal.style.display = "none"; });
+clearMaskBtn.addEventListener("click", () => {
+  inpaintCtx.clearRect(0, 0, inpaintCanvas.width, inpaintCanvas.height);
+});
+
+function canvasCoordsFromEvent(e) {
+  const rect = inpaintCanvas.getBoundingClientRect();
+  const scaleX = inpaintCanvas.width / rect.width;
+  const scaleY = inpaintCanvas.height / rect.height;
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+function paintAt(x, y) {
+  inpaintCtx.fillStyle = "rgba(255, 60, 60, 0.85)";
+  inpaintCtx.beginPath();
+  inpaintCtx.arc(x, y, Number(brushSize.value), 0, Math.PI * 2);
+  inpaintCtx.fill();
+}
+
+inpaintCanvas.addEventListener("mousedown", (e) => { isPainting = true; const c = canvasCoordsFromEvent(e); paintAt(c.x, c.y); });
+inpaintCanvas.addEventListener("mousemove", (e) => { if (isPainting) { const c = canvasCoordsFromEvent(e); paintAt(c.x, c.y); } });
+window.addEventListener("mouseup", () => { isPainting = false; });
+inpaintCanvas.addEventListener("touchstart", (e) => { isPainting = true; const c = canvasCoordsFromEvent(e); paintAt(c.x, c.y); e.preventDefault(); });
+inpaintCanvas.addEventListener("touchmove", (e) => { if (isPainting) { const c = canvasCoordsFromEvent(e); paintAt(c.x, c.y); e.preventDefault(); } });
+window.addEventListener("touchend", () => { isPainting = false; });
+
+function buildMaskBlob() {
+  // el trazo visible es rojo translucido (para que se vea bien sobre la foto);
+  // la mascara real que se envia es blanco/negro puro segun donde haya trazo
+  const maskCanvas = document.createElement("canvas");
+  maskCanvas.width = inpaintCanvas.width;
+  maskCanvas.height = inpaintCanvas.height;
+  const maskCtx = maskCanvas.getContext("2d");
+  const painted = inpaintCtx.getImageData(0, 0, inpaintCanvas.width, inpaintCanvas.height);
+  const out = maskCtx.createImageData(inpaintCanvas.width, inpaintCanvas.height);
+  for (let i = 0; i < painted.data.length; i += 4) {
+    const alpha = painted.data[i + 3];
+    const v = alpha > 10 ? 255 : 0;
+    out.data[i] = v; out.data[i + 1] = v; out.data[i + 2] = v; out.data[i + 3] = 255;
+  }
+  maskCtx.putImageData(out, 0, 0);
+  return new Promise((resolve) => maskCanvas.toBlob(resolve, "image/png"));
+}
+
+submitInpaintBtn.addEventListener("click", async () => {
+  if (!inpaintPrompt.value.trim()) {
+    alert("Describe que quieres que aparezca en la zona marcada.");
+    return;
+  }
+  submitInpaintBtn.disabled = true;
+  submitInpaintBtn.textContent = "Repintando...";
+  try {
+    const maskBlob = await buildMaskBlob();
+    const form = new FormData();
+    form.append("prompt", inpaintPrompt.value.trim());
+    form.append("file_path", inpaintFilePath);
+    form.append("mask", maskBlob, "mask.png");
+    form.append("denoise", "1.0");
+    const resp = await fetch("/image/inpaint", { method: "POST", body: form });
+    const data = await resp.json();
+    inpaintModal.style.display = "none";
+    const resultBubble = addMessage("assistant", "image_inpaint");
+    resultBubble.textContent = data.response;
+    if (data.file_url) appendMediaWithActions(resultBubble, data.file_url, data.file_path);
+  } finally {
+    submitInpaintBtn.disabled = false;
+    submitInpaintBtn.textContent = "Repintar zona marcada";
+  }
+});
+
+sendBtn.addEventListener("click", send);
+promptEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+promptEl.addEventListener("input", () => {
+  promptEl.style.height = "auto";
+  promptEl.style.height = Math.min(promptEl.scrollHeight, 200) + "px";
+});
+
+initSessionUI();
+refreshPlan();
+</script>
+</body>
+</html>

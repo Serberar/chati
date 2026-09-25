@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+requests
+pyyaml
+faster-whisper
+piper-tts
+python-multipart
+playwright
+browser-use
+chromadb
+argon2-cffi
+cryptography
+opencv-python-headless
+pytest

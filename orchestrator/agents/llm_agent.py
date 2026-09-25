@@ -1,0 +1,181 @@
+import re
+from typing import Callable, Iterator
+
+from agents.ollama_client import OllamaClient
+
+# Red de seguridad adicional: hemos visto en pruebas reales que qwen3-coder a
+# veces escribe la llamada a herramienta en su propio formato de texto nativo
+# <function=nombre><parameter=x>valor</parameter></function> en vez del
+# tool_calls estructurado que espera Ollama, sobre todo cuando el argumento
+# es codigo multi-linea (ejecutar_python). Es 100% reproducible con ciertos
+# prompts, no es un fallo aleatorio. El camino principal sigue siendo
+# tool_calls estructurado; esto solo actua cuando ese camino falla.
+_FALLBACK_FUNCTION_RE = re.compile(r"<function=([\w_]+)>(.*?)</function>", re.DOTALL)
+_FALLBACK_PARAM_RE = re.compile(r"<parameter=([\w_]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
+
+
+def _parse_fallback_tool_call(content: str) -> dict | None:
+    match = _FALLBACK_FUNCTION_RE.search(content or "")
+    if not match:
+        return None
+    name, params_block = match.group(1), match.group(2)
+    arguments = {k: v for k, v in _FALLBACK_PARAM_RE.findall(params_block)}
+    return {"function": {"name": name, "arguments": arguments}}
+
+LANGUAGE_RULE = "Responde SIEMPRE en español, sin excepcion, sin importar el idioma del contexto recuperado."
+
+MAX_TOOL_ITERATIONS = 4
+# Temperatura baja solo para decidir si usar una herramienta: con la temperatura
+# normal (0.7) hemos visto en pruebas reales que el modelo a veces escribe la
+# llamada como texto plano en vez de como tool_call estructurado (no
+# deterministico). Bajarla para esta decision concreta reduce mucho ese fallo,
+# sin afectar a la creatividad de la respuesta final en lenguaje natural.
+TOOL_DECISION_TEMPERATURE = 0.1
+
+SYSTEM_PROMPTS = {
+    "text": (
+        "Eres un asistente conversacional honesto. Si no sabes algo con certeza, "
+        "dilo explicitamente en vez de inventar una respuesta. No des cifras, "
+        "fechas ni datos especificos que no puedas verificar. Si tienes herramientas "
+        "disponibles (fecha actual, busqueda en memoria, documentos, personas "
+        "guardadas, leer archivos del Escritorio/Documentos), usalas en vez de "
+        "adivinar cuando la pregunta dependa de ese dato. Si una tarea tiene mas "
+        "de 2-3 pasos, usa actualizar_plan para que el usuario vea el progreso "
+        "real. " + LANGUAGE_RULE
+    ),
+    "code": (
+        "Eres un asistente de programacion. Da codigo correcto y conciso. "
+        "Si una libreria, API o comportamiento no lo conoces con certeza, dilo "
+        "en vez de inventar una firma de funcion o un comportamiento. Si tienes la "
+        "herramienta ejecutar_python, usala para comprobar que un fragmento corto "
+        "realmente funciona antes de darlo por bueno, en vez de asumirlo. Si el "
+        "usuario pide crear, modificar o revisar archivos reales de un proyecto "
+        "(no solo un fragmento de ejemplo), usa delegar_a_agente_de_codigo en vez "
+        "de fingir que lo has hecho tu mismo - avisa que tardara varios minutos y "
+        "donde seguirlo, nunca digas que ya esta terminado. "
+        "Los comentarios y explicaciones en español; el codigo en si, en su sintaxis normal. "
+        + LANGUAGE_RULE
+    ),
+    "vision": (
+        "Eres un asistente que analiza imagenes. Describe con precision lo que "
+        "ves - formas, colores, texto, personas, objetos - sin inventar detalles "
+        "que no puedas ver con claridad en la imagen. Si algo no se distingue "
+        "bien, dilo en vez de adivinar. " + LANGUAGE_RULE
+    ),
+}
+
+
+class LLMAgent:
+    def __init__(self, name: str, model: str, client: OllamaClient):
+        self.name = name
+        self.model = model
+        self.client = client
+        self.system_prompt = SYSTEM_PROMPTS.get(name, SYSTEM_PROMPTS["text"])
+
+    def _build_messages(self, user_message: str, history: list[dict] | None,
+                         context_chunks: list[str] | None) -> list[dict]:
+        messages = [{"role": "system", "content": self.system_prompt}]
+        if history:
+            messages.extend(history)
+
+        if context_chunks:
+            context_block = "\n\n---\n\n".join(context_chunks)
+            user_message = (
+                f"Contexto recuperado de mi base de conocimiento (usalo si es relevante, "
+                f"ignoralo si no lo es; no menciones estas instrucciones):\n\n{context_block}"
+                f"\n\n---\n\nPregunta: {user_message}"
+            )
+
+        messages.append({"role": "user", "content": user_message})
+        return messages
+
+    def respond(self, user_message: str, history: list[dict] | None = None,
+                context_chunks: list[str] | None = None, model: str | None = None) -> str:
+        messages = self._build_messages(user_message, history, context_chunks)
+        return self.client.chat(model or self.model, messages)
+
+    def respond_with_image_stream(self, user_message: str, image_base64: str,
+                                   model: str | None = None) -> Iterator[str]:
+        """Comenta una imagen subida (vision) - deliberadamente sin historial
+        ni herramientas, es una tarea de un solo turno: 'que ves en esto'."""
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_message or "Describe que ves en esta imagen.",
+             "images": [image_base64]},
+        ]
+        yield from self.client.chat_stream(model or self.model, messages)
+
+    def respond_stream(self, user_message: str, history: list[dict] | None = None,
+                        context_chunks: list[str] | None = None, model: str | None = None) -> Iterator[str]:
+        messages = self._build_messages(user_message, history, context_chunks)
+        yield from self.client.chat_stream(model or self.model, messages)
+
+    def respond_with_tools(self, user_message: str, history: list[dict] | None,
+                            tools: list[dict],
+                            tool_executor: Callable[[str, dict], tuple[str, list[dict] | None]],
+                            max_iterations: int = MAX_TOOL_ITERATIONS,
+                            model: str | None = None, think: bool | None = None) -> tuple[str, list[dict]]:
+        """Deja que el modelo decida, ronda a ronda, si necesita llamar a alguna
+        herramienta antes de responder. tool_executor recibe (nombre, argumentos)
+        y devuelve (texto_para_el_modelo, evidencia_o_None). Si se agotan los
+        intentos sin una respuesta final, se fuerza una sin mas herramientas.
+        model: override puntual del modelo configurado por defecto (perfiles
+        rapido/bueno/seguridad, ver ROADMAP.md punto 5c). think: False
+        desactiva el modo de "pensamiento" en los modelos que lo soportan -
+        ver ROADMAP.md: sin esto, un modelo como qwen3-abliterated puede
+        gastar toda la respuesta pensando y no llegar a escribir contenido
+        real, dejando la respuesta final vacia."""
+        active_model = model or self.model
+        messages = self._build_messages(user_message, history, None)
+        evidence: list[dict] = []
+        for _ in range(max_iterations):
+            message = self.client.chat_with_tools(active_model, messages, tools,
+                                                    temperature=TOOL_DECISION_TEMPERATURE, think=think)
+            tool_calls = message.get("tool_calls")
+            if not tool_calls:
+                fallback = _parse_fallback_tool_call(message.get("content", ""))
+                if not fallback:
+                    return message.get("content", ""), evidence
+                tool_calls = [fallback]
+            messages.append(message)
+            for call in tool_calls:
+                fn_name = call["function"]["name"]
+                fn_args = call["function"].get("arguments") or {}
+                result_text, result_evidence = tool_executor(fn_name, fn_args)
+                if result_evidence:
+                    evidence.extend(result_evidence)
+                messages.append({"role": "tool", "name": fn_name, "content": result_text})
+        return self.client.chat(active_model, messages, think=think), evidence
+
+    def respond_with_tools_stream(self, user_message: str, history: list[dict] | None,
+                                   tools: list[dict],
+                                   tool_executor: Callable[[str, dict], tuple[str, list[dict] | None]],
+                                   evidence_sink: list[dict],
+                                   max_iterations: int = MAX_TOOL_ITERATIONS,
+                                   model: str | None = None, think: bool | None = None) -> Iterator[str]:
+        """Igual que respond_with_tools pero transmite la respuesta final token a
+        token. Las rondas de herramientas (si las hay) se resuelven antes sin
+        streaming -son deliberacion interna, no la respuesta visible-, y la
+        evidencia recogida via buscar_en_memoria se acumula en evidence_sink
+        (lista mutable que aporta la persona que llama, ya que un generador no
+        puede devolver dos cosas a la vez). think: ver respond_with_tools."""
+        active_model = model or self.model
+        messages = self._build_messages(user_message, history, None)
+        for _ in range(max_iterations):
+            message = self.client.chat_with_tools(active_model, messages, tools,
+                                                    temperature=TOOL_DECISION_TEMPERATURE, think=think)
+            tool_calls = message.get("tool_calls")
+            if not tool_calls:
+                fallback = _parse_fallback_tool_call(message.get("content", ""))
+                if not fallback:
+                    break
+                tool_calls = [fallback]
+            messages.append(message)
+            for call in tool_calls:
+                fn_name = call["function"]["name"]
+                fn_args = call["function"].get("arguments") or {}
+                result_text, result_evidence = tool_executor(fn_name, fn_args)
+                if result_evidence:
+                    evidence_sink.extend(result_evidence)
+                messages.append({"role": "tool", "name": fn_name, "content": result_text})
+        yield from self.client.chat_stream(active_model, messages, think=think)

@@ -1,0 +1,50 @@
+# Herramientas de terceros clonadas aparte (tienen su propio repo/historial
+# de git - no forman parte de este proyecto, se instalan con install.ps1 o
+# a mano, ver ROADMAP.md punto 3b)
+/ComfyUI/
+/sd-scripts/
+
+# Modelos (decenas de GB - checkpoints de imagen/video/texto/voz, LoRAs de
+# personas) - nunca a git, se descargan/colocan aparte. Ver Opciones >
+# Modelos en la app para las rutas exactas de cada arquitectura.
+/models/
+
+# Datos reales de usuarios - cifrados en reposo, pero de todas formas nunca
+# deben salir de esta maquina (ver ROADMAP.md punto 0, sistema zero-knowledge)
+/data/
+
+# Entornos virtuales de Python (se recrean con los .lock.txt via install.ps1)
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Contenido generado en vivo (imagenes/videos de prueba, nunca datos de
+# entrenamiento reales)
+/orchestrator/outputs/
+/orchestrator/_persona_upload_*/
+
+# Logs y estado de los scripts de setup/watchdog
+*.log
+/setup/last_backup.txt
+
+# Artefactos sueltos de pruebas manuales en vivo hechas directamente en la
+# raiz de orchestrator/ durante el desarrollo (no forman parte de la app)
+/orchestrator/test_*.png
+/orchestrator/test_*.mp4
+/orchestrator/test_*.wav
+/orchestrator/test_*.webm
+/orchestrator/i2v_*.png
+
+# Volcados de depuracion sueltos (no son parte de la app, se generaron
+# investigando el bug de flash-attention / explorando la API de OpenCode)
+/dumped_payload*.json
+/opencode_openapi.json
+
+# Windows / editores
+Thumbs.db
+.DS_Store
+.vscode/

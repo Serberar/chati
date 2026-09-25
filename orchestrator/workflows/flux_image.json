@@ -1,0 +1,68 @@
+{
+  "unet_loader": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": { "unet_name": "__UNET_PATH__" }
+  },
+  "clip_loader": {
+    "class_type": "DualCLIPLoaderGGUF",
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "t5xxl_fp8_e4m3fn.safetensors",
+      "type": "flux"
+    }
+  },
+  "vae_loader": {
+    "class_type": "VAELoader",
+    "inputs": { "vae_name": "flux-vae-bf16.safetensors" }
+  },
+  "model_sampling": {
+    "class_type": "ModelSamplingFlux",
+    "inputs": {
+      "model": ["unet_loader", 0],
+      "max_shift": 1.15,
+      "base_shift": 0.5,
+      "width": "__WIDTH__",
+      "height": "__HEIGHT__"
+    }
+  },
+  "positive_encode": {
+    "class_type": "CLIPTextEncodeFlux",
+    "inputs": {
+      "clip": ["clip_loader", 0],
+      "clip_l": "__PROMPT__",
+      "t5xxl": "__PROMPT__",
+      "guidance": 3.5
+    }
+  },
+  "negative_zeroed": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": { "conditioning": ["positive_encode", 0] }
+  },
+  "empty_latent": {
+    "class_type": "EmptyLatentImage",
+    "inputs": { "width": "__WIDTH__", "height": "__HEIGHT__", "batch_size": 1 }
+  },
+  "sampler": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["model_sampling", 0],
+      "seed": "__SEED__",
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["positive_encode", 0],
+      "negative": ["negative_zeroed", 0],
+      "latent_image": ["empty_latent", 0],
+      "denoise": 1.0
+    }
+  },
+  "vae_decode": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["sampler", 0], "vae": ["vae_loader", 0] }
+  },
+  "save_image": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["vae_decode", 0], "filename_prefix": "ia_personal" }
+  }
+}

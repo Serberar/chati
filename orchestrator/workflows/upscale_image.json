@@ -1,0 +1,21 @@
+{
+  "load_image": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "__IMAGE_FILENAME__" }
+  },
+  "upscale_model_loader": {
+    "class_type": "UpscaleModelLoader",
+    "inputs": { "model_name": "RealESRGAN_x4plus.pth" }
+  },
+  "upscale": {
+    "class_type": "ImageUpscaleWithModel",
+    "inputs": {
+      "upscale_model": ["upscale_model_loader", 0],
+      "image": ["load_image", 0]
+    }
+  },
+  "save_image": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["upscale", 0], "filename_prefix": "ia_personal_upscaled" }
+  }
+}

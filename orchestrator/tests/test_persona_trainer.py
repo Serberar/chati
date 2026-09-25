@@ -1,0 +1,146 @@
+"""Pruebas deterministas de persona_trainer.py - el subproceso de
+entrenamiento real (sd-scripts) nunca se lanza aqui, se mockea
+subprocess.Popen. Ver ROADMAP.md y pendiente/pendiente.md (fase 1: solo
+SDXL, pedido por Sergio el 2026-09-24 tras semanas esperando esta pieza)."""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+import model_registry
+import persona_trainer
+
+
+def _make_sdxl_tree(tmp_path, monkeypatch, label="sd_xl_base_1.0"):
+    img = tmp_path / "img"
+    (img / "checkpoints" / "sdxl").mkdir(parents=True)
+    (img / "checkpoints" / "sdxl" / f"{label}.safetensors").write_bytes(b"x")
+    monkeypatch.setattr(model_registry, "IMG_DIR", img)
+    return img
+
+
+def _isolate_dirs(tmp_path, monkeypatch):
+    monkeypatch.setattr(persona_trainer, "PERSONAS_DIR", tmp_path / "personas")
+    monkeypatch.setattr(persona_trainer, "DATASETS_DIR", tmp_path / "_datasets")
+    monkeypatch.setattr(persona_trainer, "ACCELERATE_CONFIG", tmp_path / "_accelerate_config.yaml")
+
+
+def test_sanitize_name_strips_unsafe_characters():
+    assert persona_trainer._sanitize_name("Sergio Bernabé!!") == "Sergio-Bernab"
+
+
+def test_sanitize_name_falls_back_when_nothing_left():
+    result = persona_trainer._sanitize_name("!!!")
+    assert result.startswith("persona-")
+
+
+def test_class_token_uses_a_rare_prefix():
+    token = persona_trainer._class_token("sergio")
+    assert token == "ohwx-sergio person"
+
+
+def test_pick_sdxl_base_checkpoint_prefers_the_base_variant(tmp_path, monkeypatch):
+    img = tmp_path / "img"
+    (img / "checkpoints" / "sdxl").mkdir(parents=True)
+    (img / "checkpoints" / "sdxl" / "RealVisXL_V5.0.safetensors").write_bytes(b"x")
+    (img / "checkpoints" / "sdxl" / "sd_xl_base_1.0.safetensors").write_bytes(b"x")
+    monkeypatch.setattr(model_registry, "IMG_DIR", img)
+
+    path = persona_trainer._pick_sdxl_base_checkpoint()
+
+    assert path.name == "sd_xl_base_1.0.safetensors"
+
+
+def test_pick_sdxl_base_checkpoint_raises_when_nothing_installed(tmp_path, monkeypatch):
+    monkeypatch.setattr(model_registry, "IMG_DIR", tmp_path / "img")
+    with pytest.raises(persona_trainer.NoBaseModelError):
+        persona_trainer._pick_sdxl_base_checkpoint()
+
+
+def test_get_training_status_sin_empezar_when_nothing_exists(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    assert persona_trainer.get_training_status("nueva-persona") == {"status": "sin_empezar"}
+
+
+def test_get_training_status_listo_when_the_file_exists(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    out_dir = persona_trainer.persona_dir("sergio") / "sdxl"
+    out_dir.mkdir(parents=True)
+    (out_dir / "sergio_sdxl.safetensors").write_bytes(b"x")
+
+    status = persona_trainer.get_training_status("sergio")
+
+    assert status["status"] == "listo"
+
+
+def test_get_training_status_error_when_process_died_without_output(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    persona_trainer._write_status("sergio", "sdxl", {"status": "training", "pid": 999999999})
+    with patch.object(persona_trainer, "_pid_alive", return_value=False):
+        status = persona_trainer.get_training_status("sergio")
+    assert status["status"] == "error"
+
+
+def test_get_training_status_still_training_when_pid_alive(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    persona_trainer._write_status("sergio", "sdxl", {"status": "training", "pid": 123})
+    with patch.object(persona_trainer, "_pid_alive", return_value=True):
+        status = persona_trainer.get_training_status("sergio")
+    assert status["status"] == "training"
+
+
+def test_start_training_refuses_when_already_training(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    _make_sdxl_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(persona_trainer, "SD_SCRIPTS_PYTHON", tmp_path)  # solo necesita .exists()
+    monkeypatch.setattr(persona_trainer, "ACCELERATE_EXE", tmp_path)
+    persona_trainer._write_status("sergio", "sdxl", {"status": "training", "pid": 123})
+
+    with patch.object(persona_trainer, "_pid_alive", return_value=True):
+        with pytest.raises(persona_trainer.TrainingAlreadyRunningError):
+            persona_trainer.start_training("sergio", [])
+
+
+def test_start_training_launches_the_subprocess_and_writes_status(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    _make_sdxl_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(persona_trainer, "SD_SCRIPTS_PYTHON", tmp_path / "venv" / "Scripts" / "python.exe")
+    monkeypatch.setattr(persona_trainer, "ACCELERATE_EXE", tmp_path / "venv" / "Scripts" / "accelerate.exe")
+    persona_trainer.SD_SCRIPTS_PYTHON.parent.mkdir(parents=True)
+    persona_trainer.SD_SCRIPTS_PYTHON.write_bytes(b"x")
+    persona_trainer.ACCELERATE_EXE.write_bytes(b"x")
+
+    photo = tmp_path / "foto.jpg"
+    photo.write_bytes(b"fake-jpg-bytes")
+
+    fake_proc = MagicMock()
+    fake_proc.pid = 4242
+    with patch.object(persona_trainer.subprocess, "Popen", return_value=fake_proc) as mock_popen:
+        result = persona_trainer.start_training("Sergio", [photo, photo, photo], epochs=3)
+
+    assert result == {"status": "training", "persona": "Sergio", "architecture": "sdxl"}
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args.args[0]
+    assert "--max_train_epochs=3" in cmd
+    assert "--network_train_unet_only" in cmd
+
+    dataset_images = persona_trainer.DATASETS_DIR / "Sergio" / "images"
+    assert len(list(dataset_images.iterdir())) == 3
+
+    status = persona_trainer._read_status("Sergio", "sdxl")
+    assert status["status"] == "training"
+    assert status["pid"] == 4242
+    assert status["photos"] == 3
+
+
+def test_list_personas_includes_status_per_persona(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    out_dir = persona_trainer.persona_dir("ana") / "sdxl"
+    out_dir.mkdir(parents=True)
+    (out_dir / "ana_sdxl.safetensors").write_bytes(b"x")
+
+    personas = persona_trainer.list_personas()
+
+    assert len(personas) == 1
+    assert personas[0]["name"] == "ana"
+    assert personas[0]["sdxl"]["status"] == "listo"
