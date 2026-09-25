@@ -93,6 +93,7 @@ packaging==26.3
 pathvalidate==3.3.1
 pfzy==0.3.4
 pillow==12.3.0
+pillow_heif==1.8.0
 piper-tts==1.8.0
 playwright==1.63.0
 pluggy==1.6.0

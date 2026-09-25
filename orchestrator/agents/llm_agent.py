@@ -1,7 +1,48 @@
+import base64
+import io
 import re
 from typing import Callable, Iterator
 
+import pillow_heif
+from PIL import Image, UnidentifiedImageError
+
 from agents.ollama_client import OllamaClient
+
+pillow_heif.register_heif_opener()  # HEIC/HEIF (formato por defecto de fotos en iPhone)
+
+
+class InvalidImageError(Exception):
+    """La imagen subida no se pudo decodificar - ni Ollama ni el modelo de
+    vision dan un motivo entendible, mejor fallar aqui con un mensaje claro."""
+
+
+def _normalize_image_for_vision(image_base64: str, max_dimension: int = 1568) -> str:
+    """Decodifica la imagen subida (cualquier formato que PIL reconozca,
+    incluido HEIC) y la re-codifica siempre como JPEG antes de mandarla a
+    Ollama. Dos motivos reales, no cosmeticos:
+    1. Ollama devolvia "400 Client Error" sin mas detalle con ciertas fotos
+       reales (encontrado en vivo, 2026-09-25) - probablemente HEIC (formato
+       por defecto de iPhone, que Pillow no soporta sin este plugin) o algun
+       otro formato que el modelo de vision no decodifica. Re-codificar
+       siempre a JPEG elimina esa clase entera de fallo silencioso.
+    2. Fotos de movil reales pueden pesar varios MB - redimensionar al lado
+       mas largo evita mandar (y que el modelo en CPU tenga que procesar)
+       megapixeles de mas que no aportan nada a la descripcion.
+    """
+    try:
+        raw = base64.b64decode(image_base64)
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except (base64.binascii.Error, UnidentifiedImageError, OSError) as exc:
+        raise InvalidImageError(f"No se pudo leer la imagen: {exc}") from exc
+
+    img = img.convert("RGB")
+    if max(img.size) > max_dimension:
+        img.thumbnail((max_dimension, max_dimension), Image.LANCZOS)
+
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=88)
+    return base64.b64encode(out.getvalue()).decode()
 
 # Red de seguridad adicional: hemos visto en pruebas reales que qwen3-coder a
 # veces escribe la llamada a herramienta en su propio formato de texto nativo
@@ -98,10 +139,11 @@ class LLMAgent:
                                    model: str | None = None) -> Iterator[str]:
         """Comenta una imagen subida (vision) - deliberadamente sin historial
         ni herramientas, es una tarea de un solo turno: 'que ves en esto'."""
+        normalized = _normalize_image_for_vision(image_base64)
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_message or "Describe que ves en esta imagen.",
-             "images": [image_base64]},
+             "images": [normalized]},
         ]
         yield from self.client.chat_stream(model or self.model, messages)
 

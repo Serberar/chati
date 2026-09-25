@@ -11,5 +11,6 @@ chromadb
 argon2-cffi
 cryptography
 opencv-python-headless
+pillow-heif
 pytest
 pywebview

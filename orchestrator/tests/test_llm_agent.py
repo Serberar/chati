@@ -1,4 +1,18 @@
+import base64
+import io
+
+from PIL import Image
+
 from agents.llm_agent import LLMAgent, _parse_fallback_tool_call
+
+
+def _real_image_base64(fmt="PNG") -> str:
+    """Imagen valida minuscula (1x1) en base64 - respond_with_image_stream
+    ahora decodifica/normaliza de verdad la imagen (ver InvalidImageError),
+    asi que las pruebas no pueden usar una cadena falsa como antes."""
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1), color=(200, 50, 50)).save(buf, format=fmt)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 class FakeOllamaClient:
@@ -267,12 +281,16 @@ def test_respond_with_image_stream_sends_image_on_user_message():
     client = FakeOllamaClient(stream_chunks=["Veo ", "un circulo rojo."])
     agent = LLMAgent("vision", "modelo-vision", client)
 
-    chunks = list(agent.respond_with_image_stream("que ves?", "base64falso=="))
+    chunks = list(agent.respond_with_image_stream("que ves?", _real_image_base64()))
 
     assert chunks == ["Veo ", "un circulo rojo."]
     sent_messages = client.chat_stream_calls[0]
     user_msg = [m for m in sent_messages if m["role"] == "user"][0]
-    assert user_msg["images"] == ["base64falso=="]
+    # la imagen se re-codifica siempre a JPEG (ver _normalize_image_for_vision) -
+    # no sera un byte a byte igual a la entrada, pero debe seguir siendo una
+    # imagen valida y no vacia
+    assert len(user_msg["images"]) == 1
+    assert Image.open(io.BytesIO(base64.b64decode(user_msg["images"][0]))).format == "JPEG"
     assert user_msg["content"] == "que ves?"
     assert client.models_used == ["modelo-vision"]
 
@@ -281,7 +299,7 @@ def test_respond_with_image_stream_uses_model_override():
     client = FakeOllamaClient(stream_chunks=["ok"])
     agent = LLMAgent("vision", "modelo-por-defecto", client)
 
-    list(agent.respond_with_image_stream("hola", "b64==", model="otro-modelo-vision"))
+    list(agent.respond_with_image_stream("hola", _real_image_base64(), model="otro-modelo-vision"))
 
     assert client.models_used == ["otro-modelo-vision"]
 
@@ -290,7 +308,40 @@ def test_respond_with_image_stream_defaults_message_when_empty():
     client = FakeOllamaClient(stream_chunks=["ok"])
     agent = LLMAgent("vision", "modelo-vision", client)
 
-    list(agent.respond_with_image_stream("", "b64=="))
+    list(agent.respond_with_image_stream("", _real_image_base64()))
 
     user_msg = [m for m in client.chat_stream_calls[0] if m["role"] == "user"][0]
     assert "Describe" in user_msg["content"]
+
+
+def test_respond_with_image_stream_raises_clearly_on_invalid_image():
+    client = FakeOllamaClient(stream_chunks=["no deberia llegar aqui"])
+    agent = LLMAgent("vision", "modelo-vision", client)
+
+    try:
+        list(agent.respond_with_image_stream("que ves?", "esto-no-es-una-imagen-de-verdad"))
+        assert False, "deberia haber lanzado InvalidImageError"
+    except Exception as exc:
+        assert type(exc).__name__ == "InvalidImageError"
+    assert client.chat_stream_calls == [], "no deberia haber llamado a Ollama con una imagen invalida"
+
+
+def test_normalize_image_for_vision_converts_heic_to_jpeg():
+    """HEIC (formato por defecto de fotos en iPhone) es el sospechoso real
+    del bug en vivo (ver ROADMAP.md, 2026-09-25: 'Fallo analizando la
+    imagen: 400 Client Error') - Pillow no lo soporta sin pillow-heif."""
+    from agents.llm_agent import _normalize_image_for_vision
+
+    heic_bytes = _make_tiny_heic_bytes()
+    normalized = _normalize_image_for_vision(base64.b64encode(heic_bytes).decode())
+
+    result_img = Image.open(io.BytesIO(base64.b64decode(normalized)))
+    assert result_img.format == "JPEG"
+
+
+def _make_tiny_heic_bytes() -> bytes:
+    import pillow_heif
+    heif_file = pillow_heif.from_pillow(Image.new("RGB", (4, 4), color=(10, 20, 30)))
+    buf = io.BytesIO()
+    heif_file.save(buf, format="HEIF")
+    return buf.getvalue()

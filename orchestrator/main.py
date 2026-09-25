@@ -865,7 +865,14 @@ def _run_vision_chat(message: str, image_base64: str, session_id: str | None, au
     override_model = _resolve_model_profile(model_profile)
     _ensure_active_model(override_model or vision_agent.model)
     start = time.perf_counter()
-    full_text = "".join(vision_agent.respond_with_image_stream(message, image_base64, model=override_model))
+    try:
+        full_text = "".join(vision_agent.respond_with_image_stream(message, image_base64, model=override_model))
+    except Exception as exc:
+        metrics.log_event("vision", (time.perf_counter() - start) * 1000, False, error=str(exc))
+        full_text = f"Fallo analizando la imagen: {exc}"
+        memory.add_message(session_id, "assistant", full_text, agent="vision",
+                            dek=dek, key_generation=key_generation, user_id=user_id)
+        return ChatResponse(agent_used="vision", response=full_text, verifier_gated=False, session_id=session_id)
     memory.add_message(session_id, "assistant", full_text, agent="vision",
                         dek=dek, key_generation=key_generation, user_id=user_id)
     metrics.log_event("vision", (time.perf_counter() - start) * 1000, False)
