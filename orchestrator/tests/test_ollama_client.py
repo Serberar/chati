@@ -3,9 +3,27 @@ de la politica de "un solo modelo pesado en RAM a la vez" (ver ROADMAP.md,
 punto 14: varios modelos CPU grandes cargados a la vez agotaban los 32GB
 de RAM reales y causaban lentitud severa por intercambio a disco)."""
 
+import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+import requests
+
 from agents.ollama_client import OllamaClient
+
+
+def _fake_error_response(status_code=400, error_body=None, raw_text=""):
+    """Simula una respuesta real de requests para un fallo - MagicMock no
+    vale aqui porque .ok tiene que ser False de verdad (un MagicMock
+    cualquiera evalua a True), y raise_for_status tiene que lanzar de
+    verdad para probar que _raise_with_body la envuelve bien."""
+    resp = requests.Response()
+    resp.status_code = status_code
+    if error_body is not None:
+        resp._content = json.dumps(error_body).encode()
+    else:
+        resp._content = raw_text.encode()
+    return resp
 
 
 def _fake_chat_response(content="hola"):
@@ -72,3 +90,31 @@ def test_chat_with_tools_includes_think_false_when_given():
         client.chat_with_tools("qwen3-abliterated:14b-cpu", [{"role": "user", "content": "hola"}], [], think=False)
 
     assert mock_post.call_args.kwargs["json"]["think"] is False
+
+
+# --- Surfacear el cuerpo real del error de Ollama, no solo "400 Client
+# Error" (bug real, ver ROADMAP.md 2026-09-25: un fallo de vision totalmente
+# opaco que no dejaba diagnosticar nada de verdad).
+
+def test_chat_raises_with_ollamas_actual_error_message():
+    client = OllamaClient("http://localhost:11434")
+    fake_resp = _fake_error_response(400, error_body={"error": "image bytes could not be decoded"})
+    with patch("agents.ollama_client.requests.post", return_value=fake_resp):
+        with pytest.raises(requests.HTTPError, match="image bytes could not be decoded"):
+            client.chat("qwen2.5vl:7b-cpu", [{"role": "user", "content": "hola"}])
+
+
+def test_chat_stream_raises_with_ollamas_actual_error_message():
+    client = OllamaClient("http://localhost:11434")
+    fake_resp = _fake_error_response(400, error_body={"error": "context length exceeded"})
+    with patch("agents.ollama_client.requests.post", return_value=fake_resp):
+        with pytest.raises(requests.HTTPError, match="context length exceeded"):
+            list(client.chat_stream("qwen2.5vl:7b-cpu", [{"role": "user", "content": "hola"}]))
+
+
+def test_raises_plain_status_error_when_body_has_no_json():
+    client = OllamaClient("http://localhost:11434")
+    fake_resp = _fake_error_response(500, raw_text="")
+    with patch("agents.ollama_client.requests.post", return_value=fake_resp):
+        with pytest.raises(requests.HTTPError):
+            client.chat("qwen2.5:7b", [{"role": "user", "content": "hola"}])

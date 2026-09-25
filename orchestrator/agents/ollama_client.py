@@ -11,6 +11,30 @@ import requests
 DEFAULT_KEEP_ALIVE = "30m"
 
 
+def _raise_with_body(resp: requests.Response) -> None:
+    """resp.raise_for_status() por si sola solo da 'NNN Client Error: ...
+    for url: ...' - sin el cuerpo real que Ollama manda explicando el
+    motivo (encontrado en vivo, 2026-09-25: un 400 en vision totalmente
+    opaco que no dejaba diagnosticar nada). Ollama devuelve
+    {"error": "..."} en el cuerpo en los fallos - lo incluimos en el
+    mensaje de la excepcion para que el error de verdad llegue hasta la
+    interfaz en vez de perderse."""
+    if resp.ok:
+        return
+    try:
+        detail = resp.json().get("error")
+    except (ValueError, AttributeError):
+        detail = None
+    if not detail:
+        detail = resp.text.strip()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        if detail:
+            raise requests.HTTPError(f"{exc} - Ollama dice: {detail}", response=resp) from None
+        raise
+
+
 class OllamaClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
@@ -27,7 +51,7 @@ class OllamaClient:
         if think is not None:
             payload["think"] = think
         resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=180)
-        resp.raise_for_status()
+        _raise_with_body(resp)
         return resp.json()["message"]["content"]
 
     def chat_stream(self, model: str, messages: list[dict], temperature: float = 0.7,
@@ -43,7 +67,7 @@ class OllamaClient:
         if think is not None:
             payload["think"] = think
         resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=180, stream=True)
-        resp.raise_for_status()
+        _raise_with_body(resp)
         for line in resp.iter_lines():
             if not line:
                 continue
@@ -71,7 +95,7 @@ class OllamaClient:
         if think is not None:
             payload["think"] = think
         resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=180)
-        resp.raise_for_status()
+        _raise_with_body(resp)
         return resp.json()["message"]
 
     def unload(self, model: str) -> None:
@@ -98,5 +122,5 @@ class OllamaClient:
             json={"model": model, "input": texts},
             timeout=60,
         )
-        resp.raise_for_status()
+        _raise_with_body(resp)
         return resp.json()["embeddings"]
