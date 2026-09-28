@@ -29,6 +29,8 @@ param(
 # "todo junto" (ver ROADMAP.md punto 3b / 8b).
 $AiRoot = Split-Path -Parent $PSScriptRoot
 $DataRoot = if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+                           elseif ([Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User")) {
+                               [Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User") }
             elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
             else { $AiRoot }
 $origen = "$DataRoot\data"

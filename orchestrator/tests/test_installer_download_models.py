@@ -54,11 +54,43 @@ def test_download_file_writes_the_full_content(tmp_path):
     assert not dest.with_suffix(dest.suffix + ".part").exists()
 
 
+def test_cpu_variant_pulls_base_and_creates_variant_locally():
+    """Bug real: 'ollama pull qwen3-coder:30b-cpu' falla en un equipo nuevo -
+    las variantes -cpu solo existen en local, nunca en el registro."""
+    modelfiles = []
+
+    def fake_run(cmd, check):
+        if cmd[1] == "create":
+            modelfiles.append(open(cmd[4], encoding="utf-8").read())
+
+    with patch.object(installer_download_models.subprocess, "run", side_effect=fake_run) as mock_run:
+        installer_download_models._pull_ollama_model("qwen3-coder:30b-cpu")
+
+    cmds = [c.args[0][:3] for c in mock_run.call_args_list]
+    assert cmds == [["ollama", "pull", "qwen3-coder:30b"], ["ollama", "create", "qwen3-coder:30b-cpu"]]
+    assert modelfiles == ["FROM qwen3-coder:30b\nPARAMETER num_gpu 0\nPARAMETER num_ctx 32768\n"]
+
+
 def test_pull_ollama_model_calls_ollama_pull():
     with patch.object(installer_download_models.subprocess, "run") as mock_run:
+        installer_download_models._pull_ollama_model("nomic-embed-text")
+
+    mock_run.assert_called_once_with(["ollama", "pull", "nomic-embed-text"], check=True)
+
+
+def test_chat_model_gets_the_context_the_agent_needs():
+    """qwen2.5:7b es tambien el modelo del agente rapido de OpenCode: con el
+    contexto por defecto sus instrucciones no caben."""
+    modelfiles = []
+
+    def fake_run(cmd, check):
+        if cmd[1] == "create":
+            modelfiles.append(open(cmd[4], encoding="utf-8").read())
+
+    with patch.object(installer_download_models.subprocess, "run", side_effect=fake_run):
         installer_download_models._pull_ollama_model("qwen2.5:7b")
 
-    mock_run.assert_called_once_with(["ollama", "pull", "qwen2.5:7b"], check=True)
+    assert modelfiles == ["FROM qwen2.5:7b\nPARAMETER num_ctx 16384\n"]
 
 
 def test_download_selected_routes_text_entries_to_ollama(tmp_path, monkeypatch):

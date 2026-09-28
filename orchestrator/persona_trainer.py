@@ -28,14 +28,18 @@ import uuid
 from pathlib import Path
 
 import model_registry
-from paths import MODELS_DIR
+from paths import DATA_ROOT
 
-SD_SCRIPTS_DIR = Path("C:/AI/sd-scripts")
+# El instalador lo clona en <carpeta de datos>/sd-scripts (install.ps1, paso
+# 2b); en desarrollo DATA_ROOT es C:/AI, la misma ruta que antes.
+SD_SCRIPTS_DIR = DATA_ROOT / "sd-scripts"
 SD_SCRIPTS_PYTHON = SD_SCRIPTS_DIR / "venv" / "Scripts" / "python.exe"
 ACCELERATE_EXE = SD_SCRIPTS_DIR / "venv" / "Scripts" / "accelerate.exe"
 ACCELERATE_CONFIG = SD_SCRIPTS_DIR / "_accelerate_config.yaml"
 DATASETS_DIR = SD_SCRIPTS_DIR / "_datasets"
-PERSONAS_DIR = MODELS_DIR / "loras" / "personas"
+# Dentro de la carpeta de LoRAs que lee ComfyUI (extra_model_paths.yaml:
+# img/loras) - antes estaba en models/loras, donde ComfyUI no la veia.
+PERSONAS_DIR = model_registry.IMG_DIR / "loras" / "personas"
 
 # Config de accelerate minima para una sola GPU local, sin distribuido - se
 # escribe a mano (no con "accelerate config", que es interactivo y colgaria
@@ -117,6 +121,53 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+# Barra de tqdm de sd-scripts: "steps:  45%|####  | 27/60 [01:10<01:25, 2.6s/it, avr_loss=0.1]"
+_STEPS_LINE = re.compile(r"steps:\s*(\d+)%\|[^|]*\|\s*(\d+)/(\d+)\s*\[([\d:]+)<([\d:?]+)")
+
+
+def _eta_text(eta: str) -> str:
+    parts = [int(x) for x in eta.split(":") if x.isdigit()]
+    if not parts or "?" in eta:
+        return ""
+    secs = 0
+    for x in parts:
+        secs = secs * 60 + x
+    if secs < 60:
+        return "menos de un minuto"
+    mins = round(secs / 60)
+    return f"unos {mins} min" if mins < 60 else f"unas {mins // 60} h {mins % 60} min"
+
+
+def training_progress(log_path: Path) -> dict:
+    """{"percent", "eta"} del ultimo paso del registro de sd-scripts, o
+    {"phase": "preparando"} mientras carga el modelo y prepara las fotos
+    (antes del primer paso, que en SDXL tarda varios minutos)."""
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 20000))
+            tail = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return {"phase": "preparando"}
+    matches = list(_STEPS_LINE.finditer(tail.replace("\r", "\n")))
+    if not matches:
+        return {"phase": "preparando"}
+    m = matches[-1]
+    return {"percent": int(m.group(1)), "step": int(m.group(2)), "steps": int(m.group(3)),
+            "eta": _eta_text(m.group(5))}
+
+
+def lora_for(name: str, architecture: str = "sdxl") -> tuple[str, str] | None:
+    """(nombre del LoRA para el nodo LoraLoader de ComfyUI, palabra clave para
+    el prompt) si la persona esta lista; None si no."""
+    folder = _sanitize_name(name)
+    path = PERSONAS_DIR / folder / architecture / f"{folder}_{architecture}.safetensors"
+    if not path.exists():
+        return None
+    # separador nativo del SO, como lo lista ComfyUI ("personas\x\sdxl\x_sdxl.safetensors")
+    return str(path.relative_to(PERSONAS_DIR.parent)), _class_token(folder)
+
+
 def get_training_status(name: str, architecture: str = "sdxl") -> dict:
     """Estado real, no solo lo que dice el archivo: si el .safetensors final
     ya existe se considera terminado aunque el proceso ya no este vivo (pudo
@@ -132,6 +183,8 @@ def get_training_status(name: str, architecture: str = "sdxl") -> dict:
         return {"status": "sin_empezar"}
     if status.get("status") == "training" and not _pid_alive(status.get("pid", -1)):
         return {"status": "error", "error": "El entrenamiento se interrumpio antes de terminar."}
+    if status.get("status") == "training" and status.get("log_file"):
+        status = {**status, **training_progress(Path(status["log_file"]))}
     return status
 
 
@@ -221,6 +274,10 @@ def start_training(name: str, photo_paths: list[Path], epochs: int = 10) -> dict
         f"--max_train_epochs={epochs}",
         "--save_every_n_epochs=999",  # solo el resultado final, no checkpoints intermedios
         "--mixed_precision=bf16",
+        # modelo base en fp8: SDXL entero no cabe en 8GB de VRAM junto al
+        # entrenamiento - sin esto se desbordaba a memoria compartida y cada
+        # paso tardaba ~130s (medido el 2026-09-28, RTX 5060 8GB)
+        "--fp8_base",
         "--sdpa",  # atencion eficiente via PyTorch (xformers no esta instalado, no hace falta)
         "--gradient_checkpointing",
         "--cache_text_encoder_outputs",

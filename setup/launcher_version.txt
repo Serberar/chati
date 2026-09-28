@@ -1,0 +1,20 @@
+# Datos del ChatiIA.exe (los que ensena el Administrador de tareas y
+# Propiedades > Detalles). Lo usa build_launcher.ps1 via PyInstaller.
+VSVersionInfo(
+  ffi=FixedFileInfo(filevers=(1, 0, 0, 0), prodvers=(1, 0, 0, 0), mask=0x3f, flags=0x0,
+                    OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[
+    StringFileInfo([
+      StringTable('040A04B0', [
+        StringStruct('CompanyName', 'Sergio Bernabé'),
+        StringStruct('FileDescription', 'Chati IA'),
+        StringStruct('FileVersion', '1.0.0.0'),
+        StringStruct('InternalName', 'ChatiIA'),
+        StringStruct('OriginalFilename', 'ChatiIA.exe'),
+        StringStruct('ProductName', 'Chati IA'),
+        StringStruct('ProductVersion', '1.0.0.0'),
+        StringStruct('LegalCopyright', 'Sergio Bernabé')])
+    ]),
+    VarFileInfo([VarStruct('Translation', [0x040A, 1200])])
+  ]
+)

@@ -59,6 +59,30 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     Write-Host "Ollama ya instalado." -ForegroundColor Green
 }
 
+# 1a. Python (para los entornos de ComfyUI, sd-scripts y el orquestador). En
+# un Windows recien instalado "python" existe pero es el acceso directo que
+# abre la Microsoft Store: Get-Command no basta, hay que ver que responda.
+$pythonOk = $false
+try { $pythonOk = ((& python --version 2>&1) -join " ") -match "Python 3\.(1[0-9])" } catch { }
+if (-not $pythonOk) {
+    Write-Host "Instalando Python 3.12..." -ForegroundColor Yellow
+    winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+} else {
+    Write-Host "Python ya instalado." -ForegroundColor Green
+}
+
+# 1b. Git: para clonar ComfyUI y sd-scripts, y para que el agente pueda
+# registrar y deshacer sus cambios (su carpeta de trabajo es un repositorio
+# git, ver opencode_client.WORKDIR). Sin git no hay "Ver cambios / Deshacer".
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "Instalando Git..." -ForegroundColor Yellow
+    winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+} else {
+    Write-Host "Git ya instalado." -ForegroundColor Green
+}
+
 setx OLLAMA_MODELS "$DataRoot\models\text" | Out-Null
 $env:OLLAMA_MODELS = "$DataRoot\models\text"
 Write-Host "OLLAMA_MODELS -> $DataRoot\models\text" -ForegroundColor Green
@@ -249,13 +273,17 @@ $opencodeConfig = @'
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Ollama (local)",
-      "options": { "baseURL": "http://127.0.0.1:11434/v1" },
+      "options": { "baseURL": "http://127.0.0.1:8899/llm/v1" },
       "models": {
-        "qwen3-coder:30b-cpu": { "name": "Qwen3 Coder 30B-A3B (local, CPU)" }
+        "qwen2.5:7b": { "name": "Qwen2.5 7B (local, GPU)", "limit": { "context": 16384, "output": 4096 } },
+        "qwen3:8b": { "name": "Qwen3 8B (local, GPU)", "limit": { "context": 16384, "output": 4096 } },
+        "qwen3-coder:30b-cpu": { "name": "Qwen3 Coder 30B-A3B (local, CPU)", "limit": { "context": 32768, "output": 8192 } }
       }
     }
   },
   "model": "ollama/qwen3-coder:30b-cpu",
+  "small_model": "ollama/qwen2.5:7b",
+  "shell": "powershell",
   "instructions": ["AGENTS.md"],
   "permission": {
     "edit": "ask",
@@ -269,9 +297,30 @@ $opencodeConfig = @'
       "*": "ask"
     }
   },
-  "agent": { "build": { "temperature": 0.1 }, "plan": { "temperature": 0.1 } }
+  "agent": {
+    "build": { "temperature": 0.1 },
+    "plan": { "temperature": 0.1 },
+    "chati": {
+      "description": "Agente de Chati IA: tareas sobre los archivos del usuario (rapido, GPU)",
+      "mode": "primary", "model": "ollama/qwen3:8b", "temperature": 0.1,
+      "prompt": "{file:./chati_agent_prompt.md}",
+      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false, "write": false }
+    },
+    "chati-potente": {
+      "description": "Agente de Chati IA con el modelo grande (lento, CPU) para tareas complejas",
+      "mode": "primary", "model": "ollama/qwen3-coder:30b-cpu", "temperature": 0.1,
+      "prompt": "{file:./chati_agent_prompt.md}",
+      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false }
+    }
+  }
 }
 '@
+# baseURL: la pasarela de Chati (main.py, /llm/v1) y no Ollama directamente -
+# quita los parametros null que el modelo pequeño pone en las herramientas.
+# Agentes "chati" y "chati-potente" (los usa Chati, ver orchestrator/config.yaml):
+# instrucciones cortas propias en vez de las de OpenCode - medido: una tarea
+# "crea un archivo" paso de 8-10 min a 15s (chati) / 2-3 min (potente).
+Copy-Item "$PSScriptRoot\chati_agent_prompt.md" "$opencodeConfigDir\chati_agent_prompt.md" -Force
 Set-Content -Path "$opencodeConfigDir\opencode.json" -Value $opencodeConfig -Encoding utf8
 Write-Host "Config de OpenCode escrita en $opencodeConfigDir\opencode.json" -ForegroundColor Green
 
@@ -279,8 +328,17 @@ Write-Host "Config de OpenCode escrita en $opencodeConfigDir\opencode.json" -For
 $desktop = [Environment]::GetFolderPath("Desktop")
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut("$desktop\Chati IA.lnk")
-$shortcut.TargetPath = "powershell.exe"
-$shortcut.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$AiRoot\setup\launch_and_open.ps1`" -AiRoot `"$AiRoot`""
+# ChatiIA.exe (setup/build_launcher.ps1): sin consola, y en el Administrador
+# de tareas sale "Chati IA" con su icono. Si no se ha compilado (instalacion
+# a mano desde el codigo), pythonw.exe hace lo mismo pero figura como Python.
+if (Test-Path "$AiRoot\ChatiIA\ChatiIA.exe") {
+    $shortcut.TargetPath = "$AiRoot\ChatiIA\ChatiIA.exe"
+    $shortcut.WorkingDirectory = "$AiRoot\ChatiIA"
+} else {
+    $shortcut.TargetPath = "$AiRoot\orchestrator\venv\Scripts\pythonw.exe"
+    $shortcut.Arguments = "`"$AiRoot\orchestrator\desktop_app.py`""
+    $shortcut.WorkingDirectory = "$AiRoot\orchestrator"
+}
 $shortcut.IconLocation = "$AiRoot\icono.ico"
 $shortcut.Save()
 Write-Host "Acceso directo 'Chati IA' creado en el escritorio." -ForegroundColor Green

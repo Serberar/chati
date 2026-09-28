@@ -55,6 +55,23 @@ _FALLBACK_FUNCTION_RE = re.compile(r"<function=([\w_]+)>(.*?)</function>", re.DO
 _FALLBACK_PARAM_RE = re.compile(r"<parameter=([\w_]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
 
 
+_FALLBACK_MARK = "<function="
+
+
+def _visible_prefix_end(content: str) -> int:
+    """Hasta donde se puede mostrar ya el texto que va llegando: nunca a
+    partir de una llamada a herramienta escrita como texto ("<function=...",
+    formato de qwen3-coder), ni el final si podria ser el comienzo de una
+    ("<func" a medias) - eso se retiene hasta saber que es."""
+    cut = content.find(_FALLBACK_MARK)
+    if cut != -1:
+        return cut
+    for k in range(min(len(_FALLBACK_MARK) - 1, len(content)), 0, -1):
+        if content.endswith(_FALLBACK_MARK[:k]):
+            return len(content) - k
+    return len(content)
+
+
 def _parse_fallback_tool_call(content: str) -> dict | None:
     match = _FALLBACK_FUNCTION_RE.search(content or "")
     if not match:
@@ -195,23 +212,41 @@ class LLMAgent:
                                    evidence_sink: list[dict],
                                    max_iterations: int = MAX_TOOL_ITERATIONS,
                                    model: str | None = None, think: bool | None = None) -> Iterator[str]:
-        """Igual que respond_with_tools pero transmite la respuesta final token a
-        token. Las rondas de herramientas (si las hay) se resuelven antes sin
-        streaming -son deliberacion interna, no la respuesta visible-, y la
-        evidencia recogida via buscar_en_memoria se acumula en evidence_sink
-        (lista mutable que aporta la persona que llama, ya que un generador no
-        puede devolver dos cosas a la vez). think: ver respond_with_tools."""
+        """Igual que respond_with_tools pero transmite la respuesta token a
+        token. Cada ronda se pide ya en streaming con las herramientas
+        disponibles: si el modelo contesta sin pedir ninguna, eso que se va
+        mostrando ES la respuesta final (antes se generaba dos veces - medido:
+        ~3s de mas en un simple "hola"). La evidencia recogida por las
+        herramientas se acumula en evidence_sink (lista mutable que aporta
+        quien llama, ya que un generador no puede devolver dos cosas a la
+        vez). think: ver respond_with_tools."""
         active_model = model or self.model
         messages = self._build_messages(user_message, history, None)
+        shown_any = False
         for _ in range(max_iterations):
-            message = self.client.chat_with_tools(active_model, messages, tools,
-                                                    temperature=TOOL_DECISION_TEMPERATURE, think=think)
-            tool_calls = message.get("tool_calls")
+            if shown_any:
+                yield "\n\n"  # separa lo dicho antes de usar una herramienta de lo que viene despues
+            content, tool_calls = "", []
+            shown = 0
+            for kind, value in self.client.chat_with_tools_stream(
+                    active_model, messages, tools, temperature=TOOL_DECISION_TEMPERATURE, think=think):
+                if kind == "tool_calls":
+                    tool_calls.extend(value)
+                    continue
+                content += value
+                safe_end = _visible_prefix_end(content)
+                if safe_end > shown:
+                    yield content[shown:safe_end]
+                    shown = safe_end
+                    shown_any = True
             if not tool_calls:
-                fallback = _parse_fallback_tool_call(message.get("content", ""))
+                fallback = _parse_fallback_tool_call(content)
                 if not fallback:
-                    break
+                    if len(content) > shown:
+                        yield content[shown:]  # cola retenida por si era "<function=" y no lo fue
+                    return
                 tool_calls = [fallback]
+            message = {"role": "assistant", "content": content, "tool_calls": tool_calls}
             messages.append(message)
             for call in tool_calls:
                 fn_name = call["function"]["name"]

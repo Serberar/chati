@@ -14,8 +14,10 @@ $shortcutPath = Join-Path $startupFolder "IA-Personal-Watchdog.lnk"
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = "powershell.exe"
-$shortcut.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+# conhost --headless (Windows 11): powershell con -WindowStyle Hidden a secas
+# sigue mostrando una terminal un instante al iniciar sesion
+$shortcut.TargetPath = "conhost.exe"
+$shortcut.Arguments = "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
 $shortcut.WorkingDirectory = $PSScriptRoot
 $shortcut.WindowStyle = 7  # minimizado
 $shortcut.Description = "Vigila y reinicia Ollama/ComfyUI/orquestador si se caen"

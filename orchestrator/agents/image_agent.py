@@ -100,6 +100,29 @@ class ImageAgent:
         workflow = json.loads(raw)
         return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]
 
+    def generate_with_lora(self, prompt: str, lora_name: str, trigger: str, model_id: str | None = None,
+                           strength: float = 0.9, width: int = 1024, height: int = 1024,
+                           timeout: int = 480) -> bytes:
+        """Imagen con una persona entrenada (LoRA SDXL, ver persona_trainer.py):
+        la plantilla SDXL con un LoraLoader entre el checkpoint y el resto, y la
+        palabra clave de la persona al principio del prompt. model_id: un
+        checkpoint SDXL concreto; si no es SDXL o no se da, el primero SDXL."""
+        sdxl_id = model_id if model_id and model_id.startswith("sdxl:") else None
+        workflow = json.loads(json.dumps(self.sdxl_template))
+        workflow["checkpoint_loader"]["inputs"]["ckpt_name"] = self._sdxl_checkpoint_path(sdxl_id)
+        workflow["lora_loader"] = {
+            "class_type": "LoraLoader",
+            "inputs": {"model": ["checkpoint_loader", 0], "clip": ["checkpoint_loader", 1],
+                       "lora_name": lora_name, "strength_model": strength, "strength_clip": strength},
+        }
+        workflow["positive_encode"]["inputs"]["clip"] = ["lora_loader", 1]
+        workflow["negative_encode"]["inputs"]["clip"] = ["lora_loader", 1]
+        workflow["sampler"]["inputs"]["model"] = ["lora_loader", 0]
+        workflow["positive_encode"]["inputs"]["text"] = f"{trigger}, {prompt}"
+        workflow["empty_latent"]["inputs"].update(width=width, height=height)
+        workflow["sampler"]["inputs"]["seed"] = int(time.time() * 1000) % (2**32)
+        return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]
+
     def upscale(self, image_path: str, timeout: int = 120) -> bytes:
         """Escala x4 una imagen ya existente (RealESRGAN), sin volver a generarla."""
         uploaded_filename = self.upload_image(image_path)

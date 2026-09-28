@@ -12,6 +12,7 @@ mostrar eso tal cual como progreso, no hace falta parsear nada mas fino."""
 
 import argparse
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
@@ -55,9 +56,33 @@ def _download_file(url: str, dest: Path) -> None:
     tmp_path.replace(dest)
 
 
+CPU_SUFFIX = "-cpu"
+GPU_SUFFIX = "-gpu"
+# Los dos son tambien modelos del agente (OpenCode, ver opencode_client.py): su
+# prompt con las herramientas no cabe en el contexto por defecto - con menos,
+# Ollama lo recorta en silencio y el agente pierde sus instrucciones.
+_EXTRA_PARAMS = {"qwen3-coder:30b-cpu": ["num_ctx 32768"], "qwen2.5:7b": ["num_ctx 16384"],
+                 "qwen3:8b": ["num_ctx 16384"],
+                 # vision en GPU: contexto corto para que quepa entera en 8 GB de VRAM
+                 "qwen2.5vl:7b-gpu": ["num_ctx 4096"]}
+
+
 def _pull_ollama_model(model: str) -> None:
-    print(f"  ollama pull {model}")
-    subprocess.run(["ollama", "pull", model], check=True)
+    # las variantes "-cpu"/"-gpu" (ver AGENTS.md) no existen en el registro de
+    # Ollama - se crean en local a partir del modelo base
+    base = model.removesuffix(CPU_SUFFIX).removesuffix(GPU_SUFFIX)
+    print(f"  ollama pull {base}")
+    subprocess.run(["ollama", "pull", base], check=True)
+    params = ((["num_gpu 0"] if model.endswith(CPU_SUFFIX) else [])
+              + (["num_gpu 999"] if model.endswith(GPU_SUFFIX) else []) + _EXTRA_PARAMS.get(model, []))
+    if not params:
+        return
+    modelfile = "\n".join([f"FROM {base}", *(f"PARAMETER {p}" for p in params)]) + "\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "Modelfile"
+        path.write_text(modelfile, encoding="utf-8")
+        print(f"  ollama create {model}")
+        subprocess.run(["ollama", "create", model, "-f", str(path)], check=True)
 
 
 def download_selected(entry_ids: list[str]) -> None:

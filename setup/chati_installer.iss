@@ -1,4 +1,5 @@
-; Instalador de Chati IA (Inno Setup). Para recompilar tras tocar codigo:
+﻿; Instalador de Chati IA (Inno Setup). Para recompilar tras tocar codigo:
+;   powershell -ExecutionPolicy Bypass -File build_launcher.ps1   (ChatiIA.exe)
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" chati_installer.iss
 ; No hace falta tocar este archivo salvo que cambies la version, anadas una
 ; carpeta nueva de nivel superior, o cambies el catalogo de modelos (ver
@@ -44,11 +45,14 @@ Source: "..\AGENTS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\MANUAL_DE_USO.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\icono.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\logo.png"; DestDir: "{app}"; Flags: ignoreversion
+; lanzador compilado (build_launcher.ps1) - lleva su propio Python dentro
+Source: "..\ChatiIA\*"; DestDir: "{app}\ChatiIA"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{userdesktop}\Chati IA"; Filename: "powershell.exe"; \
-    Parameters: "-WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\setup\launch_and_open.ps1"" -AiRoot ""{app}"""; \
-    IconFilename: "{app}\icono.ico"; WorkingDir: "{app}"
+; ChatiIA.exe (desktop_app.py empaquetado): sin consola, y en el
+; Administrador de tareas aparece como "Chati IA" con su icono, no "Python".
+Name: "{userdesktop}\Chati IA"; Filename: "{app}\ChatiIA\ChatiIA.exe"; \
+    WorkingDir: "{app}\ChatiIA"; AppUserModelID: "SergioBernabe.ChatiIA"
 
 [Run]
 Filename: "powershell.exe"; \
@@ -56,14 +60,19 @@ Filename: "powershell.exe"; \
     StatusMsg: "Instalando Ollama, ComfyUI y los entornos de Python (puede tardar varios minutos)..."; \
     Flags: waituntilterminated
 Filename: "{app}\orchestrator\venv\Scripts\python.exe"; \
+    Parameters: "installer_create_admin.py --from-file ""{tmp}\chati_admin.txt"""; \
+    WorkingDir: "{app}\orchestrator"; \
+    StatusMsg: "Creando el usuario administrador..."; \
+    Flags: waituntilterminated runhidden
+Filename: "{app}\orchestrator\venv\Scripts\python.exe"; \
     Parameters: "installer_download_models.py --selected-file ""{tmp}\chati_selected_models.txt"""; \
     WorkingDir: "{app}\orchestrator"; \
     StatusMsg: "Descargando los modelos elegidos..."; \
     Flags: waituntilterminated
-Filename: "powershell.exe"; \
-    Parameters: "-ExecutionPolicy Bypass -File ""{app}\setup\launch_and_open.ps1"" -AiRoot ""{app}"""; \
+Filename: "{app}\ChatiIA\ChatiIA.exe"; \
+    WorkingDir: "{app}\ChatiIA"; \
     Description: "Arrancar Chati IA ahora"; \
-    Flags: postinstall nowait skipifsilent
+    Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [Code]
 type
@@ -76,6 +85,7 @@ type
   end;
 
 var
+  AdminPage: TInputQueryWizardPage;
   ModelsPage: TWizardPage;
   ModelsList: TNewCheckListBox;
   GpuInfoLabel: TNewStaticText;
@@ -105,6 +115,8 @@ begin
     'Mas lento, menos probable que invente datos.', True);
   AddCatalogItem('texto-vision', 'Texto', 'Vision (comentar fotos)',
     'Necesario para poder subir una foto en el chat.', True);
+  AddCatalogItem('agente-rapido', 'Texto', 'Agente (tareas en el ordenador)',
+    'Necesario para el modo Agente: crea, mueve y ordena archivos por ti.', True);
   AddCatalogItem('imagen-flux', 'Imagen', 'FLUX (rapido, buena calidad)',
     'El generador de imagen recomendado por defecto.', True);
   AddCatalogItem('imagen-sdxl', 'Imagen', 'SDXL base',
@@ -149,6 +161,63 @@ begin
   end;
 end;
 
+// Reinstalacion/actualizacion: si ya hay usuarios no se pide nada (y
+// installer_create_admin.py tampoco crearia otro admin aunque se lo pasaran).
+function UsersAlreadyExist: Boolean;
+var
+  DataRoot: String;
+begin
+  DataRoot := GetEnv('CHATI_DATA_ROOT');
+  if DataRoot = '' then
+    DataRoot := ExpandConstant('{localappdata}\ChatiIA');
+  Result := FileExists(AddBackslash(DataRoot) + 'data\users.db');
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (AdminPage <> nil) and (PageID = AdminPage.ID) and UsersAlreadyExist;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Lines: TArrayOfString;
+begin
+  Result := True;
+  if (AdminPage = nil) or (CurPageID <> AdminPage.ID) then
+    Exit;
+  if Trim(AdminPage.Values[0]) = '' then
+  begin
+    MsgBox('Escribe un nombre de usuario.', mbError, MB_OK);
+    Result := False;
+  end
+  else if Length(AdminPage.Values[1]) < 8 then
+  begin
+    MsgBox('La contraseña debe tener al menos 8 caracteres.', mbError, MB_OK);
+    Result := False;
+  end
+  else if AdminPage.Values[1] <> AdminPage.Values[2] then
+  begin
+    MsgBox('Las contraseñas no coinciden.', mbError, MB_OK);
+    Result := False;
+  end
+  else if (Trim(AdminPage.Values[3]) <> '') <> (Trim(AdminPage.Values[4]) <> '') then
+  begin
+    MsgBox('Rellena la pregunta de seguridad y su respuesta, o deja las dos vacias.', mbError, MB_OK);
+    Result := False;
+  end
+  else
+  begin
+    // se escribe aqui (no en CurStepChanged) para que ya exista cuando
+    // [Run] lance installer_create_admin.py, que lo borra al leerlo
+    SetArrayLength(Lines, 4);
+    Lines[0] := Trim(AdminPage.Values[0]);
+    Lines[1] := AdminPage.Values[1];
+    Lines[2] := Trim(AdminPage.Values[3]);
+    Lines[3] := Trim(AdminPage.Values[4]);
+    SaveStringsToUTF8File(ExpandConstant('{tmp}\chati_admin.txt'), Lines, False);
+  end;
+end;
+
 procedure InitializeWizard;
 var
   Tier, GpuName: String;
@@ -159,10 +228,20 @@ begin
     WizardForm.WelcomeLabel2.Caption := WizardForm.WelcomeLabel2.Caption + #13#10#13#10 +
       CustomMessage('WelcomeCredit');
 
+  AdminPage := CreateInputQueryPage(wpSelectDir, 'Administrador principal',
+    'Crea la cuenta con la que vas a entrar en Chati IA.',
+    'Esta cuenta podra gestionar modelos y otros usuarios. Tus conversaciones se cifran con tu contraseña: ' +
+    'si la olvidas, solo la pregunta de seguridad permite recuperar el acceso (perdiendo lo cifrado).');
+  AdminPage.Add('Usuario:', False);
+  AdminPage.Add('Contraseña (minimo 8 caracteres):', True);
+  AdminPage.Add('Repite la contraseña:', True);
+  AdminPage.Add('Pregunta de seguridad (opcional):', False);
+  AdminPage.Add('Respuesta:', False);
+
   Tier := DetectGpuTier(GpuName, VramMib);
   BuildCatalog(Tier <> 'cpu_only');
 
-  ModelsPage := CreateCustomPage(wpSelectDir, 'Modelos a descargar',
+  ModelsPage := CreateCustomPage(AdminPage.ID, 'Modelos a descargar',
     'Elige que modelos quieres instalar - se pueden anadir mas despues desde Opciones > Modelos.');
 
   GpuInfoLabel := TNewStaticText.Create(ModelsPage);

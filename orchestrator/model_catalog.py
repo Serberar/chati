@@ -10,7 +10,7 @@ Anadir un modelo mas pesado para 12gb/16gb_plus es cuestion de investigarlo
 y verificarlo primero (Civitai/HuggingFace API, nunca una URL inventada) y
 sumarlo aqui - la estructura ya esta lista para eso."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass
@@ -46,7 +46,12 @@ _BASE_CATALOG: list[CatalogEntry] = [
     CatalogEntry(
         id="texto-vision", modality="texto", label="Vision (comentar fotos)",
         description="Necesario para poder subir una foto en el chat y que la describa.",
-        ollama_model="qwen2.5vl:7b-cpu",
+        ollama_model="qwen2.5vl:7b-gpu",  # cpu_only recibe la variante -cpu
+    ),
+    CatalogEntry(
+        id="agente-rapido", modality="texto", label="Agente (tareas en el ordenador)",
+        description="El modelo del modo Agente: crea, mueve, ordena y renombra archivos por ti.",
+        ollama_model="qwen3:8b",
     ),
     CatalogEntry(
         id="imagen-flux", modality="imagen", label="FLUX (rapido, buena calidad general)",
@@ -81,10 +86,13 @@ _BASE_CATALOG: list[CatalogEntry] = [
 # que se usa (ver agents/voice_agent.py), no hace falta que el instalador
 # haga nada por el.
 
+GPU_SUFFIX = "-gpu"  # variante forzada a GPU: sin GPU se ofrece la "-cpu"
 _CPU_ONLY_EXCLUDED_MODALITIES = {"video"}  # lo mas lento de generar en CPU puro
 
 
 def catalog_for_tier(tier: str) -> list[CatalogEntry]:
     if tier == "cpu_only":
-        return [e for e in _BASE_CATALOG if e.modality not in _CPU_ONLY_EXCLUDED_MODALITIES]
+        return [replace(e, ollama_model=e.ollama_model.removesuffix(GPU_SUFFIX) + "-cpu")
+                if e.ollama_model and e.ollama_model.endswith(GPU_SUFFIX) else e
+                for e in _BASE_CATALOG if e.modality not in _CPU_ONLY_EXCLUDED_MODALITIES]
     return list(_BASE_CATALOG)

@@ -1,5 +1,8 @@
 ollama:
-  base_url: "http://localhost:11434"
+  # 127.0.0.1 y no "localhost": en Windows localhost prueba antes IPv6 (::1),
+  # donde Ollama no escucha, y cada peticion esperaba ~2s a que fallara
+  # (medido 2026-09-28: 2.04s contra 0.01s por llamada)
+  base_url: "http://127.0.0.1:11434"
 
 comfyui:
   base_url: "http://127.0.0.1:8188"
@@ -7,6 +10,24 @@ comfyui:
 opencode:
   base_url: "http://127.0.0.1:8901"
   web_url: "http://127.0.0.1:8901"
+  # Agentes definidos en ~/.config/opencode/opencode.json (los crea
+  # setup/install.ps1). Medido el 2026-09-28 con "crea un archivo": el de
+  # siempre (qwen3-coder en CPU, instrucciones completas de OpenCode) tardaba
+  # 8-10 min, casi todo leyendo ~11.800 tokens a 35-60 tokens/s; "chati"
+  # (qwen2.5:7b en GPU, instrucciones cortas y sin herramientas que no usa)
+  # lo hizo en 15s. El potente queda para tareas complejas, a eleccion.
+  agent: "chati"
+  # qwen3:8b sin razonamiento previo (ver no_think_models): en el banco de
+  # pruebas del 2026-09-28 (crear, editar, contar, mover y renombrar, 3 veces
+  # cada una) acerto 15/15 en ~33s; qwen2.5:7b 4-5/15, llama3.1:8b 5/15,
+  # qwen2.5-coder:7b 0/15. Con su contexto ocupa ~7,6GB de GPU: no cabe junto
+  # al modelo del chat, por eso el agente lo descarga (_free_memory_for_agent).
+  model: "qwen3:8b"
+  agent_potente: "chati-potente"
+  model_potente: "qwen3-coder:30b-cpu"
+  # modelos a los que la pasarela (llm_proxy.py) les quita el razonamiento
+  # previo: con el, qwen3 tardaba ~10 veces mas en cada paso del agente
+  no_think_models: ["qwen3:8b"]
 
 agents:
   text:
@@ -43,7 +64,9 @@ agents:
         # Desactivado aqui: el valor de este perfil es "responde sin
         # negarse", no "enseña su razonamiento".
         think: false
-    default_profile: "bueno"
+    # "rapido" por defecto (pedido por Sergio 2026-09-25): en CPU "bueno" tarda
+    # bastante mas por respuesta; se cambia desde el desplegable cuando haga falta
+    default_profile: "rapido"
   code:
     model: "qwen3-coder:30b-cpu"
     description: "programacion, depuracion, explicacion de codigo"
@@ -53,6 +76,10 @@ agents:
     # real", que GENERA, esto ANALIZA una imagen que subes). Verificado en
     # vivo: describio correctamente forma y color de una imagen de prueba.
     model: "qwen2.5vl:7b-cpu"
+    # Variante en GPU (num_ctx 4096 para que quepa en 8 GB de VRAM): 6-17 s
+    # por imagen frente a 60-70 s en CPU. Si esta instalada se usa esta; si no
+    # (equipos sin GPU), la de CPU de arriba.
+    gpu_model: "qwen2.5vl:7b-gpu"
     description: "analizar y comentar una foto que subes"
   image:
     description: "generar imagenes a partir de una descripcion"

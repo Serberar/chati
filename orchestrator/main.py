@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -13,10 +14,15 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import auth
 import auth_sessions
+import face_detect
+import agent_attachments
+import job_search
+import llm_proxy
 import model_registry
 import paths
 import persona_trainer
@@ -27,6 +33,7 @@ from agents.llm_agent import LLMAgent
 from agents.image_agent import ImageAgent
 from agents.video_agent import VideoAgent
 from agents.voice_agent import VoiceAgent
+from agents import comfyui_client
 from agents.comfyui_client import GenerationCancelled, interrupt as comfyui_interrupt
 from router import Router
 from verifier import Verifier
@@ -39,6 +46,7 @@ import metrics
 import model_updates
 import opencode_client
 import plans
+import session_docs
 import tools
 from rag import EMBED_MODEL, KnowledgeBase
 
@@ -54,7 +62,17 @@ ollama = OllamaClient(CONFIG["ollama"]["base_url"])
 
 text_agent = LLMAgent("text", CONFIG["agents"]["text"]["model"], ollama)
 code_agent = LLMAgent("code", CONFIG["agents"]["code"]["model"], ollama)
-vision_agent = LLMAgent("vision", CONFIG["agents"]["vision"]["model"], ollama)
+def _vision_model() -> str:
+    """La variante GPU de vision si esta instalada (mucho mas rapida), si no la de CPU."""
+    cfg = CONFIG["agents"]["vision"]
+    gpu = cfg.get("gpu_model")
+    if gpu and tuple(gpu.split(":", 1)) in set(model_updates.installed_official_models()):
+        return gpu
+    return cfg["model"]
+
+
+vision_agent = LLMAgent("vision", _vision_model(), ollama)
+opencode_client.WORKDIR = agent_attachments.AGENT_DIR
 image_agent = ImageAgent(CONFIG["comfyui"]["base_url"])
 video_agent = VideoAgent(CONFIG["comfyui"]["base_url"])
 voice_agent = VoiceAgent()
@@ -102,6 +120,73 @@ def _ensure_active_model(model: str) -> None:
         if old_heavy and old_heavy != new_heavy:
             ollama.unload(old_heavy)
         _active_heavy_model = new_heavy
+
+
+def _loading_event(model: str) -> str:
+    return json.dumps({"type": "status",
+                       "text": f"Cargando el modelo {model}… la primera respuesta tarda más"}) + "\n"
+
+
+def _index_in_background(session_id: str, message: str, answer: str, user_id: str | None,
+                         dek: bytes | None, key_generation: int | None) -> None:
+    """Indexar el intercambio en la memoria larga necesita embeddings (~2s
+    medido) - antes se hacia ANTES de mandar la respuesta y el usuario lo
+    esperaba en cada mensaje. No hace falta: solo se usa en mensajes futuros."""
+    def work():
+        try:
+            knowledge_base.add_conversation(session_id, message, answer, user_id=user_id,
+                                            dek=dek, key_generation=key_generation)
+        except Exception as exc:
+            # la respuesta ya se entrego; perder este recuerdo no debe romper nada
+            print(f"No se pudo indexar la conversacion en la memoria larga: {exc}", file=sys.stderr)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _agent_models() -> set[str]:
+    return {CONFIG["opencode"]["model"], CONFIG["opencode"]["model_potente"]}
+
+
+def _free_memory_for_generation() -> None:
+    """Antes de cada imagen/video: descarga TODOS los modelos de Ollama.
+    Medido en vivo el 2026-09-25: con qwen2.5:7b (router + perfil rapido)
+    ocupando 4.9 de los 8GB de VRAM, y los modelos -cpu llenando la RAM
+    (~37GB cargados en un equipo de 32GB), una imagen FLUX de una bicicleta
+    llevaba ~400s en vez de menos de un minuto. Vuelven a cargarse solos en
+    el siguiente mensaje de chat (unos segundos, estan en cache de disco).
+    Excepcion: el modelo del agente si hay una tarea en marcha - descargarlo
+    a mitad obliga a recargar 26GB en su siguiente paso."""
+    global _active_heavy_model
+    keep = set()
+    if opencode_client.busy_session_ids(CONFIG["opencode"]["base_url"]):
+        keep |= _agent_models()
+    with _heavy_model_lock:
+        for model in ollama.running_models():
+            if model not in keep:
+                ollama.unload(model)
+        _active_heavy_model = None
+
+
+def _free_memory_for_agent(agent: str | None) -> None:
+    """Antes de una tarea del agente, en segundo plano (OpenCode tarda
+    igualmente en pedir el modelo), deja sitio a su modelo:
+    - agente rapido (qwen3:8b, ~7,6GB de GPU con su contexto): no cabe junto
+      al modelo del chat ni a lo que retenga ComfyUI - se descargan.
+    - agente potente (qwen3-coder, ~26GB de RAM): medido el 2026-09-25, con
+      el modelo de vision tambien cargado y ComfyUI reteniendo la ultima
+      imagen, cargarlo tardo 425s de los 477s de una tarea "crea hello.txt"."""
+    potente = agent == CONFIG["opencode"]["agent_potente"]
+    model = CONFIG["opencode"]["model_potente" if potente else "model"]
+
+    def work():
+        # el potente va en CPU: el ligero del chat (GPU) puede quedarse
+        keep = {model, EMBED_MODEL} | ({_LIGHT_MODEL} if potente else set())
+        _keep_only_ollama(keep, heavy=model)
+        comfyui_client.free_memory(CONFIG["comfyui"]["base_url"])
+    threading.Thread(target=work, daemon=True).start()
+
+
+comfyui_client.before_submit = _free_memory_for_generation
+opencode_client.before_task = _free_memory_for_agent
 
 OUTPUT_DIR = paths.OUTPUT_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -177,6 +262,10 @@ def auth_login(req: LoginRequest):
         return JSONResponse({"detail": str(exc)}, status_code=401)
     token = auth_sessions.create_session(
         session["id"], session["username"], session["role"], session["dek"], session["key_generation"])
+    try:  # documentos subidos antes de que se cifraran los originales
+        knowledge_base.encrypt_plain_originals(session["id"], session["dek"])
+    except OSError:
+        pass
     return {"token": token, "username": session["username"], "role": session["role"]}
 
 
@@ -215,7 +304,46 @@ def auth_me(request: Request):
     session = _current_session(request)
     if not session:
         return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
-    return {"username": session["username"], "role": session["role"]}
+    user = users.get_user(session["username"]) if session["username"] else None
+    return {
+        "username": session["username"], "role": session["role"],
+        "display_name": user["display_name"] if user else None,
+        "security_question": user["security_question"] if user else None,
+    }
+
+
+class ProfileUpdateRequest(BaseModel):
+    display_name: str
+
+
+class SecurityQuestionRequest(BaseModel):
+    password: str
+    question: str
+    answer: str
+
+
+@app.post("/auth/profile")
+def auth_update_profile(req: ProfileUpdateRequest, request: Request):
+    session = _current_session(request)
+    if not session or session["role"] == "guest":
+        return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
+    try:
+        users.set_display_name(session["username"], req.display_name)
+    except users.UserError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return {"ok": True}
+
+
+@app.post("/auth/security-question")
+def auth_set_security_question(req: SecurityQuestionRequest, request: Request):
+    session = _current_session(request)
+    if not session or session["role"] == "guest":
+        return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
+    try:
+        users.set_security_question(session["username"], req.password, req.question, req.answer)
+    except users.UserError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return {"ok": True}
 
 
 @app.post("/auth/change-password")
@@ -278,6 +406,7 @@ def auth_delete_user(username: str, request: Request):
         people.delete_all_for_user(target_id)
         profile_store.delete_all_for_user(target_id)
         knowledge_base.delete_all_for_user(target_id)
+        session_docs.delete_all_for_user(target_id)
     auth_sessions.destroy_all_sessions_for_user(username)
     return {"ok": deleted}
 
@@ -318,6 +447,11 @@ class ChatResponse(BaseModel):
     file_url: str | None = None
     session_id: str | None = None
     sources: list[str] | None = None
+    # tarea de OpenCode lanzada desde el chat - la interfaz pinta su tarjeta
+    agent_task_id: str | None = None
+    # tarea que parece compleja para el agente rapido: la interfaz pregunta
+    # con que modelo hacerla ({"task", "reason"}), ver _assess_for_fast_agent
+    agent_choice: dict | None = None
 
 
 def _with_file(resp: ChatResponse, path: Path) -> ChatResponse:
@@ -335,6 +469,41 @@ def _generation_error_message(action: str, exc: Exception) -> str:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# --- Pasarela OpenCode -> Ollama (ver llm_proxy.py): quita los parametros
+# null que el modelo del agente pone en las herramientas. Publica como el
+# propio Ollama: el servidor solo escucha en 127.0.0.1 y no lleva sesion.
+@app.api_route("/llm/v1/{path:path}", methods=["GET", "POST"])
+async def llm_proxy_route(path: str, request: Request):
+    target = f"{CONFIG['ollama']['base_url']}/v1/{path}"
+    body = llm_proxy.disable_thinking(await request.body(), set(CONFIG["opencode"].get("no_think_models", [])))
+    headers = {"Content-Type": request.headers.get("content-type", "application/json")}
+    wants_stream = b'"stream":true' in body.replace(b" ", b"")
+
+    def forward():
+        return requests.request(request.method, target, data=body or None, headers=headers,
+                                stream=wants_stream, timeout=900)
+
+    upstream = await run_in_threadpool(forward)
+    if not wants_stream:
+        content = upstream.content
+        if upstream.ok and b"tool_calls" in content:
+            try:
+                content = json.dumps(llm_proxy.clean_completion(upstream.json()), ensure_ascii=False).encode("utf-8")
+            except ValueError:
+                pass
+        return Response(content=content, status_code=upstream.status_code,
+                        media_type=upstream.headers.get("content-type", "application/json"))
+
+    def stream():
+        try:
+            for line in upstream.iter_lines():
+                yield llm_proxy.clean_stream_line(line) + b"\n\n" if line else b""
+        finally:
+            upstream.close()
+    return StreamingResponse(stream(), status_code=upstream.status_code,
+                             media_type=upstream.headers.get("content-type", "text/event-stream"))
 
 
 @app.get("/metrics/summary")
@@ -397,6 +566,348 @@ def cancel_generation():
     falta identificar cual: siempre es 'lo que este corriendo ahora mismo'."""
     comfyui_interrupt(CONFIG["comfyui"]["base_url"])
     return {"ok": True}
+
+
+# --- Modo "Agente": interfaz propia encima de OpenCode (ver opencode_client.py) ---
+# Solo usuarios registrados: el agente puede leer/escribir archivos y ejecutar
+# comandos en el equipo (siempre pidiendo permiso para lo que modifica algo).
+
+class AgentTaskRequest(BaseModel):
+    task: str
+    potente: bool = False
+    confirmed: bool = False  # el usuario ya eligio modelo: no volver a valorar
+    attachments: list[dict] = []  # lo que devolvio /agent/attachments
+
+
+IMAGE_DESCRIBE_PROMPT = ("Describe en una sola frase, en español, que se ve en esta imagen, para poder "
+                         "clasificarla o ponerle nombre. Si hay texto importante (un titulo, un total, una "
+                         "fecha), incluyelo.")
+
+
+@app.post("/agent/attachments")
+def agent_upload_attachments(request: Request, files: list[UploadFile] = File(...)):
+    """Adjuntos de una tarea del agente: se copian a Documentos/Chati/adjuntos
+    y las imagenes se describen con el modelo de vision (el del agente no ve
+    imagenes). Devuelve la lista para mandarla luego con la tarea."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        folder, saved = agent_attachments.save_batch([(f.filename, f.file.read()) for f in files])
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    if any(Path(i["path"]).suffix.lower() in agent_attachments.IMAGE_SUFFIXES for i in saved):
+        _ensure_active_model(vision_agent.model)
+        agent_attachments.describe_images(
+            saved, lambda b64: "".join(vision_agent.respond_with_image_stream(IMAGE_DESCRIBE_PROMPT, b64)))
+    return {"folder": folder.as_posix(), "files": saved}
+
+
+def _assess_for_fast_agent(task: str) -> dict | None:
+    """{"task", "reason"} si la tarea parece demasiado compleja para el
+    agente rapido (se recomienda el potente), None si no. Si la valoracion
+    falla, None: nunca debe impedir lanzar una tarea."""
+    try:
+        verdict = router.assess_agent_task(task)
+    except Exception:
+        return None
+    return {"task": task, "reason": verdict["reason"]} if verdict["complex"] else None
+
+
+class AgentQuestionReply(BaseModel):
+    answers: list[list[str]]
+
+
+class AgentPermissionReply(BaseModel):
+    reply: str
+
+
+def _opencode_call(fn, *args):
+    try:
+        return fn(CONFIG["opencode"]["base_url"], *args)
+    except requests.RequestException as exc:
+        return JSONResponse(
+            {"detail": f"No se pudo contactar con el agente de codigo (¿esta arrancado?): {exc}"},
+            status_code=502)
+
+
+@app.get("/agent/tasks")
+def agent_list_tasks(request: Request):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    return _opencode_call(opencode_client.list_tasks)
+
+
+@app.post("/agent/tasks")
+def agent_start_task(request: Request, req: AgentTaskRequest):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    if not req.task.strip():
+        return JSONResponse({"detail": "Describe la tarea."}, status_code=400)
+    task = req.task.strip()
+    if not req.potente and not req.confirmed:
+        choice = _assess_for_fast_agent(task)
+        if choice:
+            return {"needs_choice": True, **choice, "attachments": req.attachments}
+    agent = CONFIG["opencode"]["agent_potente" if req.potente else "agent"]
+    note = agent_attachments.task_note(req.attachments)
+    result = _opencode_call(opencode_client.start_task, f"{task}\n\n{note}" if note else task, agent)
+    return result if isinstance(result, JSONResponse) else {"session_id": result}
+
+
+@app.get("/agent/tasks/{session_id}")
+def agent_task_view(request: Request, session_id: str):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    return _opencode_call(_task_view, session_id)
+
+
+def _task_view(base_url: str, session_id: str) -> dict:
+    view = opencode_client.get_task_view(base_url, session_id)
+    # trabajando pero con su modelo aun sin cargar en Ollama: esta cargandolo
+    task_model = view.get("model") or CONFIG["opencode"]["model"]
+    view["model_loading"] = view["status"] != "idle" and task_model not in ollama.running_models()
+    return view
+
+
+# eventos que cambian lo que se ve pero llegan en rafaga (texto palabra a
+# palabra): como mucho uno cada LIVE_THROTTLE segundos; el resto, al momento
+LIVE_THROTTLE = 0.3
+
+
+@app.get("/agent/tasks/{session_id}/live")
+def agent_task_live(request: Request, session_id: str):
+    """La tarea en directo (SSE): cada vez que OpenCode avisa de algo en ESTA
+    tarea (texto nuevo, una herramienta, un permiso...) se manda su estado
+    completo. Sustituye a preguntar cada 2,5s. Si OpenCode se cae, se cierra
+    con un evento "end" y la interfaz vuelve a preguntar por su cuenta."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    base = CONFIG["opencode"]["base_url"]
+    marker = session_id.encode()
+
+    # OpenCode no guarda el texto mientras se escribe: lo manda palabra a
+    # palabra en eventos "message.part.delta" y solo lo guarda al acabar esa
+    # parte. Se van juntando aqui para enseñarlo a medio escribir.
+    writing = {"part": None, "text": ""}
+
+    def snapshot() -> str:
+        view = _task_view(base, session_id)
+        if writing["text"] and view["status"] != "idle":
+            view["streaming_text"] = writing["text"]
+        return f"data: {json.dumps(view, ensure_ascii=False)}\n\n"
+
+    def track_text(event: dict) -> None:
+        props = event.get("properties") or {}
+        if event.get("type") == "message.part.delta" and props.get("field") == "text":
+            if props.get("partID") != writing["part"]:
+                writing.update(part=props.get("partID"), text="")
+            writing["text"] += props.get("delta", "")
+        elif event.get("type") == "message.part.updated":
+            part = props.get("part") or {}
+            if part.get("id") == writing["part"] and part.get("text"):
+                writing.update(part=None, text="")  # ya guardada: sale en los pasos normales
+
+    def events():
+        try:
+            yield snapshot()
+            last = 0.0
+            with requests.get(f"{base}/event", stream=True, timeout=(5, 60),
+                              **opencode_client._dir()) as upstream:
+                for line in upstream.iter_lines():
+                    if not line.startswith(b"data:"):
+                        continue
+                    if marker not in line:
+                        # los latidos de OpenCode (~10s) sirven para notar si el
+                        # navegador se ha ido: al escribir, falla y se cierra
+                        if b"server.heartbeat" in line:
+                            yield ": ping\n\n"
+                        continue
+                    try:
+                        track_text(json.loads(line[5:]))
+                    except ValueError:
+                        pass
+                    # rafagas: texto palabra a palabra y salida de comandos linea a linea
+                    bursty = b"message.part.delta" in line or (
+                        b"message.part.updated" in line and b'"status":"running"' in line)
+                    if bursty and time.time() - last < LIVE_THROTTLE:
+                        continue
+                    last = time.time()
+                    yield snapshot()
+        except requests.RequestException:
+            pass
+        yield "event: end\ndata: {}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.get("/agent/tasks/{session_id}/changes")
+def agent_task_changes(request: Request, session_id: str):
+    """Ver cambios: que archivos cambio la tarea en la carpeta de trabajo."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    return _opencode_call(opencode_client.get_changes, session_id)
+
+
+@app.post("/agent/tasks/{session_id}/revert")
+def agent_task_revert(request: Request, session_id: str):
+    """Deshacer lo que la tarea cambio en la carpeta de trabajo."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    if not opencode_client.workdir_undoable():
+        return JSONResponse({"detail": "No se puede deshacer: falta git en este equipo."}, status_code=400)
+    result = _opencode_call(opencode_client.revert_task, session_id)
+    return result if isinstance(result, JSONResponse) else {"ok": True}
+
+
+@app.post("/agent/tasks/{session_id}/unrevert")
+def agent_task_unrevert(request: Request, session_id: str):
+    """Rehacer: vuelve a poner lo que se deshizo."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    result = _opencode_call(opencode_client.unrevert_task, session_id)
+    return result if isinstance(result, JSONResponse) else {"ok": True}
+
+
+@app.post("/agent/tasks/{session_id}/abort")
+def agent_abort(request: Request, session_id: str):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    result = _opencode_call(opencode_client.abort, session_id)
+    return result if isinstance(result, JSONResponse) else {"ok": True}
+
+
+class AgentShortcutsRequest(BaseModel):
+    shortcuts: list[dict]
+
+
+@app.get("/agent/shortcuts")
+def agent_get_shortcuts(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    return profile_store.get_agent_shortcuts(session["user_id"], session["dek"], session["key_generation"])
+
+
+@app.put("/agent/shortcuts")
+def agent_save_shortcuts(request: Request, req: AgentShortcutsRequest):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        return profile_store.save_agent_shortcuts(req.shortcuts, session["user_id"], session["dek"],
+                                                  session["key_generation"])
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+# --- Buscador de empleo autonomo (roadmap n.º 7, ver job_search.py) ---
+
+class JobPrefsRequest(BaseModel):
+    prefs: dict
+
+
+def _job_chat(prompt: str) -> str:
+    # el mismo modelo que el agente rapido (qwen3:8b), sin razonamiento previo
+    return ollama.chat(CONFIG["opencode"]["model"], [{"role": "user", "content": prompt}],
+                       temperature=0.2, think=False)
+
+
+@app.get("/jobs")
+def jobs_overview(request: Request):
+    """Todo lo del buscador de empleo: preferencias, ultimos resultados y si
+    hay una busqueda en marcha."""
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    uid, dek, gen = session["user_id"], session["dek"], session["key_generation"]
+    results = job_search.get_results(uid, dek, gen)
+    return {"prefs": job_search.get_prefs(uid, dek, gen),
+            "results": {k: v for k, v in results.items() if k != "seen"},
+            "status": job_search.status(uid),
+            "has_cv": profile_store.cv_filename(user_id=uid) is not None}
+
+
+@app.put("/jobs/prefs")
+def jobs_save_prefs(request: Request, req: JobPrefsRequest):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        return job_search.save_prefs(req.prefs, session["user_id"], session["dek"], session["key_generation"])
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+@app.post("/jobs/search")
+def jobs_start(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        job_search.start(session["user_id"], session["dek"], session["key_generation"], _job_chat,
+                         before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"]))
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return {"ok": True}
+
+
+@app.get("/jobs/status")
+def jobs_status(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    return job_search.status(session["user_id"])
+
+
+@app.post("/jobs/cancel")
+def jobs_cancel(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    job_search.cancel(session["user_id"])
+    return {"ok": True}
+
+
+class AgentFollowUp(BaseModel):
+    text: str
+
+
+@app.post("/agent/tasks/{session_id}/message")
+def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
+    """Seguir la misma tarea ("corregir o continuar"), sin empezar de cero."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    if not req.text.strip():
+        return JSONResponse({"detail": "Escribe que quieres que haga."}, status_code=400)
+    result = _opencode_call(opencode_client.continue_task, session_id, req.text.strip())
+    return result if isinstance(result, JSONResponse) else {"ok": True}
+
+
+@app.post("/agent/questions/{request_id}")
+def agent_reply_question(request: Request, request_id: str, req: AgentQuestionReply):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    result = _opencode_call(opencode_client.reply_question, request_id, req.answers)
+    return result if isinstance(result, JSONResponse) else {"ok": True}
+
+
+@app.post("/agent/questions/{request_id}/reject")
+def agent_reject_question(request: Request, request_id: str):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    result = _opencode_call(opencode_client.reject_question, request_id)
+    return result if isinstance(result, JSONResponse) else {"ok": True}
+
+
+@app.post("/agent/permissions/{request_id}")
+def agent_reply_permission(request: Request, request_id: str, req: AgentPermissionReply):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    if req.reply not in ("once", "always", "reject"):
+        return JSONResponse({"detail": "Respuesta invalida."}, status_code=400)
+    result = _opencode_call(opencode_client.reply_permission, request_id, req.reply)
+    return result if isinstance(result, JSONResponse) else {"ok": True}
 
 
 def _resolve_source_image(file_path: str | None, image: UploadFile | None) -> Path:
@@ -544,6 +1055,38 @@ def upload_cv(request: Request, file: UploadFile = File(...)):
     saved = profile_store.save_cv(file.filename or "cv.pdf", file.file.read(), user_id=session["user_id"],
                                    dek=session["dek"], key_generation=session["key_generation"])
     return {"ok": True, "filename": saved.name.removesuffix(".enc")}
+
+
+@app.get("/profile/avatar")
+def get_avatar(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    data = profile_store.get_avatar_bytes(session["user_id"], session["dek"], session["key_generation"])
+    if data is None:
+        return JSONResponse({"detail": "Sin avatar."}, status_code=404)
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/profile/avatar")
+def upload_avatar(request: Request, file: UploadFile = File(...)):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        profile_store.save_avatar(file.file.read(), session["user_id"], session["dek"], session["key_generation"])
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return {"ok": True}
+
+
+@app.delete("/profile/avatar")
+def delete_avatar(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    profile_store.delete_avatar(session["user_id"])
+    return {"ok": True}
 
 
 @app.get("/knowledge")
@@ -705,12 +1248,17 @@ def _execute_tool(name: str, arguments: dict, session_id: str, user_id: str | No
         tarea = (arguments or {}).get("tarea", "") if isinstance(arguments, dict) else ""
         if not tarea:
             return "Falta describir la tarea.", None
-        text = opencode_client.delegate(
-            CONFIG["opencode"]["base_url"], CONFIG["opencode"]["web_url"], tarea,
-        )
-        return text, [{"source": "sistema:delegar_a_agente_de_codigo", "text": text}]
+        text, task_id = opencode_client.delegate(CONFIG["opencode"]["base_url"], tarea,
+                                                 CONFIG["opencode"]["agent"])
+        return text, [{"source": "sistema:delegar_a_agente_de_codigo", "text": text, "agent_task_id": task_id}]
 
     return f"Herramienta desconocida: {name}", None
+
+
+def _delegated_task_id(evidence: list[dict] | None) -> str | None:
+    """Si el modelo de chat uso la herramienta delegar_a_agente_de_codigo,
+    el id de la tarea lanzada (para que la interfaz pinte su tarjeta)."""
+    return next((e["agent_task_id"] for e in evidence or [] if e.get("agent_task_id")), None)
 
 
 def _resolve_agent(message: str, agent_override: str | None) -> tuple[str, bool]:
@@ -801,8 +1349,21 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
         return resp
 
     if agent_name == "opencode":
-        text = opencode_client.delegate(CONFIG["opencode"]["base_url"], CONFIG["opencode"]["web_url"], message)
-        resp = ChatResponse(agent_used="opencode", response=text, verifier_gated=False, session_id=session_id)
+        task_id, choice = None, None
+        if auth_session.get("role") == "guest":
+            # el agente toca archivos reales del equipo - igual que las rutas /agent/*
+            text = "El agente solo esta disponible para usuarios registrados, no en modo invitado."
+        else:
+            choice = _assess_for_fast_agent(message)
+            if choice:
+                text = ("Esta tarea parece compleja para el agente rapido: " + (choice["reason"] or "tiene varios pasos.")
+                        + " Te recomiendo el modelo potente: se equivoca menos, pero tarda minutos en vez de segundos.")
+            else:
+                text, task_id = opencode_client.delegate(CONFIG["opencode"]["base_url"], message,
+                                                         CONFIG["opencode"]["agent"])
+        resp = ChatResponse(agent_used="opencode", response=text, verifier_gated=False,
+                            session_id=session_id, agent_task_id=task_id,
+                            agent_choice=choice)
         _save_assistant_message(resp.response, "opencode")
         return resp
 
@@ -824,9 +1385,11 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
         _ensure_active_model(override_model or agent.model)
         tool_executor = partial(_execute_tool, session_id=session_id, user_id=user_id,
                                  dek=dek, key_generation=key_generation)
+        docs_context, docs_evidence = _attached_docs(session_id, message, auth_session)
         raw_answer, evidence = agent.respond_with_tools(
-            message, history, tools.TOOL_DEFS, tool_executor, model=override_model, think=think)
-        evidence = evidence or None  # lista vacia -> None, mas explicito para lo que sigue
+            _with_docs(message, docs_context), history, tools.TOOL_DEFS, tool_executor,
+            model=override_model, think=think)
+        evidence = docs_evidence + (evidence or []) or None  # lista vacia -> None, mas explicito para lo que sigue
     else:
         evidence = None
         raw_answer = agent.respond(message, history=history, context_chunks=None)
@@ -843,13 +1406,13 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
         )
     else:
         resp = ChatResponse(agent_used=agent_name, response=raw_answer, verifier_gated=False, session_id=session_id)
+    resp.agent_task_id = _delegated_task_id(evidence)
 
     _save_assistant_message(resp.response, agent_name)
     if agent_name in ("text", "code") and not resp.verifier_gated:
         # memoria a largo plazo real: indexado para recuperar por relevancia mas adelante,
         # no solo los ultimos N mensajes. No se indexan respuestas bloqueadas (no hay nada que recordar).
-        knowledge_base.add_conversation(session_id, message, resp.response,
-                                         user_id=user_id, dek=dek, key_generation=key_generation)
+        _index_in_background(session_id, message, resp.response, user_id, dek, key_generation)
     return resp
 
 
@@ -861,7 +1424,7 @@ def _run_vision_chat(message: str, image_base64: str, session_id: str | None, au
     en vivo, 2026-09-25): si el perfil de chat activo era "rapido", vision
     intentaba usar qwen2.5:7b (sin soporte de imagenes) en vez del modelo
     de vision configurado, y Ollama lo rechazaba con un 400."""
-    session_id = session_id or memory.new_session_id()
+    session_id = _own_session_id(session_id, auth_session)
     dek, key_generation, user_id = auth_session["dek"], auth_session["key_generation"], auth_session["user_id"]
     memory.add_message(session_id, "user", message or "[imagen adjunta]",
                         dek=dek, key_generation=key_generation, user_id=user_id)
@@ -886,7 +1449,7 @@ def _stream_vision_chat(message: str, image_base64: str, session_id: str | None,
     chat (rapido/bueno/seguridad) son de texto, aplicarlos aqui rompia
     vision con un 400 de Ollama si el perfil activo no era el modelo de
     vision."""
-    session_id = session_id or memory.new_session_id()
+    session_id = _own_session_id(session_id, auth_session)
     dek, key_generation, user_id = auth_session["dek"], auth_session["key_generation"], auth_session["user_id"]
     memory.add_message(session_id, "user", message or "[imagen adjunta]",
                         dek=dek, key_generation=key_generation, user_id=user_id)
@@ -915,7 +1478,7 @@ def _stream_vision_chat(message: str, image_base64: str, session_id: str | None,
 def _run_chat(message: str, agent_override: str | None, session_id: str | None, auth_session: dict,
               model_profile: str | None = None, verify: bool = True,
               image_model: str | None = None, video_model: str | None = None) -> ChatResponse:
-    session_id = session_id or memory.new_session_id()
+    session_id = _own_session_id(session_id, auth_session)
     memory.add_message(session_id, "user", message, dek=auth_session["dek"],
                         key_generation=auth_session["key_generation"], user_id=auth_session["user_id"])
     agent_name, is_factual = _resolve_agent(message, agent_override)
@@ -947,12 +1510,26 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
     override_model = _resolve_model_profile(model_profile)
     think = _resolve_think(model_profile)
 
-    session_id = session_id or memory.new_session_id()
+    session_id = _own_session_id(session_id, auth_session)
     memory.add_message(session_id, "user", message, dek=dek, key_generation=key_generation, user_id=user_id)
+
+    # si hay que cargar un modelo, la primera respuesta tarda bastante mas
+    # (medido: 17s solo en cargar qwen2.5:7b con la RAM llena) - se avisa
+    # para que no parezca que la app se ha colgado
+    loaded = set(ollama.running_models())
+    announced = set()
+    if agent_override is None and _LIGHT_MODEL not in loaded:
+        announced.add(_LIGHT_MODEL)
+        yield _loading_event(_LIGHT_MODEL)
 
     agent_name, is_factual = _resolve_agent(message, agent_override)
     yield json.dumps({"type": "start", "agent_used": agent_name, "session_id": session_id}) + "\n"
     stream_start = time.perf_counter()
+
+    if agent_name in AGENTS:
+        target_model = override_model or AGENTS[agent_name].model
+        if target_model not in loaded and target_model not in announced:
+            yield _loading_event(target_model)
 
     if agent_name not in AGENTS:
         # imagen, video, o un agente desconocido: sin streaming real, se reutiliza el pipeline normal
@@ -966,7 +1543,7 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
     raw_history = memory.get_history(session_id, limit=12, dek=dek, key_generation=key_generation)[:-1]
     history = [{"role": h["role"], "content": h["content"]} for h in raw_history]
 
-    evidence: list[dict] = []
+    docs_context, evidence = _attached_docs(session_id, message, auth_session)
     full_text = ""
     try:
         if agent_name in ("text", "code"):
@@ -974,7 +1551,8 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
             tool_executor = partial(_execute_tool, session_id=session_id, user_id=user_id,
                                      dek=dek, key_generation=key_generation)
             chunks = agent.respond_with_tools_stream(
-                message, history, tools.TOOL_DEFS, tool_executor, evidence, model=override_model, think=think)
+                _with_docs(message, docs_context), history, tools.TOOL_DEFS, tool_executor, evidence,
+                model=override_model, think=think)
         else:
             chunks = agent.respond_stream(message, history=history, context_chunks=None)
         for chunk in chunks:
@@ -1001,8 +1579,7 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
     memory.add_message(session_id, "assistant", final_response, agent=agent_name,
                         dek=dek, key_generation=key_generation, user_id=user_id)
     if agent_name in ("text", "code") and not verifier_gated:
-        knowledge_base.add_conversation(session_id, message, final_response,
-                                         user_id=user_id, dek=dek, key_generation=key_generation)
+        _index_in_background(session_id, message, final_response, user_id, dek, key_generation)
     metrics.log_event(agent_name, (time.perf_counter() - stream_start) * 1000, verifier_gated)
     yield json.dumps({
         "type": "done",
@@ -1012,6 +1589,7 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
         "sources": sources,
         "session_id": session_id,
         "corrected": verifier_gated or (final_response != full_text),
+        "agent_task_id": _delegated_task_id(evidence),
     }) + "\n"
 
 
@@ -1088,6 +1666,9 @@ def create_persona(request: Request, name: str = Form(...), photos: list[UploadF
             dest = tmp_dir / f"{i:03d}{ext}"
             dest.write_bytes(photo.file.read())
             saved_paths.append(dest)
+        # el entrenamiento necesita la GPU entera: fuera modelos de chat e imagen
+        _keep_only_ollama(set(), heavy=None)
+        comfyui_client.free_memory(CONFIG["comfyui"]["base_url"])
         result = persona_trainer.start_training(name, saved_paths)
     except persona_trainer.NoBaseModelError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
@@ -1132,6 +1713,215 @@ def delete_video_model(model_id: str, request: Request):
     return {"ok": True, "message": f"'{model_id}' borrado."}
 
 
+# --- Preparar los modelos del modo elegido (desplegable de la izquierda) ---
+# Pedido por Sergio 2026-09-28: que cada modo tenga ya cargado lo suyo y
+# libere lo de los demas - varias fotos seguidas sin pagar la carga de FLUX
+# en la primera, o hablar sin esperar a que se cargue el modelo de texto.
+# Se trabaja en segundo plano; si se cambia de modo a medio preparar, solo
+# cuenta el ultimo (ticket).
+
+PREPARE_MODES = {"chat", "texto", "image", "video", "agente", "voice"}
+_prepare_state = {"mode": None, "state": "idle", "detail": None, "label": None, "ticket": 0}
+_prepare_lock = threading.Lock()
+
+
+class PrepareRequest(BaseModel):
+    mode: str
+    potente: bool = False  # modo Agente con el modelo grande
+    model_profile: str | None = None
+    image_model: str | None = None
+    video_model: str | None = None
+
+
+def _chat_model_for(profile: str | None) -> str:
+    # sin perfil (la interfaz aun no cargo la lista): el perfil por defecto de
+    # config.yaml, no el modelo base del agente de texto (30B, mucho mas lento)
+    default = CONFIG["agents"]["text"].get("default_profile")
+    return _resolve_model_profile(profile or default) or text_agent.model
+
+
+# lo ultimo que se precargo en ComfyUI: si el modo nuevo usa otro modelo, se
+# libera antes - si no, ComfyUI se queda con los dos en RAM
+_last_comfy_warmup: tuple[str, str | None] | None = None
+
+
+def _same_model(loaded: str, wanted: str) -> bool:
+    # Ollama lista "nomic-embed-text:latest" aunque se pidiera "nomic-embed-text"
+    return loaded == wanted or loaded == f"{wanted}:latest"
+
+
+def _keep_only_ollama(keep: set[str], heavy: str | None = None) -> None:
+    """Descarga de Ollama todo lo que no este en `keep` (RAM y VRAM). El
+    modelo del agente se respeta mientras tenga una tarea en marcha."""
+    global _active_heavy_model
+    keep = set(keep)
+    if opencode_client.busy_session_ids(CONFIG["opencode"]["base_url"]):
+        keep |= _agent_models()
+    with _heavy_model_lock:
+        for model in ollama.running_models():
+            if not any(_same_model(model, k) for k in keep):
+                ollama.unload(model)
+        _active_heavy_model = heavy
+
+
+def _free_comfyui() -> None:
+    global _last_comfy_warmup
+    running, _ = comfyui_client.user_queue(CONFIG["comfyui"]["base_url"])
+    if running:
+        return  # nunca a mitad de una imagen/video del usuario ("dejar en segundo plano")
+    comfyui_client.free_memory(CONFIG["comfyui"]["base_url"])
+    _last_comfy_warmup = None
+
+
+def _prepare_work(req: PrepareRequest) -> None:
+    """Regla: cada modo deja cargado SOLO lo que necesita y descarga el resto
+    (RAM y VRAM) - antes, al pasar a Chat se quedaban en RAM el modelo del
+    agente (26GB) o el de vision (11GB) si ya estaban cargados."""
+    global _last_comfy_warmup
+    mode = req.mode
+    if mode == "chat":  # automatico: el router usa el modelo ligero, y la respuesta el del perfil
+        _free_comfyui()
+        target = _chat_model_for(req.model_profile)
+        _keep_only_ollama({_LIGHT_MODEL, target, EMBED_MODEL},
+                          heavy=target if target != _LIGHT_MODEL else None)
+        ollama.preload(_LIGHT_MODEL)
+        if target != _LIGHT_MODEL:
+            ollama.preload(target)
+    elif mode in ("texto", "voice"):
+        _free_comfyui()
+        target = _chat_model_for(req.model_profile)
+        _keep_only_ollama({target, _LIGHT_MODEL, EMBED_MODEL},
+                          heavy=target if target != _LIGHT_MODEL else None)
+        ollama.preload(target)
+    elif mode in ("image", "video"):
+        model_id = req.image_model if mode == "image" else req.video_model
+        if _last_comfy_warmup not in (None, (mode, model_id)):
+            _free_comfyui()  # otro modelo de imagen/video: fuera el anterior
+        # los modelos de texto los descarga comfyui_client.before_submit
+        if mode == "image":
+            # una imagen minima (256px, pocos pasos) deja cargado en la GPU
+            # todo lo que usa el modelo elegido
+            image_agent.generate(comfyui_client.WARMUP_PROMPT, width=256, height=256, model_id=model_id, timeout=600)
+        else:
+            video_agent.generate(comfyui_client.WARMUP_PROMPT, width=256, height=160, length=9, steps=2,
+                                 model_id=model_id, timeout=600)
+        _last_comfy_warmup = (mode, model_id)
+    elif mode == "agente":
+        _free_comfyui()
+        model = CONFIG["opencode"]["model_potente" if req.potente else "model"]
+        # el agente rapido (GPU) no cabe junto al modelo del chat; el potente (CPU) si
+        keep = {model, EMBED_MODEL} | ({_LIGHT_MODEL} if req.potente else set())
+        _keep_only_ollama(keep, heavy=model)
+        ollama.preload(model)
+
+
+def _prepare_label(req: PrepareRequest) -> str:
+    """Que se esta cargando, en palabras del usuario (para el aviso grande)."""
+    if req.mode in ("chat", "texto", "voice"):
+        return f"el modelo del chat ({_chat_model_for(req.model_profile)})"
+    if req.mode == "image":
+        entry = model_registry.get_image_model(req.image_model)
+        return f"el generador de imagenes ({entry.label})" if entry else "el generador de imagenes"
+    if req.mode == "video":
+        entry = model_registry.get_video_model(req.video_model)
+        return f"el generador de video ({entry.label})" if entry else "el generador de video"
+    if req.potente:
+        return f"el modelo potente del agente ({CONFIG['opencode']['model_potente']}, ~26 GB)"
+    return f"el modelo del agente ({CONFIG['opencode']['model']})"
+
+
+def _run_prepare(req: PrepareRequest, ticket: int) -> None:
+    try:
+        _prepare_work(req)
+        state, detail = "ready", None
+    except Exception as exc:
+        state, detail = "error", str(exc)
+    with _prepare_lock:
+        if _prepare_state["ticket"] == ticket:
+            _prepare_state.update(state=state, detail=detail)
+
+
+@app.get("/work/pending")
+def pending_work():
+    """Lo que esta en marcha: lo usan el aviso al cambiar de modo (finalizar,
+    esperar o segundo plano) y el panel "tareas en segundo plano" de la barra
+    lateral, desde el que se puede cerrar cualquier cosa atascada.
+    "any" solo cuenta lo que TRABAJA (lo que se veria afectado al cambiar de
+    modo): una tarea del agente esperando una respuesta no consume nada."""
+    base = CONFIG["opencode"]["base_url"]
+
+    def summary(sid: str) -> str:
+        try:
+            return opencode_client.task_summary(base, sid)
+        except requests.RequestException:
+            return ""
+
+    agent_tasks = [{"session_id": sid, "title": summary(sid)}
+                   for sid in opencode_client.busy_session_ids(base)]
+    waiting_tasks = [{"session_id": sid, "title": summary(sid), "reason": reason}
+                     for sid, reason in opencode_client.waiting_sessions(base).items()]
+    generations = comfyui_client.user_jobs(CONFIG["comfyui"]["base_url"])
+    running = sum(g["state"] == "running" for g in generations)
+    queued = sum(g["state"] == "queued" for g in generations)
+    return {"agent_tasks": agent_tasks, "waiting_tasks": waiting_tasks, "generations": generations,
+            "generations_running": running, "generations_queued": queued,
+            "any": bool(agent_tasks or running or queued)}
+
+
+@app.post("/work/agent/{session_id}/stop")
+def stop_agent_task(session_id: str, request: Request):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    result = _opencode_call(opencode_client.stop_task, session_id)
+    return result if isinstance(result, JSONResponse) else {"ok": True}
+
+
+@app.post("/work/generation/{prompt_id}/stop")
+def stop_generation(prompt_id: str, request: Request):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        comfyui_client.stop_job(CONFIG["comfyui"]["base_url"], prompt_id)
+    except requests.RequestException as exc:
+        return JSONResponse({"detail": f"ComfyUI no responde: {exc}"}, status_code=502)
+    return {"ok": True}
+
+
+@app.post("/work/stop")
+def stop_work(request: Request):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    base = CONFIG["opencode"]["base_url"]
+    for sid in opencode_client.busy_session_ids(base):
+        try:
+            opencode_client.abort(base, sid)
+        except requests.RequestException:
+            pass
+    try:
+        comfyui_client.stop_everything(CONFIG["comfyui"]["base_url"])
+    except requests.RequestException:
+        pass
+    return {"ok": True}
+
+
+@app.post("/models/prepare")
+def prepare_models(req: PrepareRequest):
+    if req.mode not in PREPARE_MODES:
+        return JSONResponse({"detail": "Modo desconocido."}, status_code=400)
+    with _prepare_lock:
+        _prepare_state["ticket"] += 1
+        ticket = _prepare_state["ticket"]
+        _prepare_state.update(mode=req.mode, state="preparing", detail=None, label=_prepare_label(req))
+    threading.Thread(target=_run_prepare, args=(req, ticket), daemon=True).start()
+    return {"mode": req.mode, "state": "preparing"}
+
+
+@app.get("/models/prepare")
+def prepare_status():
+    with _prepare_lock:
+        return {k: v for k, v in _prepare_state.items() if k != "ticket"}
+
+
 @app.get("/models/profiles")
 def get_model_profiles():
     """Perfiles seleccionables para el chat (rapido/bueno/seguridad) - ver
@@ -1166,7 +1956,7 @@ def get_model_roles():
         add(profile["model"], f'Chat, perfil "{profile["label"]}"')
     add(text_cfg.get("model"), "Chat de texto (modelo por defecto sin perfil)")
     add(CONFIG["agents"]["code"]["model"], "Programacion")
-    add(CONFIG["agents"]["vision"]["model"], "Vision (comentar fotos que subes)")
+    add(vision_agent.model, "Vision (comentar fotos que subes)")
     # EMBED_MODEL se usa sin tag explicito (Ollama lo resuelve a ":latest" el
     # solo), pero la lista de modelos instalados si lleva el tag explicito -
     # hay que normalizar para que casen y no salga como "no usado".
@@ -1214,15 +2004,111 @@ def get_sessions(request: Request):
     return memory.list_sessions(user_id=session["user_id"], dek=session["dek"], key_generation=session["key_generation"])
 
 
+def _attached_docs(session_id: str, message: str, auth_session: dict) -> tuple[str, list[dict]]:
+    """Documentos adjuntos con el clip a ESTA conversacion (ver session_docs.py)."""
+    if not auth_session.get("user_id"):
+        return "", []
+    return session_docs.context_for(auth_session["user_id"], session_id, message,
+                                    auth_session["dek"], auth_session["key_generation"])
+
+
+def _with_docs(message: str, docs_context: str) -> str:
+    # solo lo que se manda al modelo: en el historial queda el mensaje tal cual
+    return f"{message}\n\n{docs_context}" if docs_context else message
+
+
+def _own_session_id(session_id: str | None, auth_session: dict) -> str:
+    """El id de conversacion que manda el cliente, salvo que sea de OTRO
+    usuario: entonces se empieza una nueva en vez de escribir en la suya."""
+    if session_id and memory.session_owner(session_id) not in (None, auth_session["user_id"]):
+        return memory.new_session_id()
+    return session_id or memory.new_session_id()
+
+
+def _owns_session(request: Request, session_id: str) -> bool:
+    # Bug real (2026-09-25): estas rutas no comprobaban el dueño - cualquier
+    # sesion iniciada (incluido invitado) podia borrar o leer conversaciones
+    # ajenas conociendo el id.
+    user_id = request.state.session["user_id"]
+    return user_id is not None and memory.session_owner(session_id) == user_id
+
+
+def _not_your_session() -> JSONResponse:
+    return JSONResponse({"detail": "Conversacion no encontrada."}, status_code=404)
+
+
+ATTACHED_DOC_PREFIX = "📄 Documento adjuntado: "
+
+
+@app.post("/sessions/docs")
+def attach_session_doc(request: Request, file: UploadFile = File(...), session_id: str | None = Form(None)):
+    """Adjunta un documento a una conversacion (el clip). Sin session_id, o
+    con el de una conversacion ajena, empieza una nueva - el cliente debe
+    usar el session_id devuelto para los mensajes siguientes."""
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    session_id = _own_session_id(session_id, session)
+    try:
+        doc = session_docs.save(session["user_id"], session_id, file.filename or "documento.txt",
+                                file.file.read(), session["dek"], session["key_generation"])
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    # queda en el hilo en el momento en que se adjunto (la interfaz lo pinta
+    # como tarjeta, ver addLoadedMessage) y el modelo ve en el historial
+    # cuando aparecio cada documento
+    memory.add_message(session_id, "user", f"{ATTACHED_DOC_PREFIX}{doc['name']}", agent="adjunto",
+                       dek=session["dek"], key_generation=session["key_generation"], user_id=session["user_id"])
+    return {"session_id": session_id, "document": doc,
+            "documents": session_docs.list_docs(session["user_id"], session_id)}
+
+
+@app.get("/sessions/{session_id}/docs")
+def list_session_docs(session_id: str, request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return []
+    # cada usuario solo tiene carpeta propia: no hace falta comprobar el dueño
+    return session_docs.list_docs(session["user_id"], session_id)
+
+
+@app.delete("/sessions/{session_id}/docs/{filename}")
+def remove_session_doc(session_id: str, filename: str, request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    session_docs.remove(session["user_id"], session_id, filename)
+    return {"ok": True}
+
+
+@app.post("/sessions/{session_id}/docs/{filename}/keep")
+def keep_session_doc(session_id: str, filename: str, request: Request):
+    """Pasa un adjunto de la conversacion a "Mis documentos" (permanente)."""
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    content = session_docs.get_original(session["user_id"], session_id, filename,
+                                        session["dek"], session["key_generation"])
+    if content is None:
+        return JSONResponse({"detail": "Documento no encontrado."}, status_code=404)
+    knowledge_base.add_document(filename, content, user_id=session["user_id"],
+                                dek=session["dek"], key_generation=session["key_generation"])
+    return {"ok": True}
+
+
 @app.get("/sessions/{session_id}")
 def get_session_history(session_id: str, request: Request):
     session = request.state.session
+    if not _owns_session(request, session_id):
+        return _not_your_session()
     return memory.get_history(session_id, limit=200, dek=session["dek"], key_generation=session["key_generation"])
 
 
 @app.put("/sessions/{session_id}/title")
 def rename_session(session_id: str, request: Request, title: str = Form(...)):
     session = request.state.session
+    if not _owns_session(request, session_id):
+        return _not_your_session()
     title = title.strip()[:80]  # nombres cortos - es una etiqueta para reconocer el hilo, no un resumen
     if not title:
         return JSONResponse({"detail": "El nombre no puede estar vacio."}, status_code=400)
@@ -1232,21 +2118,28 @@ def rename_session(session_id: str, request: Request, title: str = Form(...)):
 
 
 @app.delete("/sessions/{session_id}")
-def delete_session(session_id: str):
+def delete_session(session_id: str, request: Request):
+    if not _owns_session(request, session_id):
+        return _not_your_session()
     memory.clear_session(session_id)
     knowledge_base.delete_conversation(session_id)  # tambien borra su rastro de la memoria a largo plazo (RAG)
+    session_docs.delete_session(request.state.session["user_id"], session_id)
     return {"ok": True}
 
 
 @app.put("/sessions/{session_id}/messages/{message_id}")
 def edit_message(session_id: str, message_id: int, request: Request, content: str = Form(...)):
     session = request.state.session
+    if not _owns_session(request, session_id) or memory.message_session(message_id) != session_id:
+        return _not_your_session()
     ok = memory.update_message(message_id, content, dek=session["dek"], key_generation=session["key_generation"])
     return {"ok": ok}
 
 
 @app.delete("/sessions/{session_id}/messages/{message_id}")
-def delete_message(session_id: str, message_id: int):
+def delete_message(session_id: str, message_id: int, request: Request):
+    if not _owns_session(request, session_id) or memory.message_session(message_id) != session_id:
+        return _not_your_session()
     ok = memory.delete_message(message_id)
     return {"ok": ok}
 
@@ -1304,10 +2197,19 @@ def _resolve_reference_bytes(image: UploadFile | None, person_name: str | None, 
 @app.post("/image_with_face", response_model=ChatResponse)
 def image_with_face(request: Request, prompt: str = Form(...), image: UploadFile | None = File(None),
                      person_name: str | None = Form(None), model_id: str | None = Form(None)):
-    """Genera una imagen nueva preservando la cara de una persona (foto subida
-    o guardada por nombre, IPAdapter FaceID). Ver aviso de uso responsable en
-    verifier.py/manual.md: solo para fotos propias o con consentimiento.
-    model_id: checkpoint SDXL concreto (de model_registry.py), None = el primero instalado."""
+    """Genera una imagen a partir de una foto adjunta - decide sola que
+    tecnica usar segun si la foto tiene una cara humana o no (bug real
+    encontrado en vivo, 2026-09-25: pedir "una mariposa similar con los
+    colores invertidos" generaba una cara alucinada, porque antes se
+    aplicaba FaceID siempre sin comprobar nada):
+    - Con cara: preserva esa cara (IPAdapter FaceID). Ver aviso de uso
+      responsable en verifier.py/manual.md: solo para fotos propias o con
+      consentimiento.
+    - Sin cara (mariposa, paisaje, objeto...): sigue la composicion/forma
+      de la foto (ControlNet) y deja que el texto controle el color y el
+      contenido - lo que de verdad se pedia en ese caso.
+    model_id: checkpoint SDXL concreto (de model_registry.py), solo se usa
+    en el camino de FaceID; None = el primero instalado."""
     start = time.perf_counter()
     session = request.state.session
 
@@ -1317,22 +2219,57 @@ def image_with_face(request: Request, prompt: str = Form(...), image: UploadFile
         metrics.log_event("image_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_faceid", response=str(exc), verifier_gated=False)
 
+    if face_detect.has_face(ref_bytes):
+        agent_used, response_text = "image_faceid", "Imagen generada preservando la cara de referencia."
+        generate = lambda: image_agent.generate_with_face(prompt, ref_bytes, model_id=model_id)
+        error_context = "generando la imagen con cara real"
+    else:
+        agent_used, response_text = "image_controlnet", "Imagen generada a partir de la composicion de la foto."
+        generate = lambda: image_agent.generate_with_controlnet(prompt, ref_bytes)
+        error_context = "generando la imagen a partir de la foto"
+
     try:
-        img_bytes = image_agent.generate_with_face(prompt, ref_bytes, model_id=model_id)
+        img_bytes = generate()
     except Exception as exc:
-        metrics.log_event("image_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
+        metrics.log_event(agent_used, (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(
-            agent_used="image_faceid",
-            response=_generation_error_message("generando la imagen con cara real", exc),
+            agent_used=agent_used,
+            response=_generation_error_message(error_context, exc),
             verifier_gated=False,
         )
 
     out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
     out_path.write_bytes(img_bytes)
-    metrics.log_event("image_faceid", (time.perf_counter() - start) * 1000)
+    metrics.log_event(agent_used, (time.perf_counter() - start) * 1000)
     return _with_file(
-        ChatResponse(agent_used="image_faceid", response="Imagen generada preservando la cara de referencia.",
-                     verifier_gated=False),
+        ChatResponse(agent_used=agent_used, response=response_text, verifier_gated=False),
+        out_path,
+    )
+
+
+@app.post("/image_with_persona", response_model=ChatResponse)
+def image_with_persona(request: Request, prompt: str = Form(...), persona: str = Form(...),
+                       model_id: str | None = Form(None)):
+    """Imagen con una persona entrenada (LoRA, ver persona_trainer.py y
+    Opciones > Personas). Solo para personas propias o con consentimiento."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    start = time.perf_counter()
+    lora = persona_trainer.lora_for(persona)
+    if lora is None:
+        return ChatResponse(agent_used="image_persona", verifier_gated=False,
+                            response=f'La persona "{persona}" todavia no esta lista (sigue entrenando o fallo).')
+    try:
+        img_bytes = image_agent.generate_with_lora(prompt, lora[0], lora[1], model_id=model_id)
+    except Exception as exc:
+        metrics.log_event("image_persona", (time.perf_counter() - start) * 1000, error=str(exc))
+        return ChatResponse(agent_used="image_persona", verifier_gated=False,
+                            response=_generation_error_message("generando la imagen con la persona", exc))
+    out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
+    out_path.write_bytes(img_bytes)
+    metrics.log_event("image_persona", (time.perf_counter() - start) * 1000)
+    return _with_file(
+        ChatResponse(agent_used="image_persona", response=f"Imagen generada con {persona}.", verifier_gated=False),
         out_path,
     )
 
@@ -1374,10 +2311,13 @@ def image_with_controlnet(request: Request, prompt: str = Form(...), image: Uplo
 @app.post("/video_with_face", response_model=ChatResponse)
 def video_with_face(request: Request, prompt: str = Form(...), image: UploadFile | None = File(None),
                      person_name: str | None = Form(None), model_id: str | None = Form(None)):
-    """Cadena completa: genera una escena nueva preservando la cara de una
-    persona (foto subida o guardada por nombre) y despues la anima
-    (image-to-video, LTXV). Solo para fotos propias o con consentimiento.
-    model_id: checkpoint SDXL concreto para el fotograma base (de model_registry.py)."""
+    """Cadena completa: genera una escena nueva a partir de una foto
+    adjunta y despues la anima (image-to-video, LTXV). Decide sola, igual
+    que /image_with_face, si preservar una cara (con cara en la foto) o
+    seguir su composicion (sin cara - mariposa, paisaje, objeto...). Solo
+    para fotos propias o con consentimiento cuando hay cara de por medio.
+    model_id: checkpoint SDXL concreto para el fotograma base (de
+    model_registry.py), solo se usa en el camino de FaceID."""
     start = time.perf_counter()
     session = request.state.session
 
@@ -1388,12 +2328,15 @@ def video_with_face(request: Request, prompt: str = Form(...), image: UploadFile
         return ChatResponse(agent_used="video_faceid", response=str(exc), verifier_gated=False)
 
     try:
-        img_bytes = image_agent.generate_with_face(prompt, ref_bytes, model_id=model_id)
+        if face_detect.has_face(ref_bytes):
+            img_bytes = image_agent.generate_with_face(prompt, ref_bytes, model_id=model_id)
+        else:
+            img_bytes = image_agent.generate_with_controlnet(prompt, ref_bytes)
     except Exception as exc:
         metrics.log_event("video_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(
             agent_used="video_faceid",
-            response=_generation_error_message("generando la imagen base con cara real", exc),
+            response=_generation_error_message("generando la imagen base", exc),
             verifier_gated=False,
         )
 

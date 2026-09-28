@@ -1,0 +1,44 @@
+"""Pruebas deterministas de face_detect.py contra imagenes reales (nada
+mockeado - el modelo YuNet es pequeño y rapido, correr contra el de verdad
+es mas fiable que simular su salida)."""
+
+import io
+
+from PIL import Image
+
+import face_detect
+
+
+def _solid_color_png(color=(200, 100, 50), size=(300, 300)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", size, color=color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_has_face_true_for_a_real_face_photo():
+    img_bytes = (__import__("pathlib").Path(__file__).parent / "fixtures" / "sample_face.png").read_bytes()
+    assert face_detect.has_face(img_bytes) is True
+
+
+def test_has_face_false_for_a_solid_color_image():
+    """El caso real que motivo esto: una mariposa (sin cara humana) no
+    deberia detectarse como una cara."""
+    assert face_detect.has_face(_solid_color_png()) is False
+
+
+def test_has_face_false_for_corrupt_image_data():
+    """Nunca debe lanzar - una imagen rara/corrupta cae al lado seguro
+    (ControlNet, que funciona con cualquier imagen) en vez de romper la
+    peticion."""
+    assert face_detect.has_face(b"esto no es una imagen de verdad") is False
+
+
+def test_has_face_false_for_empty_bytes():
+    assert face_detect.has_face(b"") is False
+
+
+def test_has_face_respects_a_stricter_confidence_threshold():
+    img_bytes = (__import__("pathlib").Path(__file__).parent / "fixtures" / "sample_face.png").read_bytes()
+    # el umbral por defecto (0.7) detecta la cara real; uno imposible (1.1,
+    # por encima del maximo teorico de 1.0) nunca deberia superarse
+    assert face_detect.has_face(img_bytes, confidence_threshold=1.1) is False

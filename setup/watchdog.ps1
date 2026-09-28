@@ -12,15 +12,53 @@ Log de reinicios: watchdog.log, en esta misma carpeta.
 # salvo que se haya instalado en modo "todo junto" (ver ROADMAP.md punto
 # 3b / 8b).
 $AiRoot = Split-Path -Parent $PSScriptRoot
+foreach ($name in "OLLAMA_MODELS", "CHATI_DATA_ROOT") {  # ver Update-EnvFromUser
+    $value = [Environment]::GetEnvironmentVariable($name, "User")
+    if ($value) { Set-Item -Path "Env:$name" -Value $value }
+}
 $DataRoot = if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+                           elseif ([Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User")) {
+                               [Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User") }
             elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
             else { $AiRoot }
 $LogFile = "$PSScriptRoot\watchdog.log"
 $CheckIntervalSeconds = 30
+# Fallos seguidos antes de reiniciar: un servicio ocupado (Ollama cargando un
+# modelo, ComfyUI arrancando) puede tardar mas de 5s en contestar sin estar
+# caido. Con 1 solo fallo se reiniciaban servicios sanos (visto el 2026-09-28).
+$FailuresBeforeRestart = 2
+$Failures = @{}
 
 function Write-Log($msg) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - $msg"
     Add-Content -Path $LogFile -Value $line
+}
+
+function Update-EnvFromUser {
+    # El vigilante corre desde que se inicia sesion: si despues cambian las
+    # variables del usuario (p.ej. OLLAMA_MODELS), las que heredo al arrancar
+    # estan viejas. Se releen antes de lanzar nada (bug real 2026-09-28:
+    # reinicio Ollama apuntando a una carpeta de modelos antigua y vacia).
+    foreach ($name in "OLLAMA_MODELS", "CHATI_DATA_ROOT") {
+        $value = [Environment]::GetEnvironmentVariable($name, "User")
+        if ($value) { Set-Item -Path "Env:$name" -Value $value }
+    }
+}
+
+function Test-Down($name, $url) {
+    # $true solo tras $FailuresBeforeRestart comprobaciones fallidas seguidas
+    if (Test-Url $url) {
+        $Failures[$name] = 0
+        return $false
+    }
+    $Failures[$name] = 1 + [int]$Failures[$name]
+    if ($Failures[$name] -lt $FailuresBeforeRestart) {
+        Write-Log "$name no responde (aviso $($Failures[$name])/$FailuresBeforeRestart)."
+        return $false
+    }
+    $Failures[$name] = 0
+    Update-EnvFromUser
+    return $true
 }
 
 function Test-Url($url) {
@@ -33,7 +71,7 @@ function Test-Url($url) {
 }
 
 function Ensure-Ollama {
-    if (-not (Test-Url "http://localhost:11434/api/tags")) {
+    if (Test-Down "Ollama" "http://127.0.0.1:11434/api/tags") {
         Write-Log "Ollama caido. Reiniciando..."
         Get-Process -Name "ollama*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 1
@@ -63,7 +101,7 @@ function Stop-ByPort($port) {
 }
 
 function Ensure-ComfyUI {
-    if (-not (Test-Url "http://127.0.0.1:8188/system_stats")) {
+    if (Test-Down "ComfyUI" "http://127.0.0.1:8188/system_stats") {
         Write-Log "ComfyUI caido. Reiniciando..."
         Stop-ByPort 8188
         Start-Sleep -Seconds 2
@@ -74,7 +112,7 @@ function Ensure-ComfyUI {
 }
 
 function Ensure-Orchestrator {
-    if (-not (Test-Url "http://127.0.0.1:8899/health")) {
+    if (Test-Down "Orquestador" "http://127.0.0.1:8899/health") {
         Write-Log "Orquestador caido. Reiniciando..."
         Stop-ByPort 8899
         Start-Sleep -Seconds 2
@@ -86,7 +124,7 @@ function Ensure-Orchestrator {
 }
 
 function Ensure-OpenCode {
-    if (-not (Test-Url "http://127.0.0.1:8901/")) {
+    if (Test-Down "OpenCode" "http://127.0.0.1:8901/") {
         Write-Log "Agente de codigo (OpenCode) caido. Reiniciando..."
         Stop-ByPort 8901
         Start-Sleep -Seconds 1

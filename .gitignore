@@ -34,6 +34,10 @@ __pycache__/
 # setup/chati_installer.iss)
 /setup/Output/
 
+# Lanzador compilado (ChatiIA.exe + su carpeta _internal) - se regenera con
+# setup/build_launcher.ps1
+/ChatiIA/
+
 # Capturas/artefactos sueltos de depuracion manual en la raiz del repo
 /_*.png
 

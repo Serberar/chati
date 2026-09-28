@@ -36,6 +36,16 @@ class FakeOllamaClient:
         self.think_values_used.append(think)
         return self.tool_responses.pop(0)
 
+    def chat_with_tools_stream(self, model, messages, tools, temperature=0.7, think=None):
+        """Misma cola que chat_with_tools, pero entregada como la da Ollama en
+        streaming: el texto en trozos pequeños y las tool_calls al final."""
+        message = self.chat_with_tools(model, messages, tools, temperature, think)
+        content = message.get("content", "")
+        for i in range(0, len(content), 4):
+            yield "text", content[i:i + 4]
+        if message.get("tool_calls"):
+            yield "tool_calls", message["tool_calls"]
+
     def chat_stream(self, model, messages, temperature=0.7, think=None):
         self.chat_stream_calls.append(list(messages))
         self.models_used.append(model)
@@ -109,17 +119,16 @@ def test_respond_with_tools_forces_final_answer_after_max_iterations():
     assert len(client.chat_calls) == 1
 
 
-def test_respond_with_tools_stream_no_tool_needed_still_streams_final_answer():
-    client = FakeOllamaClient(
-        tool_responses=[{"role": "assistant", "content": "no hace falta herramienta"}],
-        stream_chunks=["Hola", " mundo"],
-    )
+def test_respond_with_tools_stream_no_tool_needed_streams_that_answer_without_a_second_generation():
+    client = FakeOllamaClient(tool_responses=[{"role": "assistant", "content": "Hola mundo, que tal"}])
     agent = LLMAgent("text", "fake-model", client)
     evidence: list[dict] = []
 
     chunks = list(agent.respond_with_tools_stream("hola", None, [], _no_tool_call_allowed, evidence))
 
-    assert chunks == ["Hola", " mundo"]
+    assert "".join(chunks) == "Hola mundo, que tal"
+    assert len(chunks) > 1  # llega en trozos, no de golpe
+    assert client.chat_stream_calls == []  # antes se volvia a generar entera
     assert evidence == []
 
 
@@ -129,10 +138,9 @@ def test_respond_with_tools_stream_executes_tool_then_streams_final_answer():
             {"role": "assistant", "content": "", "tool_calls": [
                 {"function": {"name": "buscar_en_memoria", "arguments": {"consulta": "vacaciones"}}}
             ]},
-            # segunda ronda: el modelo ya no pide mas herramientas -> se pasa a la respuesta final en streaming
-            {"role": "assistant", "content": "listo"},
+            # segunda ronda: el modelo ya no pide mas herramientas -> esa es la respuesta final
+            {"role": "assistant", "content": "Segun tu memoria..."},
         ],
-        stream_chunks=["Segun ", "tu memoria..."],
     )
 
     def executor(name, arguments):
@@ -146,7 +154,7 @@ def test_respond_with_tools_stream_executes_tool_then_streams_final_answer():
     chunks = list(agent.respond_with_tools_stream(
         "que dije de mis vacaciones", None, [], executor, evidence))
 
-    assert chunks == ["Segun ", "tu memoria..."]
+    assert "".join(chunks) == "Segun tu memoria..."
     assert evidence == [{"source": "doc.pdf", "text": "texto encontrado"}]
 
 
@@ -194,12 +202,11 @@ def test_respond_with_tools_stream_recovers_from_malformed_tool_call_text():
     client = FakeOllamaClient(
         tool_responses=[
             {"role": "assistant", "content": (
-                "<function=ejecutar_python>\n<parameter=codigo>\nprint(1827993)\n"
+                "Voy a calcularlo.\n\n<function=ejecutar_python>\n<parameter=codigo>\nprint(1827993)\n"
                 "</parameter>\n</function>"
             )},
-            {"role": "assistant", "content": "listo"},
+            {"role": "assistant", "content": "El resultado es 1827993."},
         ],
-        stream_chunks=["1827993"],
     )
 
     def executor(name, arguments):
@@ -212,7 +219,10 @@ def test_respond_with_tools_stream_recovers_from_malformed_tool_call_text():
 
     chunks = list(agent.respond_with_tools_stream("cuanto es 8347*219", None, [], executor, evidence))
 
-    assert chunks == ["1827993"]
+    shown = "".join(chunks)
+    assert "<function" not in shown and "parameter" not in shown  # la llamada escrita como texto no se ve
+    assert shown.startswith("Voy a calcularlo.")
+    assert shown.endswith("El resultado es 1827993.")
     assert evidence == [{"source": "sistema:ejecutar_python", "text": "1827993"}]
 
 
@@ -243,7 +253,7 @@ def test_respond_with_tools_stream_uses_profile_override_when_given():
 
     list(agent.respond_with_tools_stream("hola", None, [], _no_tool_call_allowed, [], model="modelo-seguridad"))
 
-    assert client.models_used == ["modelo-seguridad", "modelo-seguridad"]
+    assert client.models_used == ["modelo-seguridad"]  # una sola llamada
 
 
 def test_respond_with_tools_passes_think_false_through_to_the_client():
@@ -273,8 +283,8 @@ def test_respond_with_tools_stream_passes_think_false_through_to_the_client():
 
     list(agent.respond_with_tools_stream("hola", None, [], _no_tool_call_allowed, [], think=False))
 
-    # una llamada de decision (chat_with_tools) + una de streaming (chat_stream), las dos con think=False
-    assert client.think_values_used == [False, False]
+    # una sola llamada (decision y respuesta a la vez), con think=False
+    assert client.think_values_used == [False]
 
 
 def test_respond_with_image_stream_sends_image_on_user_message():
@@ -345,3 +355,18 @@ def _make_tiny_heic_bytes() -> bytes:
     buf = io.BytesIO()
     heif_file.save(buf, format="HEIF")
     return buf.getvalue()
+
+
+def test_visible_prefix_holds_back_what_might_be_a_tool_call():
+    from agents.llm_agent import _visible_prefix_end
+    assert _visible_prefix_end("Hola que tal") == len("Hola que tal")
+    assert _visible_prefix_end("Voy a mirarlo <func") == len("Voy a mirarlo ")
+    assert _visible_prefix_end("Hecho. <function=fecha_actual>") == len("Hecho. ")
+    assert _visible_prefix_end("usa a < b en el codigo") == len("usa a < b en el codigo")
+
+
+def test_respond_with_tools_stream_shows_text_with_angle_brackets_in_full():
+    client = FakeOllamaClient(tool_responses=[{"role": "assistant", "content": "Compara con a<b y <b>negrita</b> <f"}])
+    agent = LLMAgent("text", "fake-model", client)
+    chunks = list(agent.respond_with_tools_stream("x", None, [], _no_tool_call_allowed, []))
+    assert "".join(chunks) == "Compara con a<b y <b>negrita</b> <f"

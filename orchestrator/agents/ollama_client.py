@@ -116,6 +116,56 @@ class OllamaClient:
         except requests.RequestException:
             pass
 
+    def chat_with_tools_stream(self, model: str, messages: list[dict], tools: list[dict],
+                                temperature: float = 0.7, keep_alive: str = DEFAULT_KEEP_ALIVE,
+                                think: bool | None = None) -> Iterator[tuple[str, object]]:
+        """chat_with_tools en streaming: va dando ("text", trozo) segun llega y,
+        si el modelo pide herramientas, ("tool_calls", lista). Asi la respuesta
+        final se ve mientras se escribe sin generarla dos veces (antes: una
+        llamada sin streaming para decidir si hacian falta herramientas, que
+        ya escribia la respuesta entera y se tiraba, y otra para mostrarla)."""
+        payload = {
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "stream": True,
+            "options": {"temperature": temperature},
+            "keep_alive": keep_alive,
+        }
+        if think is not None:
+            payload["think"] = think
+        resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=180, stream=True)
+        _raise_with_body(resp)
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            data = json.loads(line)
+            message = data.get("message", {})
+            if message.get("content"):
+                yield "text", message["content"]
+            if message.get("tool_calls"):
+                yield "tool_calls", message["tool_calls"]
+            if data.get("done"):
+                break
+
+    def preload(self, model: str, keep_alive: str = DEFAULT_KEEP_ALIVE) -> None:
+        """Carga el modelo en memoria sin generar nada (peticion sin prompt),
+        para que el primer mensaje no tenga que esperar la carga. Puede tardar
+        minutos con un modelo grande en CPU. Lanza si Ollama falla."""
+        resp = requests.post(f"{self.base_url}/api/generate",
+                             json={"model": model, "keep_alive": keep_alive}, timeout=900)
+        _raise_with_body(resp)
+
+    def running_models(self) -> list[str]:
+        """Modelos cargados ahora mismo en memoria (GPU o RAM). Si Ollama no
+        responde, lista vacia - igual que unload(), nunca bloquea al usuario."""
+        try:
+            resp = requests.get(f"{self.base_url}/api/ps", timeout=10)
+            resp.raise_for_status()
+            return [m["name"] for m in resp.json().get("models", [])]
+        except (requests.RequestException, ValueError, KeyError):
+            return []
+
     def embed(self, model: str, texts: list[str]) -> list[list[float]]:
         resp = requests.post(
             f"{self.base_url}/api/embed",

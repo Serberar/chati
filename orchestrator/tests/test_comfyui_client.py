@@ -82,3 +82,75 @@ def test_real_failure_raises_runtime_error_not_cancelled(mock_get, mock_post):
     with pytest.raises(RuntimeError) as exc_info:
         submit_and_wait("http://fake", {}, "save_image", "images", timeout=30)
     assert not isinstance(exc_info.value, GenerationCancelled)
+
+
+def test_before_submit_hook_runs_before_sending_the_workflow(monkeypatch):
+    from unittest.mock import MagicMock
+    from agents import comfyui_client
+
+    calls = []
+    monkeypatch.setattr(comfyui_client, "before_submit", lambda: calls.append("liberar"))
+
+    def fake_post(url, json, timeout):
+        calls.append("enviar")
+        raise RuntimeError("parar aqui")
+
+    monkeypatch.setattr(comfyui_client.requests, "post", fake_post)
+    try:
+        comfyui_client.submit_and_wait("http://x", {}, "9", "images", timeout=1)
+    except RuntimeError:
+        pass
+    assert calls == ["liberar", "enviar"]
+
+
+@pytest.fixture(autouse=True)
+def _sin_liberar_memoria(monkeypatch):
+    # main.py registra before_submit al importarse (libera Ollama de verdad);
+    # estos tests simulan la red y no deben ejecutarlo
+    from agents import comfyui_client
+    monkeypatch.setattr(comfyui_client, "before_submit", None)
+
+
+def test_free_memory_waits_until_comfyui_really_released_the_gpu(monkeypatch):
+    from agents import comfyui_client
+
+    reported = [6 * 2**30, 3 * 2**30, 60 * 2**20]  # descarga en diferido
+    gets = []
+
+    class R:
+        def __init__(self, data): self.data = data
+        def json(self): return self.data
+
+    monkeypatch.setattr(comfyui_client.requests, "post", lambda *a, **k: R({}))
+    monkeypatch.setattr(comfyui_client.requests, "get", lambda *a, **k: (
+        gets.append(1), R({"devices": [{"torch_vram_total": reported[min(len(gets) - 1, 2)]}]}))[1])
+    monkeypatch.setattr(comfyui_client.time, "sleep", lambda s: None)
+
+    comfyui_client.free_memory("http://x")
+
+    assert len(gets) == 3  # siguio mirando hasta verla libre, y paro ahi
+
+
+def test_free_memory_never_raises_when_comfyui_is_down(monkeypatch):
+    from agents import comfyui_client
+
+    def boom(*a, **k):
+        raise comfyui_client.requests.ConnectionError("caido")
+
+    monkeypatch.setattr(comfyui_client.requests, "post", boom)
+    comfyui_client.free_memory("http://x")
+
+
+def test_user_queue_ignores_model_warmups(monkeypatch):
+    from agents import comfyui_client
+
+    class R:
+        def json(self):
+            return {
+                "queue_running": [[1, "a", {"6": {"inputs": {"text": comfyui_client.WARMUP_PROMPT}}}]],
+                "queue_pending": [[2, "b", {"6": {"inputs": {"text": "un gato"}}}],
+                                  [3, "c", {"6": {"inputs": {"text": "un perro"}}}]],
+            }
+
+    monkeypatch.setattr(comfyui_client.requests, "get", lambda *a, **k: R())
+    assert comfyui_client.user_queue("http://x") == (0, 2)

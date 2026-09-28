@@ -15,6 +15,8 @@ Luego abre http://localhost:8899 en el navegador.
 param(
     [string]$AiRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$DataRoot = $(if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+                           elseif ([Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User")) {
+                               [Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User") }
                            elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
                            else { (Split-Path -Parent $PSScriptRoot) })
 )
@@ -29,7 +31,7 @@ function Test-Url($url) {
 }
 
 Write-Host "=== Arrancando Ollama ===" -ForegroundColor Cyan
-if (-not (Test-Url "http://localhost:11434/api/tags")) {
+if (-not (Test-Url "http://127.0.0.1:11434/api/tags")) {
     # Bug conocido de Ollama con GPUs Blackwell (RTX 50, ollama/ollama#18276, #18232):
     # flash attention se activa sola y crashea al cargar modelos grandes en GPU.
     $env:OLLAMA_FLASH_ATTENTION = "0"

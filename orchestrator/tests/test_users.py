@@ -188,3 +188,47 @@ def test_security_question_reset_logs_an_event():
 
 def test_list_security_events_empty_when_nothing_logged():
     assert users.list_security_events() == []
+
+
+def test_display_name_roundtrip_and_clear():
+    users.create_user("sergio", "contraseña-larga-123", "admin")
+
+    users.set_display_name("sergio", "  Sergio Bernabé ")
+    assert users.get_user("sergio")["display_name"] == "Sergio Bernabé"
+
+    users.set_display_name("sergio", "")
+    assert users.get_user("sergio")["display_name"] is None
+
+
+def test_display_name_too_long_is_rejected():
+    users.create_user("sergio", "contraseña-larga-123", "admin")
+    with pytest.raises(users.UserError):
+        users.set_display_name("sergio", "x" * 41)
+
+
+def test_set_security_question_requires_password_and_enables_reset():
+    users.create_user("sergio", "contraseña-larga-123", "admin")
+
+    with pytest.raises(users.UserError):
+        users.set_security_question("sergio", "contraseña-mala", "¿Mascota?", "Toby")
+
+    users.set_security_question("sergio", "contraseña-larga-123", "¿Mascota?", "Toby")
+    assert users.get_user("sergio")["security_question"] == "¿Mascota?"
+    users.reset_via_security_question("sergio", "toby", "otra-contraseña-456")
+    assert users.login("sergio", "otra-contraseña-456")["username"] == "sergio"
+
+
+def test_init_db_adds_display_name_to_old_databases(tmp_path, monkeypatch):
+    import sqlite3
+    old_db = tmp_path / "vieja.db"
+    with sqlite3.connect(old_db) as conn:
+        conn.execute("CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, role TEXT NOT NULL, "
+                     "password_hash TEXT NOT NULL, salt BLOB NOT NULL, wrapped_dek BLOB NOT NULL, "
+                     "key_generation INTEGER NOT NULL DEFAULT 1, security_question TEXT, "
+                     "security_answer_hash TEXT, created_at TEXT NOT NULL)")
+    monkeypatch.setattr(users, "DB_PATH", old_db)
+
+    users.init_db()
+    users.create_user("sergio", "contraseña-larga-123", "admin")
+
+    assert users.get_user("sergio")["display_name"] is None

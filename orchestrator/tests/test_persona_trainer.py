@@ -144,3 +144,28 @@ def test_list_personas_includes_status_per_persona(tmp_path, monkeypatch):
     assert len(personas) == 1
     assert personas[0]["name"] == "ana"
     assert personas[0]["sdxl"]["status"] == "listo"
+
+
+def test_training_progress_reads_the_last_tqdm_step(tmp_path):
+    log = tmp_path / "train.log"
+    log.write_text("caching latents...\nsteps:  10%|#         | 3/30 [00:12<01:48,  4.01s/it]\r"
+                   "steps:  45%|####5     | 27/60 [01:10<12:25,  2.6s/it, avr_loss=0.1]\r", encoding="utf-8")
+    assert persona_trainer.training_progress(log) == {"percent": 45, "step": 27, "steps": 60, "eta": "unos 12 min"}
+
+
+def test_training_progress_before_the_first_step_is_preparing(tmp_path):
+    log = tmp_path / "train.log"
+    log.write_text("loading model...\n", encoding="utf-8")
+    assert persona_trainer.training_progress(log) == {"phase": "preparando"}
+    assert persona_trainer.training_progress(tmp_path / "no-existe.log") == {"phase": "preparando"}
+
+
+def test_lora_for_gives_the_comfyui_name_and_trigger_only_when_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr(persona_trainer, "PERSONAS_DIR", tmp_path / "loras" / "personas")
+    assert persona_trainer.lora_for("Ana Lopez") is None
+    out = tmp_path / "loras" / "personas" / "Ana-Lopez" / "sdxl"
+    out.mkdir(parents=True)
+    (out / "Ana-Lopez_sdxl.safetensors").write_bytes(b"x")
+    name, trigger = persona_trainer.lora_for("Ana Lopez")
+    assert name.replace("\\", "/") == "personas/Ana-Lopez/sdxl/Ana-Lopez_sdxl.safetensors"
+    assert trigger == "ohwx-Ana-Lopez person"

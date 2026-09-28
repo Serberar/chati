@@ -268,3 +268,26 @@ def test_delete_memory_entry_refuses_when_owned_by_another_user(tmp_path, monkey
 def test_delete_memory_entry_returns_false_for_unknown_id(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
     assert kb.delete_memory_entry("no-existe") is False
+
+
+def test_original_file_on_disk_is_encrypted_and_deleted_with_the_document(tmp_path, monkeypatch):
+    kb = _kb(tmp_path, monkeypatch)
+    dek = Fernet.generate_key()
+    kb.add_document("secreto.txt", "informacion confidencial de verdad".encode("utf-8"),
+                    user_id="u1", dek=dek, key_generation=1)
+    files = list((rag.DOCS_DIR / "u1").iterdir())
+    assert [f.name for f in files] == ["secreto.txt.enc"]
+    assert b"confidencial" not in files[0].read_bytes()
+    kb.delete_document("secreto.txt", user_id="u1")
+    assert not list((rag.DOCS_DIR / "u1").iterdir())
+
+
+def test_plain_originals_from_before_are_encrypted_at_login(tmp_path, monkeypatch):
+    kb = _kb(tmp_path, monkeypatch)
+    d = rag.DOCS_DIR / "u1"
+    d.mkdir(parents=True)
+    (d / "viejo.txt").write_bytes(b"texto en claro")
+    dek = Fernet.generate_key()
+    assert kb.encrypt_plain_originals("u1", dek) == 1
+    assert [f.name for f in d.iterdir()] == ["viejo.txt.enc"]
+    assert kb.encrypt_plain_originals("u1", dek) == 0

@@ -181,6 +181,20 @@ def set_session_title(session_id: str, title: str, user_id: str | None = None,
         conn.commit()
 
 
+def session_owner(session_id: str) -> str | None:
+    """user_id dueño de la conversacion (None si no existe o es de invitado/legado)."""
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT user_id FROM messages WHERE session_id = ? AND user_id IS NOT NULL LIMIT 1",
+                           (session_id,)).fetchone()
+    return row[0] if row else None
+
+
+def message_session(message_id: int) -> str | None:
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT session_id FROM messages WHERE id = ?", (message_id,)).fetchone()
+    return row[0] if row else None
+
+
 def clear_session(session_id: str) -> None:
     with closing(_connect()) as conn:
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))

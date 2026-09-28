@@ -18,11 +18,31 @@ codigo y datos (ver punto 3b, llevar la carpeta entera a otro equipo a
 mano), apuntandola al mismo sitio que el codigo."""
 
 import os
+import sys
 from pathlib import Path
 
-CODE_ROOT = Path(__file__).resolve().parent.parent
+if getattr(sys, "frozen", False):
+    # lanzador empaquetado con PyInstaller (setup/build_launcher.ps1):
+    # <CODE_ROOT>\ChatiIA\ChatiIA.exe - __file__ apuntaria dentro del paquete
+    CODE_ROOT = Path(sys.executable).resolve().parent.parent
+else:
+    CODE_ROOT = Path(__file__).resolve().parent.parent
 
-_data_root_override = os.environ.get("CHATI_DATA_ROOT")
+
+def _user_env_from_registry(name: str) -> str | None:
+    # Un proceso arrancado ANTES de definir la variable (p.ej. el watchdog,
+    # que vive desde el inicio de sesion) no la hereda nunca - paso de verdad
+    # el 2026-09-25: el orquestador se reinicio sin ella, abrio la carpeta de
+    # datos de AppData (vacia) y el login de Sergio dejo de funcionar.
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            return winreg.QueryValueEx(key, name)[0] or None
+    except (ImportError, OSError):
+        return None
+
+
+_data_root_override = os.environ.get("CHATI_DATA_ROOT") or _user_env_from_registry("CHATI_DATA_ROOT")
 if _data_root_override:
     DATA_ROOT = Path(_data_root_override)
 elif os.environ.get("LOCALAPPDATA"):

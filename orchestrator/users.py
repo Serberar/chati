@@ -69,6 +69,10 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        # columna añadida despues (pantalla "Mi perfil") - las BDs ya creadas no la tienen
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "display_name" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
         conn.commit()
 
 
@@ -95,6 +99,7 @@ def _row_to_dict(row) -> dict:
         "id": row[0], "username": row[1], "role": row[2], "password_hash": row[3],
         "salt": row[4], "wrapped_dek": row[5], "key_generation": row[6],
         "security_question": row[7], "security_answer_hash": row[8], "created_at": row[9],
+        "display_name": row[10],
     }
 
 
@@ -102,7 +107,7 @@ def get_user(username: str) -> dict | None:
     with closing(_connect()) as conn:
         row = conn.execute(
             "SELECT id, username, role, password_hash, salt, wrapped_dek, key_generation, "
-            "security_question, security_answer_hash, created_at FROM users WHERE username = ?",
+            "security_question, security_answer_hash, created_at, display_name FROM users WHERE username = ?",
             (username,),
         ).fetchone()
     return _row_to_dict(row) if row else None
@@ -201,6 +206,31 @@ def change_password(username: str, old_password: str, new_password: str) -> None
             (new_password_hash, new_salt, new_wrapped_dek, username),
         )
         conn.commit()
+
+
+def set_display_name(username: str, display_name: str) -> None:
+    display_name = display_name.strip()
+    if len(display_name) > 40:
+        raise UserError("El nombre no puede tener mas de 40 caracteres.")
+    with closing(_connect()) as conn:
+        conn.execute("UPDATE users SET display_name = ? WHERE username = ?", (display_name or None, username))
+        conn.commit()
+
+
+def set_security_question(username: str, password: str, question: str, answer: str) -> None:
+    """Pide la contraseña actual: quien pueda cambiar la pregunta puede
+    luego restablecer la contraseña con ella."""
+    login(username, password)
+    question, answer = question.strip(), answer.strip()
+    if not question or not answer:
+        raise UserError("Escribe la pregunta y la respuesta.")
+    with closing(_connect()) as conn:
+        conn.execute(
+            "UPDATE users SET security_question = ?, security_answer_hash = ? WHERE username = ?",
+            (question, _password_hasher.hash(answer.lower()), username),
+        )
+        conn.commit()
+    log_security_event("security_question_changed", username)
 
 
 def reset_via_security_question(username: str, security_answer: str, new_password: str) -> None:

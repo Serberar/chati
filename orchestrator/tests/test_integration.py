@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
 
 import main
@@ -50,6 +51,17 @@ def _create_and_login_test_admin() -> str:
 
 
 _test_token = _create_and_login_test_admin()
+
+
+@pytest.fixture(autouse=True)
+def _agent_tasks_skip_difficulty_assessment(request):
+    # la valoracion de dificultad llama al modelo real; cada test que la
+    # quiera probar la activa con @pytest.mark.assess
+    if request.node.get_closest_marker("assess"):
+        yield
+        return
+    with patch.object(main, "_assess_for_fast_agent", return_value=None):
+        yield
 client = TestClient(app, headers={"X-Session-Token": _test_token})
 
 
@@ -73,7 +85,8 @@ def test_model_roles_describes_each_configured_model():
     # el modelo "seguridad" (sin censura) tiene que estar y decirlo claramente
     security_model = CONFIG["agents"]["text"]["profiles"]["seguridad"]["model"]
     assert security_model in roles
-    assert "sin filtros" in roles[security_model].lower()
+    security_label = CONFIG["agents"]["text"]["profiles"]["seguridad"]["label"]
+    assert security_label.lower() in roles[security_model].lower()
 
     # el modelo de embeddings tiene que aparecer aunque no este en config.yaml
     # (esta hardcodeado en rag.py, ver EMBED_MODEL) - CON el tag ":latest",
@@ -603,14 +616,14 @@ def test_delete_video_model_removes_the_file(tmp_path, monkeypatch):
 # OpenCode corriendo de verdad para probar que el mensaje llega tal cual.
 
 def test_opencode_mode_delegates_the_message_as_is():
-    with patch.object(main.opencode_client, "delegate", return_value="Tarea enviada.") as mock_delegate:
+    with patch.object(main.opencode_client, "delegate", return_value=("Tarea enviada.", "ses_x")) as mock_delegate:
         resp = client.post("/chat", json={"message": "arregla el bug de login", "agent": "opencode"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["agent_used"] == "opencode"
     assert data["response"] == "Tarea enviada."
     mock_delegate.assert_called_once()
-    assert mock_delegate.call_args.args[2] == "arregla el bug de login"
+    assert mock_delegate.call_args.args[1] == "arregla el bug de login"
 
 
 def test_chat_stream_final_event_for_image_video_opencode_has_a_type_field():
@@ -620,12 +633,43 @@ def test_chat_stream_final_event_for_image_video_opencode_has_a_type_field():
     cuando type=='done' - la burbuja se quedaba vacia para siempre aunque el
     backend respondiera 200 con los datos correctos. streamChatInto() en
     static/index.html es el consumidor real de este contrato."""
-    with patch.object(main.opencode_client, "delegate", return_value="Tarea enviada."):
+    with patch.object(main.opencode_client, "delegate", return_value=("Tarea enviada.", "ses_x")):
         with client.stream("POST", "/chat/stream", json={"message": "hola", "agent": "opencode"}) as resp:
             lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     assert lines[0]["type"] == "start"
     assert lines[-1]["type"] == "done"
     assert lines[-1]["response"] == "Tarea enviada."
+
+
+# --- Modo "Agente" con interfaz propia (seguir la tarea, contestar preguntas
+# y permisos dentro de Chati en vez de mandar al usuario a la web de OpenCode).
+
+def test_agent_routes_blocked_in_guest_mode():
+    guest_token = client.post("/auth/guest").json()["token"]
+    guest_client = TestClient(app, headers={"X-Session-Token": guest_token})
+
+    assert guest_client.post("/agent/tasks", json={"task": "hola"}).status_code == 403
+    assert guest_client.get("/agent/tasks").status_code == 403
+
+
+def test_agent_start_task_returns_session_id():
+    with patch.object(main.opencode_client, "start_task", return_value="ses_abc") as mock_start:
+        resp = client.post("/agent/tasks", json={"task": "  crea un archivo  "})
+    assert resp.status_code == 200
+    assert resp.json() == {"session_id": "ses_abc"}
+    assert mock_start.call_args.args[1] == "crea un archivo"
+
+
+def test_agent_reports_502_when_opencode_is_down():
+    with patch.object(main.opencode_client, "start_task", side_effect=requests.ConnectionError("x")):
+        resp = client.post("/agent/tasks", json={"task": "hola"})
+    assert resp.status_code == 502
+    assert "agente de codigo" in resp.json()["detail"]
+
+
+def test_agent_permission_reply_rejects_unknown_values():
+    resp = client.post("/agent/permissions/per_1", json={"reply": "si"})
+    assert resp.status_code == 400
 
 
 # --- Crear persona / LoRA (fase 1, solo SDXL - pedido por Sergio 2026-09-24
@@ -734,3 +778,562 @@ def test_vision_chat_stream_ignores_the_text_model_profile():
     assert lines[-1]["type"] == "done"
     mock_respond.assert_called_once()
     assert "model" not in mock_respond.call_args.kwargs
+
+
+# --- /image_with_face y /video_with_face deciden solos FaceID vs
+# ControlNet segun si la foto adjunta tiene una cara humana (bug real,
+# encontrado en vivo 2026-09-25: pedir "una mariposa similar con los
+# colores invertidos" generaba una cara alucinada porque FaceID se
+# aplicaba siempre, sin comprobar si la foto tenia una cara de verdad).
+
+def test_image_with_face_uses_faceid_when_a_face_is_detected():
+    with patch.object(main.face_detect, "has_face", return_value=True), \
+         patch.object(main.image_agent, "generate_with_face", return_value=b"fake-png") as mock_faceid, \
+         patch.object(main.image_agent, "generate_with_controlnet") as mock_controlnet:
+        resp = client.post("/image_with_face", files={"image": ("ref.png", b"x", "image/png")},
+                            data={"prompt": "una mariposa"})
+    data = resp.json()
+    assert data["agent_used"] == "image_faceid"
+    mock_faceid.assert_called_once()
+    mock_controlnet.assert_not_called()
+
+
+def test_image_with_face_uses_controlnet_when_no_face_is_detected():
+    with patch.object(main.face_detect, "has_face", return_value=False), \
+         patch.object(main.image_agent, "generate_with_face") as mock_faceid, \
+         patch.object(main.image_agent, "generate_with_controlnet", return_value=b"fake-png") as mock_controlnet:
+        resp = client.post("/image_with_face", files={"image": ("mariposa.png", b"x", "image/png")},
+                            data={"prompt": "una mariposa similar con los colores invertidos"})
+    data = resp.json()
+    assert data["agent_used"] == "image_controlnet"
+    mock_controlnet.assert_called_once()
+    mock_faceid.assert_not_called()
+
+
+def test_video_with_face_uses_controlnet_base_frame_when_no_face_is_detected():
+    with patch.object(main.face_detect, "has_face", return_value=False), \
+         patch.object(main.image_agent, "generate_with_face") as mock_faceid, \
+         patch.object(main.image_agent, "generate_with_controlnet", return_value=b"fake-png") as mock_controlnet, \
+         patch.object(main.video_agent, "generate_from_image", return_value=b"fake-mp4"):
+        resp = client.post("/video_with_face", files={"image": ("mariposa.png", b"x", "image/png")},
+                            data={"prompt": "una mariposa volando"})
+    data = resp.json()
+    assert data["agent_used"] == "video_faceid"
+    assert data["file_url"].endswith(".mp4")
+    mock_controlnet.assert_called_once()
+    mock_faceid.assert_not_called()
+
+
+# --- Activar el agente desde el chat normal (sin cambiar al modo Agente) ---
+
+def test_chat_stream_to_agent_includes_task_id_for_the_inline_card():
+    with patch.object(main.opencode_client, "delegate", return_value=("Se lo he pasado al agente.", "ses_9")):
+        with client.stream("POST", "/chat/stream",
+                           json={"message": "usa un agente y crea hola.txt en el escritorio"}) as resp:
+            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    start = next(e for e in lines if e["type"] == "start")  # puede ir precedido de un aviso de carga
+    assert start["agent_used"] == "opencode"
+    assert lines[-1]["agent_task_id"] == "ses_9"
+
+
+def test_guest_cannot_trigger_the_agent_from_chat():
+    guest_token = client.post("/auth/guest").json()["token"]
+    guest_client = TestClient(app, headers={"X-Session-Token": guest_token})
+    with patch.object(main.opencode_client, "delegate") as mock_delegate:
+        resp = guest_client.post("/chat", json={"message": "agente: borra mis fotos"})
+    assert resp.json()["agent_task_id"] is None
+    assert "invitado" in resp.json()["response"]
+    mock_delegate.assert_not_called()
+
+
+# --- Dueño de las conversaciones (bug real 2026-09-25: cualquiera podia
+# borrar o leer conversaciones ajenas conociendo el id) ---
+
+def _other_user_client():
+    uname = f"_test_otro_{uuid.uuid4().hex[:8]}"
+    anon = TestClient(app)
+    anon.post("/auth/register", json={"username": uname, "password": _TEST_PASSWORD,
+                                      "registration_key": users_module.get_or_create_registration_key()})
+    token = anon.post("/auth/login", json={"username": uname, "password": _TEST_PASSWORD}).json()["token"]
+    return uname, TestClient(app, headers={"X-Session-Token": token})
+
+
+def _my_session_with_a_message():
+    owner_id = users_module.get_user(_TEST_USERNAME)["id"]
+    sid = main.memory.new_session_id()
+    main.memory.add_message(sid, "user", "hola", user_id=owner_id)
+    return sid
+
+
+def test_other_users_and_guests_cannot_touch_my_conversation():
+    sid = _my_session_with_a_message()
+    msg_id = main.memory.get_history(sid, limit=5)[0]["id"]
+    uname, other = _other_user_client()
+    guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+    try:
+        for c in (other, guest):
+            assert c.delete(f"/sessions/{sid}").status_code == 404
+            assert c.get(f"/sessions/{sid}").status_code == 404
+            assert c.delete(f"/sessions/{sid}/messages/{msg_id}").status_code == 404
+        assert main.memory.session_owner(sid) is not None  # sigue ahi
+    finally:
+        users_module.delete_user(uname)
+
+    assert client.delete(f"/sessions/{sid}").status_code == 200
+    assert main.memory.session_owner(sid) is None
+
+
+def test_chat_with_someone_elses_session_id_starts_a_new_one():
+    sid = _my_session_with_a_message()
+    uname, other = _other_user_client()
+    try:
+        with patch.object(main.opencode_client, "delegate", return_value=("ok", None)):
+            resp = other.post("/chat", json={"message": "agente: hola", "session_id": sid})
+        assert resp.json()["session_id"] != sid
+    finally:
+        users_module.delete_user(uname)
+        client.delete(f"/sessions/{sid}")
+
+
+# --- Documentos adjuntos con el clip (solo para esa conversacion) ---
+
+def test_attach_doc_creates_conversation_and_reaches_the_model():
+    resp = client.post("/sessions/docs", files={"file": ("nota.txt", "El codigo secreto es 4711.".encode(), "text/plain")})
+    assert resp.status_code == 200
+    sid = resp.json()["session_id"]
+    assert client.get(f"/sessions/{sid}/docs").json() == [{"name": "nota.txt", "chars": 26}]
+
+    seen = {}
+
+    def fake_respond(message, history, *args, **kwargs):
+        seen["message"] = message
+        return "El codigo es 4711.", []
+
+    with patch.object(main.text_agent, "respond_with_tools", side_effect=fake_respond), \
+         patch.object(main, "_ensure_active_model"):
+        r = client.post("/chat", json={"message": "¿cual es el codigo?", "agent": "text",
+                                       "session_id": sid, "verify": False})
+    assert r.status_code == 200
+    assert "4711" in seen["message"] and "nota.txt" in seen["message"]
+    # en el historial queda el mensaje tal cual, sin el documento pegado
+    history = client.get(f"/sessions/{sid}").json()
+    assert history[0]["agent"] == "adjunto" and "nota.txt" in history[0]["content"]
+    assert history[1]["content"] == "¿cual es el codigo?"
+
+    uname, other = _other_user_client()
+    try:
+        assert other.get(f"/sessions/{sid}/docs").json() == []
+    finally:
+        users_module.delete_user(uname)
+    client.delete(f"/sessions/{sid}")
+    assert client.get(f"/sessions/{sid}/docs").json() == []
+
+
+def test_attach_doc_rejects_bad_files_and_guests():
+    assert client.post("/sessions/docs", files={"file": ("x.exe", b"MZ", "application/octet-stream")}).status_code == 400
+    guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+    assert guest.post("/sessions/docs", files={"file": ("a.txt", b"hola", "text/plain")}).status_code == 403
+
+
+def test_generation_frees_every_loaded_ollama_model_first():
+    """Bug real 2026-09-25: el modelo del chat ocupaba la VRAM y una imagen
+    tardaba ~400s. Antes de cada generacion se descargan todos."""
+    with patch.object(main.ollama, "running_models", return_value=["qwen2.5:7b", "qwen3-coder:30b-cpu"]), \
+         patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
+         patch.object(main.ollama, "unload") as mock_unload:
+        main.comfyui_client.before_submit()
+    assert [c.args[0] for c in mock_unload.call_args_list] == ["qwen2.5:7b", "qwen3-coder:30b-cpu"]
+
+
+def test_generation_keeps_the_agent_models_while_a_task_is_running():
+    with patch.object(main.ollama, "running_models",
+                      return_value=["qwen2.5:7b", "qwen3:8b", "qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu"]), \
+         patch.object(main.opencode_client, "busy_session_ids", return_value=["ses_1"]), \
+         patch.object(main.ollama, "unload") as mock_unload:
+        main.comfyui_client.before_submit()
+    # los dos modelos del agente se quedan; el del chat y el de vision no
+    assert [c.args[0] for c in mock_unload.call_args_list] == ["qwen2.5:7b", "qwen2.5vl:7b-cpu"]
+
+
+def _run_before_task(agent, loaded):
+    import threading as _threading
+    ran = _threading.Event()
+    with patch.object(main.ollama, "running_models", return_value=loaded), \
+         patch.object(main.ollama, "unload") as mock_unload, \
+         patch.object(main.comfyui_client, "free_memory", side_effect=lambda *_: ran.set()) as mock_free:
+        main.opencode_client.before_task(agent)
+        assert ran.wait(5)
+    return [c.args[0] for c in mock_unload.call_args_list], mock_free.call_count
+
+
+def test_powerful_agent_task_frees_ram_and_comfyui():
+    with patch.object(main.opencode_client, "busy_session_ids", return_value=[]):
+        unloaded, frees = _run_before_task("chati-potente", ["qwen2.5:7b", "qwen2.5vl:7b-cpu", "qwen3-coder:30b-cpu"])
+    assert unloaded == ["qwen2.5vl:7b-cpu"] and frees == 1
+
+
+def test_fast_agent_task_makes_room_on_the_gpu():
+    """qwen3:8b con su contexto (~7,6GB) no cabe junto al modelo del chat."""
+    with patch.object(main.opencode_client, "busy_session_ids", return_value=[]):
+        unloaded, frees = _run_before_task("chati", ["qwen2.5:7b", "qwen3:8b", "nomic-embed-text:latest"])
+    assert unloaded == ["qwen2.5:7b"] and frees == 1
+
+
+def test_agent_tasks_use_the_fast_agent_unless_potente_is_asked():
+    with patch.object(main.opencode_client, "start_task", return_value="ses_1") as mock_start:
+        client.post("/agent/tasks", json={"task": "crea un archivo"})
+        client.post("/agent/tasks", json={"task": "refactoriza el proyecto", "potente": True})
+    assert [c.args[2] for c in mock_start.call_args_list] == ["chati", "chati-potente"]
+
+
+def test_chat_stream_warns_when_the_model_has_to_be_loaded():
+    def fake_stream(*args, **kwargs):
+        yield "hola"
+    with patch.object(main.ollama, "running_models", return_value=[]), \
+         patch.object(main, "_ensure_active_model"), \
+         patch.object(main.text_agent, "respond_with_tools_stream", side_effect=fake_stream):
+        with client.stream("POST", "/chat/stream", json={"message": "hola", "model_profile": "rapido", "verify": False}) as resp:
+            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    statuses = [e for e in lines if e["type"] == "status"]
+    assert len(statuses) == 1  # router y respuesta usan el mismo modelo: un solo aviso
+    assert "Cargando el modelo" in statuses[0]["text"]
+    client.delete(f"/sessions/{lines[-1]['session_id']}")
+
+
+def test_chat_stream_says_nothing_when_the_model_is_already_loaded():
+    def fake_stream(*args, **kwargs):
+        yield "hola"
+    with patch.object(main.ollama, "running_models", return_value=["qwen2.5:7b"]), \
+         patch.object(main, "_ensure_active_model"), \
+         patch.object(main.text_agent, "respond_with_tools_stream", side_effect=fake_stream):
+        with client.stream("POST", "/chat/stream", json={"message": "hola", "model_profile": "rapido", "verify": False}) as resp:
+            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    assert not [e for e in lines if e["type"] == "status"]
+    client.delete(f"/sessions/{lines[-1]['session_id']}")
+
+
+# --- Preparar los modelos del modo elegido (desplegable de la izquierda) ---
+
+def _wait_prepare_done(timeout=5):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        st = client.get("/models/prepare").json()
+        if st["state"] != "preparing":
+            return st
+        time.sleep(0.05)
+    raise AssertionError("la preparacion no termino")
+
+
+def test_prepare_rejects_unknown_modes():
+    assert client.post("/models/prepare", json={"mode": "cocina"}).status_code == 400
+
+
+def test_prepare_chat_mode_loads_the_default_profile_model_and_frees_comfyui():
+    with patch.object(main.ollama, "preload") as mock_preload, \
+         patch.object(main.ollama, "running_models", return_value=[]), \
+         patch.object(main.comfyui_client, "free_memory") as mock_free:
+        resp = client.post("/models/prepare", json={"mode": "texto"})
+        assert resp.json()["state"] == "preparing"
+        st = _wait_prepare_done()
+    assert st["state"] == "ready"
+    assert "qwen2.5:7b" in st["label"]  # perfil por defecto (rapido), no el 30B
+    mock_preload.assert_called_once_with("qwen2.5:7b")
+    mock_free.assert_called_once()
+
+
+def test_prepare_image_mode_warms_up_with_a_tiny_image():
+    with patch.object(main.image_agent, "generate", return_value=b"png") as mock_gen:
+        client.post("/models/prepare", json={"mode": "image"})
+        st = _wait_prepare_done()
+    assert st["state"] == "ready"
+    assert "imagenes" in st["label"]
+    assert mock_gen.call_args.kwargs["width"] == 256
+
+
+def test_prepare_reports_errors_and_only_the_last_request_counts():
+    import threading as _threading
+    release = _threading.Event()
+
+    def slow_preload(model, *a, **k):
+        release.wait(5)
+
+    with patch.object(main.ollama, "preload", side_effect=slow_preload), \
+         patch.object(main.ollama, "running_models", return_value=[]), \
+         patch.object(main.comfyui_client, "free_memory"), \
+         patch.object(main.image_agent, "generate", side_effect=RuntimeError("no hay modelo")):
+        client.post("/models/prepare", json={"mode": "chat"})     # se queda cargando...
+        client.post("/models/prepare", json={"mode": "image"})    # ...y se cambia de modo
+        st = _wait_prepare_done()
+        release.set()
+        time.sleep(0.2)
+    final = client.get("/models/prepare").json()
+    assert st["mode"] == "image" and st["state"] == "error" and "no hay modelo" in st["detail"]
+    assert final["mode"] == "image" and final["state"] == "error"  # el "chat" que acabo tarde no lo pisa
+
+
+def _prepare_and_collect_unloads(body, loaded, busy=()):
+    with patch.object(main.ollama, "running_models", return_value=loaded), \
+         patch.object(main.ollama, "unload") as mock_unload, \
+         patch.object(main.ollama, "preload"), \
+         patch.object(main.opencode_client, "busy_session_ids", return_value=list(busy)), \
+         patch.object(main.comfyui_client, "free_memory") as mock_free, \
+         patch.object(main.image_agent, "generate", return_value=b"png"), \
+         patch.object(main.video_agent, "generate", return_value=b"mp4"):
+        client.post("/models/prepare", json=body)
+        assert _wait_prepare_done()["state"] == "ready"
+    return [c.args[0] for c in mock_unload.call_args_list], mock_free.call_count
+
+
+def test_switching_to_chat_unloads_the_agent_and_vision_models():
+    unloaded, _ = _prepare_and_collect_unloads(
+        {"mode": "texto"},
+        ["qwen2.5:7b", "qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu", "nomic-embed-text:latest"])
+    assert unloaded == ["qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu"]
+
+
+def test_switching_modes_keeps_the_agent_model_while_a_task_runs():
+    unloaded, _ = _prepare_and_collect_unloads(
+        {"mode": "chat"}, ["qwen2.5:7b", "qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu"], busy=["ses_1"])
+    assert unloaded == ["qwen2.5vl:7b-cpu"]
+
+
+def test_switching_image_model_frees_the_previous_one_but_repeating_does_not():
+    main._last_comfy_warmup = None
+    _, frees_first = _prepare_and_collect_unloads({"mode": "image", "image_model": "flux:a"}, [])
+    _, frees_same = _prepare_and_collect_unloads({"mode": "image", "image_model": "flux:a"}, [])
+    _, frees_other = _prepare_and_collect_unloads({"mode": "video"}, [])
+    assert (frees_first, frees_same, frees_other) == (0, 0, 1)
+
+
+# --- Tareas en marcha al cambiar de modo (finalizar / esperar / segundo plano) ---
+
+def test_pending_work_lists_working_and_waiting_tasks_and_generations():
+    with patch.object(main.opencode_client, "busy_session_ids", return_value=["ses_1"]), \
+         patch.object(main.opencode_client, "waiting_sessions", return_value={"ses_viejo": "question"}), \
+         patch.object(main.opencode_client, "task_summary", side_effect=lambda b, sid: f"tarea {sid}"), \
+         patch.object(main.comfyui_client, "user_jobs",
+                      return_value=[{"id": "p1", "state": "running"}, {"id": "p2", "state": "queued"}]):
+        data = client.get("/work/pending").json()
+    assert data["agent_tasks"] == [{"session_id": "ses_1", "title": "tarea ses_1"}]
+    assert data["waiting_tasks"] == [{"session_id": "ses_viejo", "title": "tarea ses_viejo", "reason": "question"}]
+    assert (data["generations_running"], data["generations_queued"], data["any"]) == (1, 1, True)
+
+
+def test_a_task_only_waiting_for_the_user_does_not_block_mode_changes():
+    with patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
+         patch.object(main.opencode_client, "waiting_sessions", return_value={"ses_viejo": "question"}), \
+         patch.object(main.opencode_client, "task_summary", return_value="x"), \
+         patch.object(main.comfyui_client, "user_jobs", return_value=[]):
+        data = client.get("/work/pending").json()
+    assert data["any"] is False and len(data["waiting_tasks"]) == 1
+
+
+def test_stop_single_agent_task_and_generation():
+    with patch.object(main.opencode_client, "stop_task") as mock_stop_task, \
+         patch.object(main.comfyui_client, "stop_job") as mock_stop_job:
+        assert client.post("/work/agent/ses_viejo/stop").status_code == 200
+        assert client.post("/work/generation/p2/stop").status_code == 200
+    assert mock_stop_task.call_args.args[1] == "ses_viejo"
+    assert mock_stop_job.call_args.args[1] == "p2"
+
+
+def test_pending_work_is_empty_when_nothing_runs():
+    with patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
+         patch.object(main.opencode_client, "waiting_sessions", return_value={}), \
+         patch.object(main.comfyui_client, "user_jobs", return_value=[]):
+        assert client.get("/work/pending").json()["any"] is False
+
+
+def test_stop_work_aborts_agent_tasks_and_comfyui():
+    with patch.object(main.opencode_client, "busy_session_ids", return_value=["ses_1", "ses_2"]), \
+         patch.object(main.opencode_client, "abort") as mock_abort, \
+         patch.object(main.comfyui_client, "stop_everything") as mock_stop:
+        assert client.post("/work/stop").status_code == 200
+    assert [c.args[1] for c in mock_abort.call_args_list] == ["ses_1", "ses_2"]
+    mock_stop.assert_called_once()
+
+
+def test_changing_mode_never_frees_comfyui_in_the_middle_of_a_generation():
+    with patch.object(main.comfyui_client, "user_queue", return_value=(1, 0)), \
+         patch.object(main.comfyui_client, "free_memory") as mock_free:
+        main._free_comfyui()
+    mock_free.assert_not_called()
+
+
+def test_automatic_mode_with_the_quality_profile_swaps_the_models_at_once():
+    with patch.object(main.ollama, "running_models", return_value=["qwen2.5:7b", "qwen2.5vl:7b-cpu"]), \
+         patch.object(main.ollama, "unload") as mock_unload, \
+         patch.object(main.ollama, "preload") as mock_preload, \
+         patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
+         patch.object(main.comfyui_client, "free_memory"):
+        client.post("/models/prepare", json={"mode": "chat", "model_profile": "bueno"})
+        st = _wait_prepare_done()
+    assert st["state"] == "ready" and "qwen3-coder:30b-cpu" in st["label"]
+    assert [c.args[0] for c in mock_unload.call_args_list] == ["qwen2.5vl:7b-cpu"]
+    assert [c.args[0] for c in mock_preload.call_args_list] == ["qwen2.5:7b", "qwen3-coder:30b-cpu"]
+
+
+
+# --- Valorar la dificultad antes de usar el agente rapido ---
+
+@pytest.mark.assess
+def test_complex_task_asks_which_model_instead_of_starting():
+    with patch.object(main.router, "assess_agent_task", return_value={"complex": True, "reason": "hay que programar"}),          patch.object(main.opencode_client, "start_task") as mock_start:
+        data = client.post("/agent/tasks", json={"task": "añade un endpoint"}).json()
+    assert data == {"needs_choice": True, "task": "añade un endpoint", "reason": "hay que programar", "attachments": []}
+    mock_start.assert_not_called()
+
+
+@pytest.mark.assess
+def test_after_choosing_or_with_potente_there_is_no_assessment():
+    with patch.object(main.router, "assess_agent_task") as mock_assess,          patch.object(main.opencode_client, "start_task", return_value="ses_1") as mock_start:
+        client.post("/agent/tasks", json={"task": "x", "confirmed": True})
+        client.post("/agent/tasks", json={"task": "x", "potente": True})
+    mock_assess.assert_not_called()
+    assert [c.args[2] for c in mock_start.call_args_list] == ["chati", "chati-potente"]
+
+
+@pytest.mark.assess
+def test_simple_task_starts_right_away_and_a_failing_assessment_never_blocks():
+    with patch.object(main.opencode_client, "start_task", return_value="ses_1"):
+        with patch.object(main.router, "assess_agent_task", return_value={"complex": False, "reason": ""}):
+            assert client.post("/agent/tasks", json={"task": "crea hola.txt"}).json() == {"session_id": "ses_1"}
+        with patch.object(main.router, "assess_agent_task", side_effect=RuntimeError("ollama caido")):
+            assert client.post("/agent/tasks", json={"task": "crea hola.txt"}).json() == {"session_id": "ses_1"}
+
+
+@pytest.mark.assess
+def test_chat_delegation_of_a_complex_task_offers_the_choice():
+    with patch.object(main.router, "assess_agent_task", return_value={"complex": True, "reason": "hay que depurar"}),          patch.object(main.opencode_client, "delegate") as mock_delegate:
+        data = client.post("/chat", json={"message": "agente: arregla el bug del login"}).json()
+    mock_delegate.assert_not_called()
+    assert data["agent_task_id"] is None
+    assert data["agent_choice"] == {"task": "agente: arregla el bug del login", "reason": "hay que depurar"}
+    client.delete(f"/sessions/{data['session_id']}")
+
+
+def test_agent_follow_up_goes_to_the_same_task():
+    with patch.object(main.opencode_client, "continue_task") as mock_continue:
+        assert client.post("/agent/tasks/ses_1/message", json={"text": "  ahora en Trabajo "}).status_code == 200
+        assert client.post("/agent/tasks/ses_1/message", json={"text": "   "}).status_code == 400
+    assert mock_continue.call_args.args[1:] == ("ses_1", "ahora en Trabajo")
+    guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+    assert guest.post("/agent/tasks/ses_1/message", json={"text": "x"}).status_code == 403
+
+
+def test_agent_shortcuts_per_user_and_blocked_for_guests():
+    assert client.get("/agent/shortcuts").status_code == 200
+    saved = client.put("/agent/shortcuts", json={"shortcuts": [{"name": "Mi atajo", "task": "haz algo"}]}).json()
+    assert saved == [{"name": "Mi atajo", "task": "haz algo", "potente": False}]
+    assert client.get("/agent/shortcuts").json() == saved
+    assert client.put("/agent/shortcuts", json={"shortcuts": [{"name": "", "task": "x"}]}).status_code == 400
+    uname, other = _other_user_client()
+    try:
+        assert other.get("/agent/shortcuts").json()[0]["name"] == "Ordenar Descargas"  # los suyos, no los mios
+    finally:
+        users_module.delete_user(uname)
+    guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+    assert guest.get("/agent/shortcuts").status_code == 403
+
+
+def test_llm_proxy_is_public_and_cleans_streamed_tool_calls():
+    from unittest.mock import MagicMock
+    chunk = {"choices": [{"delta": {"tool_calls": [{"function": {"name": "bash",
+             "arguments": '{"command": "dir", "workdir": null}'}}]}}]}
+    upstream = MagicMock(status_code=200, headers={"content-type": "text/event-stream"})
+    upstream.iter_lines.return_value = [b"data: " + json.dumps(chunk).encode(), b"", b"data: [DONE]"]
+    with patch.object(main.requests, "request", return_value=upstream) as mock_req:
+        resp = TestClient(app).post("/llm/v1/chat/completions", json={"model": "m", "stream": True})
+    assert resp.status_code == 200  # sin sesion: es la pasarela de OpenCode
+    assert mock_req.call_args.args[1].endswith("/v1/chat/completions")
+    assert '\\"workdir\\"' not in resp.text and "[DONE]" in resp.text
+
+
+# --- Tarea en directo (n.º 3 del roadmap): eventos de OpenCode -> SSE ---
+
+def _live_events(opencode_lines):
+    from unittest.mock import MagicMock
+    upstream = MagicMock()
+    upstream.__enter__.return_value = upstream
+    upstream.iter_lines.return_value = opencode_lines
+    snaps = iter(range(100))
+    with patch.object(main, "_task_view", side_effect=lambda b, sid: {"n": next(snaps)}), \
+         patch.object(main.requests, "get", return_value=upstream):
+        resp = client.get("/agent/tasks/ses_1/live")
+    return [ln for ln in resp.text.split("\n\n") if ln.strip()]
+
+
+def test_live_sends_a_snapshot_per_event_of_this_task_only():
+    blocks = _live_events([
+        b'data: {"type":"session.status","properties":{"sessionID":"ses_1"}}',
+        b'data: {"type":"session.status","properties":{"sessionID":"ses_otra"}}',
+        b'data: {"type":"server.heartbeat","properties":{}}',
+        b'data: {"type":"session.idle","properties":{"sessionID":"ses_1"}}',
+    ])
+    assert blocks == ['data: {"n": 0}', 'data: {"n": 1}', ": ping", 'data: {"n": 2}', "event: end\ndata: {}"]
+
+
+def test_live_throttles_word_by_word_text():
+    deltas = [b'data: {"type":"message.part.delta","properties":{"sessionID":"ses_1","delta":"x"}}'] * 20
+    blocks = _live_events(deltas)
+    snapshots = [b for b in blocks if b.startswith("data:")]
+    assert 2 <= len(snapshots) < 10  # el inicial + alguno, no uno por palabra
+
+
+def test_live_ends_cleanly_when_opencode_is_down():
+    with patch.object(main, "_task_view", return_value={"n": 0}), \
+         patch.object(main.requests, "get", side_effect=requests.ConnectionError("caido")):
+        text = client.get("/agent/tasks/ses_1/live").text
+    assert text.strip().endswith("event: end\ndata: {}")
+
+
+def test_live_shows_text_while_it_is_being_written():
+    from unittest.mock import MagicMock
+    upstream = MagicMock()
+    upstream.__enter__.return_value = upstream
+    delta = lambda t: ('data: {"type":"message.part.delta","properties":{"sessionID":"ses_1","partID":"p1",'
+                       '"field":"text","delta":"' + t + '"}}').encode()
+    upstream.iter_lines.return_value = [
+        delta("Hola "), delta("mundo"),
+        b'data: {"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}}',
+        b'data: {"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"p1","type":"text","text":"Hola mundo"}}}',
+    ]
+    with patch.object(main, "_task_view", side_effect=lambda b, sid: {"status": "busy", "steps": []}), \
+         patch.object(main.requests, "get", return_value=upstream), \
+         patch.object(main, "LIVE_THROTTLE", 0):
+        blocks = [json.loads(b[6:]) for b in client.get("/agent/tasks/ses_1/live").text.split("\n\n") if b.startswith("data: {")]
+    streamed = [b.get("streaming_text") for b in blocks]
+    assert streamed == [None, "Hola ", "Hola mundo", "Hola mundo", None]  # al guardarse deja de ir aparte
+
+
+
+# --- Adjuntos a una tarea del agente (n.º 4 del roadmap) ---
+
+def test_attachments_are_copied_images_described_and_listed_in_the_task(tmp_path, monkeypatch):
+    import io
+    from PIL import Image
+    monkeypatch.setattr(main.agent_attachments, "ATTACH_ROOT", tmp_path)
+    png = io.BytesIO()
+    Image.new("RGB", (40, 30), (0, 128, 255)).save(png, format="PNG")
+    with patch.object(main, "_ensure_active_model"),          patch.object(main.vision_agent, "respond_with_image_stream", return_value=iter(["una playa azul"])):
+        up = client.post("/agent/attachments", files=[
+            ("files", ("factura.txt", b"Total: 42 euros", "text/plain")),
+            ("files", ("foto.png", png.getvalue(), "image/png")),
+        ]).json()
+    names = {f["name"]: f for f in up["files"]}
+    assert (tmp_path / names["factura.txt"]["path"].split("/")[-2] / "factura.txt").read_bytes() == b"Total: 42 euros"
+    assert names["factura.txt"]["description"] is None
+    assert names["foto.png"]["description"] == "una playa azul"
+
+    with patch.object(main.opencode_client, "start_task", return_value="ses_1") as mock_start:
+        client.post("/agent/tasks", json={"task": "ordena esto", "attachments": up["files"]})
+    sent = mock_start.call_args.args[1]
+    assert sent.startswith("ordena esto")
+    assert names["foto.png"]["path"] in sent and "se ve: una playa azul" in sent
+
+
+def test_attachments_limits_and_guests():
+    too_many = [("files", (f"a{i}.txt", b"x", "text/plain")) for i in range(11)]
+    assert client.post("/agent/attachments", files=too_many).status_code == 400
+    guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+    assert guest.post("/agent/attachments", files=[("files", ("a.txt", b"x", "text/plain"))]).status_code == 403

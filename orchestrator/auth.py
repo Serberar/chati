@@ -27,7 +27,8 @@ PUBLIC_PATHS = {
     "/", "/health", "/favicon.ico",
     "/auth/login", "/auth/guest", "/auth/register", "/auth/reset-password",
 }
-PUBLIC_PATH_PREFIXES = ("/auth/security-question/", "/static/")
+# /llm/: pasarela de OpenCode hacia Ollama (main.py) - no lleva sesion de usuario
+PUBLIC_PATH_PREFIXES = ("/auth/security-question/", "/static/", "/llm/")
 
 
 def is_public_path(path: str) -> bool:

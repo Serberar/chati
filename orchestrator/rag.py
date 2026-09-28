@@ -1,5 +1,6 @@
 import re
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -105,7 +106,8 @@ class _OllamaEmbeddingFunction(EmbeddingFunction):
     @staticmethod
     def build_from_config(config: dict) -> "_OllamaEmbeddingFunction":
         from agents.ollama_client import OllamaClient as _OC
-        return _OllamaEmbeddingFunction(_OC("http://localhost:11434"), config.get("model", EMBED_MODEL))
+        # 127.0.0.1: "localhost" en Windows espera ~2s por IPv6 en cada llamada (ver config.yaml)
+        return _OllamaEmbeddingFunction(_OC("http://127.0.0.1:11434"), config.get("model", EMBED_MODEL))
 
 
 class KnowledgeBase:
@@ -141,16 +143,24 @@ class KnowledgeBase:
     def add_document(self, filename: str, content: bytes, user_id: str | None = None,
                       dek: bytes | None = None, key_generation: int | None = None) -> int:
         filename = _sanitize_filename(filename)
-        stored_path = self._docs_dir(user_id) / filename
-        stored_path.write_bytes(content)
-
-        text = _extract_text(stored_path)
+        # el texto se saca de una copia temporal; el original se guarda cifrado
+        # con la contraseña del usuario (como los adjuntos del clip). Sin DEK
+        # (modo sin usuarios) se guarda tal cual, como antes.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp) / filename
+            tmp_path.write_bytes(content)
+            text = _extract_text(tmp_path)
         chunks = _chunk_text(text)
         if not chunks:
             return 0
 
         # si ya existia un documento con ese nombre, lo quitamos primero (sustituir, no duplicar)
         self.delete_document(filename, user_id=user_id)
+        docs_dir = self._docs_dir(user_id)
+        if dek is not None:
+            (docs_dir / f"{filename}.enc").write_bytes(crypto_utils.encrypt_bytes(dek, content))
+        else:
+            (docs_dir / filename).write_bytes(content)
 
         ids = [f"{filename}::{i}::{uuid.uuid4().hex[:8]}" for i in range(len(chunks))]
         metadatas = [{"source": filename, "chunk": i, "type": "document"} for i in range(len(chunks))]
@@ -191,9 +201,24 @@ class KnowledgeBase:
         filename = _sanitize_filename(filename)
         where = {"$and": [{"source": filename}, {"user_id": user_id}]} if user_id else {"source": filename}
         self.collection.delete(where=where)
-        stored_path = self._docs_dir(user_id) / filename
-        if stored_path.exists():
-            stored_path.unlink()
+        docs_dir = self._docs_dir(user_id)
+        for stored_path in (docs_dir / filename, docs_dir / f"{filename}.enc"):
+            stored_path.unlink(missing_ok=True)
+
+    def encrypt_plain_originals(self, user_id: str, dek: bytes) -> int:
+        """Cifra los originales que quedaran en claro de antes (se guardaban
+        sin cifrar hasta el 2026-09-28). Se llama al iniciar sesion, que es
+        cuando hay DEK. Devuelve cuantos ha cifrado."""
+        d = DOCS_DIR / user_id
+        if not d.exists():
+            return 0
+        n = 0
+        for path in d.iterdir():
+            if path.is_file() and path.suffix != ".enc":
+                path.with_name(path.name + ".enc").write_bytes(crypto_utils.encrypt_bytes(dek, path.read_bytes()))
+                path.unlink()
+                n += 1
+        return n
 
     def list_documents(self, user_id: str | None = None) -> list[dict]:
         """Solo documentos subidos por el usuario - la memoria de conversacion

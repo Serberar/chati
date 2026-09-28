@@ -80,8 +80,8 @@ TOOL_DEFS = [
                 "o revisar archivos de un proyecto real - nunca para explicar codigo "
                 "o escribir un fragmento de ejemplo, para eso responde tu directamente. "
                 "OJO: tarda varios minutos en completarse y no devuelve el resultado "
-                "aqui mismo - dile al usuario que la tarea se ha enviado y donde "
-                "seguirla, no inventes que ya esta hecho."
+                "aqui mismo - dile al usuario que se la has pasado al agente y que "
+                "vera su progreso justo debajo, no inventes que ya esta hecho."
             ),
             "parameters": {
                 "type": "object",
