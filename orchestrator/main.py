@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -1270,6 +1271,36 @@ def _resolve_agent(message: str, agent_override: str | None) -> tuple[str, bool]
     return route["agent"], route["factual"]
 
 
+def _tools_for(agent_name: str) -> list[dict]:
+    """El chat de texto no delega en el agente de codigo: en modo Chat, al
+    pedirle una imagen, se la pasaba al agente (que tampoco sabe hacerla,
+    mejoras.md 2026-09-28). Esa herramienta es solo del agente de programacion."""
+    if agent_name == "code":
+        return tools.TOOL_DEFS
+    return [t for t in tools.TOOL_DEFS if t["function"]["name"] != "delegar_a_agente_de_codigo"]
+
+
+# Chino, japones o coreano: qwen2.5 a veces se pasa al chino a mitad de una
+# respuesta (visto el 2026-09-28, mejoras.md).
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+
+
+def _fix_language(answer: str, message: str, model: str) -> str:
+    """Si la respuesta se ha pasado a otro alfabeto (y el usuario no escribio
+    en el), el mismo modelo la reescribe entera en español. Si falla, se
+    devuelve tal cual: nunca debe romper una respuesta."""
+    if not _CJK.search(answer) or _CJK.search(message):
+        return answer
+    try:
+        fixed = ollama.chat(model, [{"role": "user", "content": (
+            "Este texto mezcla español con otro idioma. Reescribelo entero solo en español, sin "
+            "cambiar el contenido ni el formato (markdown, listas, codigo). Devuelve solo el "
+            "texto reescrito.\n\n" + answer)}], temperature=0.2, think=False)
+    except Exception:
+        return answer
+    return fixed.strip() if fixed.strip() and not _CJK.search(fixed) else answer
+
+
 def _resolve_model_profile(profile: str | None) -> str | None:
     """Convierte un nombre de perfil (rapido/bueno/seguridad) en el modelo
     real a usar, o None para dejar el default configurado del agente (ver
@@ -1387,9 +1418,10 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
                                  dek=dek, key_generation=key_generation)
         docs_context, docs_evidence = _attached_docs(session_id, message, auth_session)
         raw_answer, evidence = agent.respond_with_tools(
-            _with_docs(message, docs_context), history, tools.TOOL_DEFS, tool_executor,
+            _with_docs(message, docs_context), history, _tools_for(agent_name), tool_executor,
             model=override_model, think=think)
         evidence = docs_evidence + (evidence or []) or None  # lista vacia -> None, mas explicito para lo que sigue
+        raw_answer = _fix_language(raw_answer, message, override_model or agent.model)
     else:
         evidence = None
         raw_answer = agent.respond(message, history=history, context_chunks=None)
@@ -1551,7 +1583,7 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
             tool_executor = partial(_execute_tool, session_id=session_id, user_id=user_id,
                                      dek=dek, key_generation=key_generation)
             chunks = agent.respond_with_tools_stream(
-                _with_docs(message, docs_context), history, tools.TOOL_DEFS, tool_executor, evidence,
+                _with_docs(message, docs_context), history, _tools_for(agent_name), tool_executor, evidence,
                 model=override_model, think=think)
         else:
             chunks = agent.respond_stream(message, history=history, context_chunks=None)
@@ -1565,12 +1597,14 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
         return
 
     final_response = full_text
+    if agent_name in ("text", "code"):
+        final_response = _fix_language(full_text, message, override_model or agent.model)
     verifier_gated = False
     verifier_reason = None
     sources = None
 
     if CONFIG["verifier"]["enabled"] and verify and agent_name in ("text", "code"):
-        result = verifier.check(message, full_text, is_factual=is_factual, evidence=evidence)
+        result = verifier.check(message, final_response, is_factual=is_factual, evidence=evidence)
         final_response = result.answer
         verifier_gated = result.gated
         verifier_reason = result.reason

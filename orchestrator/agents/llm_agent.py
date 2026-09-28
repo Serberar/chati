@@ -80,7 +80,20 @@ def _parse_fallback_tool_call(content: str) -> dict | None:
     arguments = {k: v for k, v in _FALLBACK_PARAM_RE.findall(params_block)}
     return {"function": {"name": name, "arguments": arguments}}
 
-LANGUAGE_RULE = "Responde SIEMPRE en español, sin excepcion, sin importar el idioma del contexto recuperado."
+LANGUAGE_RULE = ("Responde SIEMPRE en español, sin excepcion, sin importar el idioma del contexto recuperado. "
+                 "Nunca cambies de idioma a mitad de la respuesta (ni al chino ni a ningun otro).")
+
+# Lo que el chat de texto NO puede hacer, y a donde mandar al usuario: sin
+# esto, al pedirle una imagen en modo Chat decia "no puedo, pero puedo usar un
+# servicio" y se lo pasaba al agente de codigo, que tampoco sabe (mejoras.md,
+# 2026-09-28).
+CHATI_MODES_NOTE = (
+    "Eres el chat de Chati. Chati tiene otros modos, que el usuario elige en el selector "
+    "Modo de la izquierda: Imagen (crear imagenes), Video, Voz, Agente de codigo (crear, "
+    "mover u ordenar archivos del ordenador) y Automatico (elige el modo solo). Tu no puedes "
+    "crear imagenes ni videos ni cambiar archivos: si te lo piden, dile en una frase que "
+    "cambie a ese modo (o a Automatico) y vuelva a pedirlo alli. No ofrezcas otros servicios "
+    "ni digas que lo vas a hacer. ")
 
 MAX_TOOL_ITERATIONS = 4
 # Temperatura baja solo para decidir si usar una herramienta: con la temperatura
@@ -92,6 +105,7 @@ TOOL_DECISION_TEMPERATURE = 0.1
 
 SYSTEM_PROMPTS = {
     "text": (
+        CHATI_MODES_NOTE +
         "Eres un asistente conversacional honesto. Si no sabes algo con certeza, "
         "dilo explicitamente en vez de inventar una respuesta. No des cifras, "
         "fechas ni datos especificos que no puedas verificar. Si tienes herramientas "

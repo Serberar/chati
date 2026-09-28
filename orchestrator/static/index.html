@@ -316,6 +316,12 @@
   .jobs-site .name { min-width: 120px; font-weight: 600; }
   .jobs-site .url { flex: 1; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .jobs-add { display: flex; gap: 8px; margin-top: 12px; }
+  .jobs-credit { padding: 8px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+  .jobs-credit a, .mode-credit a { color: inherit; }
+  .credits-list { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+  .credits-list a { color: var(--accent); font-weight: 600; text-decoration: none; }
+  .credits-list a:hover { text-decoration: underline; }
+  .credits-list .what { color: var(--muted); font-size: 12px; }
   .jobs-add input { flex: 1; }
   /* ver cambios / deshacer (roadmap n.º 6) */
   .agent-changes { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
@@ -580,6 +586,7 @@
   }
   #micBtn.recording { background: var(--error); color: white; border-color: var(--error); animation: recPulse 1s ease-in-out infinite; }
   @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+  .stopped-note { font-size: 12px; color: var(--muted); margin-top: 6px; font-style: italic; }
   #cancelBtn { flex-shrink: 0; height: 40px; border-radius: var(--radius-sm); border: none; padding: 0 16px; cursor: pointer; }
   #inputFooter { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 10px; }
   #inputFooter .hint { font-size: 11px; color: var(--muted); }
@@ -986,7 +993,7 @@
           <textarea id="prompt" rows="1" placeholder="Escribe aqui..."></textarea>
         </div>
         <button id="send">Enviar</button>
-        <button id="cancelBtn" style="display:none; background:var(--error); color:white;">Cancelar generacion</button>
+        <button id="cancelBtn" style="display:none; background:var(--error); color:white;" title="Para lo que esta generando ahora mismo">■ Detener</button>
         <button id="micBtn" style="display:none;">Grabar</button>
       </div>
       <div id="inputFooter">
@@ -1123,6 +1130,10 @@
         </div>
       </div>
     </div>
+    <div class="jobs-credit">Navega con <a href="https://www.microsoft.com/edge" target="_blank" rel="noopener">Microsoft Edge</a>
+      mediante <a href="https://playwright.dev" target="_blank" rel="noopener">Playwright</a>, busca con
+      <a href="https://www.bing.com" target="_blank" rel="noopener">Bing</a> y en las webs que elijas, y piensa con
+      <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>.</div>
   </div>
 </div>
 
@@ -1166,7 +1177,23 @@
       <button class="options-row" id="optMemoryBtn"><span class="ic">&#129504;</span>Memoria</button>
       <button class="options-row" id="optPersonasBtn"><span class="ic">&#129489;</span>Personas</button>
       <div class="options-divider"></div>
+      <button class="options-row" id="optCreditsBtn"><span class="ic">&#128220;</span>Créditos</button>
+      <div class="options-divider"></div>
       <button class="options-row danger" id="logoutBtn"><span class="ic">&#128682;</span>Cerrar sesion</button>
+    </div>
+  </div>
+</div>
+
+<div id="creditsModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:560px; margin:50px auto; max-height:84vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Créditos</strong>
+      <button id="closeCreditsBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:14px 16px; overflow-y:auto;">
+      <p class="personas-intro">Chati une programas y modelos hechos por otras personas y empresas. Todo funciona en
+        este ordenador; estos son los que hacen el trabajo de verdad:</p>
+      <div class="credits-list" id="creditsList"></div>
     </div>
   </div>
 </div>
@@ -1793,13 +1820,29 @@ async function loadAdminPanel() {
 }
 
 const MODES = {
-  chat: { desc: "Automatico: Chati decide si es conversacion, imagen, video o una tarea para el agente. Adjunta una foto o un documento para comentarlo.", endpoint: "/chat/stream", showTopbar: true, allowAttach: true, isText: true },
-  texto: { desc: "Solo conversacion, sin decidir a quien va: responde directamente el modelo del perfil elegido. Algo mas rapido que Automatico.", endpoint: "/chat/stream", agent: "text", showTopbar: true, allowAttach: true, isText: true },
-  image: { desc: "Genera una imagen a partir de una descripcion (FLUX). Adjunta una foto para preservar esa cara.", endpoint: "/chat/stream", agent: "image", showTopbar: true, allowAttach: true, faceEndpoint: "/image_with_face", modelsEndpoint: "/models/image" },
-  video: { desc: "Genera un video corto a partir de una descripcion (LTX-Video). Adjunta una foto para preservar esa cara.", endpoint: "/chat/stream", agent: "video", showTopbar: true, allowAttach: true, faceEndpoint: "/video_with_face", modelsEndpoint: "/models/video" },
-  agente: { desc: "Pidele una tarea sobre tus archivos (crear, ordenar, renombrar, pequeños scripts...). Con 📎 puedes adjuntarle archivos o fotos. Veras cada paso aqui y te pedira permiso antes de cambiar nada.", isAgent: true, credit: true, allowAttach: true },
-  voice: { desc: "Pulsa grabar, habla, y pulsa de nuevo para enviar. Responde con voz.", isVoice: true },
+  chat: { desc: "Automático: Chati elige cómo responder", endpoint: "/chat/stream", showTopbar: true, allowAttach: true, isText: true, credits: ["ollama", "comfyui"] },
+  texto: { desc: "Solo conversación", endpoint: "/chat/stream", agent: "text", showTopbar: true, allowAttach: true, isText: true, credits: ["ollama"] },
+  image: { desc: "Crear imágenes", endpoint: "/chat/stream", agent: "image", showTopbar: true, allowAttach: true, faceEndpoint: "/image_with_face", modelsEndpoint: "/models/image", credits: ["comfyui"] },
+  video: { desc: "Crear vídeos", endpoint: "/chat/stream", agent: "video", showTopbar: true, allowAttach: true, faceEndpoint: "/video_with_face", modelsEndpoint: "/models/video", credits: ["comfyui"] },
+  agente: { desc: "Tareas con tus archivos", isAgent: true, allowAttach: true, credits: ["opencode", "ollama"] },
+  voice: { desc: "Habla y te responde con voz", isVoice: true, credits: ["whisper", "ollama", "piper"] },
 };
+
+// Creditos: Chati se apoya en programas de otros y lo dice (mejoras.md: "no
+// quiero llevar merito de otros programas").
+const CREDIT_LINKS = {
+  ollama: ["Ollama", "https://ollama.com"],
+  comfyui: ["ComfyUI", "https://www.comfy.org"],
+  opencode: ["OpenCode", "https://opencode.ai"],
+  whisper: ["faster-whisper", "https://github.com/SYSTRAN/faster-whisper"],
+  piper: ["Piper", "https://github.com/rhasspy/piper"],
+};
+
+function creditsHtml(keys) {
+  const links = keys.map((k) => `<a href="${CREDIT_LINKS[k][1]}" target="_blank" rel="noopener">${CREDIT_LINKS[k][0]}</a>`);
+  const list = links.length > 1 ? links.slice(0, -1).join(", ") + " y " + links[links.length - 1] : links[0];
+  return `Funciona con ${list}`;
+}
 
 let currentMode = "chat";
 
@@ -2615,9 +2658,12 @@ async function send() {
   // FaceID); sin foto, genera normal a partir solo del texto
   const useFaceEndpoint = mode.faceEndpoint && attachedFile;
   const usePersona = currentMode === "image" && !attachedFile && personaSelect.value;
-  if (mode.agent === "image" || mode.agent === "video" || useFaceEndpoint) {
-    cancelBtn.style.display = "inline-block";
-  }
+  // "Detener" para todo lo que se genera (mejoras.md: tener que esperar a que
+  // termine algo que ya se ve que esta mal era incomodo)
+  currentAbort = new AbortController();
+  currentAbortIsMedia = mode.agent === "image" || mode.agent === "video" || useFaceEndpoint || usePersona;
+  const signal = currentAbort.signal;
+  cancelBtn.style.display = "inline-block";
 
   const bubble = addMessage("assistant", "generando...");
   const stopTyping = startTypingIndicator(bubble);
@@ -2628,46 +2674,61 @@ async function send() {
       form.append("prompt", text);
       form.append("persona", personaSelect.value);
       if (modelSelect.value) form.append("model_id", modelSelect.value);
-      const resp = await fetch("/image_with_persona", { method: "POST", body: form });
+      const resp = await fetch("/image_with_persona", { method: "POST", body: form, signal });
       renderResult(bubble, await resp.json());
     } else if (useFaceEndpoint) {
       const form = new FormData();
       form.append("prompt", text);
       form.append("image", attachedFile);
       if (currentMode === "image" && modelSelect.value) form.append("model_id", modelSelect.value);
-      const resp = await fetch(mode.faceEndpoint, { method: "POST", body: form });
+      const resp = await fetch(mode.faceEndpoint, { method: "POST", body: form, signal });
       const data = await resp.json();
       renderResult(bubble, data);
     } else {
       const imgForVision = MODES[currentMode].isText ? attachedImageB64 : null;
-      await streamChatInto(bubble, mode.endpoint, text, mode.agent, imgForVision);
+      await streamChatInto(bubble, mode.endpoint, text, mode.agent, imgForVision, signal);
     }
   } catch (err) {
-    bubble.className = "bubble error";
-    bubble.textContent = "Error de conexion: " + err;
+    if (err.name === "AbortError") {
+      // lo que ya se habia escrito se queda; se marca que se paro a medias
+      if (bubble.querySelector(".typing-wrap") || !bubble.textContent.trim()) bubble.textContent = "";
+      const note = document.createElement("div");
+      note.className = "stopped-note";
+      note.textContent = "(detenido)";
+      bubble.appendChild(note);
+    } else {
+      bubble.className = "bubble error";
+      bubble.textContent = "Error de conexion: " + err;
+    }
   } finally {
     stopTyping();
+    currentAbort = null;
     sendBtn.disabled = false;
     cancelBtn.style.display = "none";
     refreshBackgroundTasks();  // el contador de tareas, sin esperar a los 8s
   }
 }
 
+let currentAbort = null;
+let currentAbortIsMedia = false;
 cancelBtn.addEventListener("click", async () => {
   cancelBtn.disabled = true;
-  cancelBtn.textContent = "Cancelando...";
-  try {
-    await fetch("/cancel", { method: "POST" });
-  } catch (err) { /* si falla la llamada, el spinner seguira hasta que el propio timeout lo resuelva */ }
+  cancelBtn.textContent = "Deteniendo…";
+  // imagen/video: ademas hay que parar ComfyUI, que sigue aunque se corte la espera
+  if (currentAbortIsMedia) {
+    try { await fetch("/cancel", { method: "POST" }); } catch (err) { /* se corta igualmente abajo */ }
+  }
+  if (currentAbort) currentAbort.abort();
   cancelBtn.disabled = false;
-  cancelBtn.textContent = "Cancelar generacion";
+  cancelBtn.textContent = "■ Detener";
 });
 
 // --- Modo Agente: interfaz propia encima de OpenCode (ver opencode_client.py).
 // El agente es de terceros (OpenCode, licencia MIT) - Chati solo le pone esta
 // interfaz, por eso el credito "powered by OpenCode" siempre visible.
 
-const OPENCODE_CREDIT_HTML = 'Agente: <a href="https://opencode.ai" target="_blank" rel="noopener">powered by OpenCode</a>';
+const OPENCODE_CREDIT_HTML = 'Agente: <a href="https://opencode.ai" target="_blank" rel="noopener">powered by OpenCode</a>' +
+  ' · modelos con <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>';
 const AGENT_POLL_MS = 2500;
 const AGENT_TOOL_LABELS = {
   read: "Leyendo", write: "Creando archivo", edit: "Editando", patch: "Editando",
@@ -2684,9 +2745,10 @@ const agentViews = {};  // session_id -> vista abierta en el log (no duplicar)
 
 function setModeDesc(m) {
   modeDesc.textContent = m.desc;
-  if (m.credit) {
+  if (m.credits) {
     const credit = document.createElement("span");
-    credit.innerHTML = " · " + OPENCODE_CREDIT_HTML;
+    credit.className = "mode-credit";
+    credit.innerHTML = " · " + creditsHtml(m.credits);
     modeDesc.appendChild(credit);
   }
 }
@@ -2812,6 +2874,47 @@ function renderAgentShortcuts() {
   manage.addEventListener("click", () => openShortcutsModal());
   agentShortcutsRow.appendChild(manage);
 }
+
+// --- Opciones > Creditos ---
+const CREDITS = [
+  ["Ollama", "https://ollama.com", "Ejecuta los modelos de texto, programacion y vision."],
+  ["Qwen (Alibaba)", "https://qwenlm.github.io", "Los modelos de texto, del agente y de vision (qwen2.5, qwen3, qwen3-coder, qwen2.5-vl)."],
+  ["ComfyUI", "https://www.comfy.org", "Genera las imagenes y los videos."],
+  ["FLUX.1 (Black Forest Labs)", "https://blackforestlabs.ai", "Modelo de imagen por defecto."],
+  ["Stable Diffusion XL (Stability AI)", "https://stability.ai", "Modelo de imagen para caras, personas y retoques."],
+  ["IP-Adapter FaceID", "https://github.com/tencent-ailab/IP-Adapter", "Mantener una cara real en las imagenes."],
+  ["LTX-Video (Lightricks)", "https://github.com/Lightricks/LTX-Video", "Modelo de video."],
+  ["sd-scripts (kohya-ss)", "https://github.com/kohya-ss/sd-scripts", "Entrena las personas."],
+  ["OpenCode", "https://opencode.ai", "El agente que trabaja con tus archivos."],
+  ["faster-whisper", "https://github.com/SYSTRAN/faster-whisper", "Entiende lo que dices en el modo Voz."],
+  ["Piper", "https://github.com/rhasspy/piper", "La voz con la que responde Chati."],
+  ["Playwright", "https://playwright.dev", "Maneja el navegador del buscador de empleo."],
+  ["ChromaDB", "https://www.trychroma.com", "Guarda la memoria y tus documentos para buscarlos."],
+  ["FastAPI", "https://fastapi.tiangolo.com", "El servidor interno de Chati."],
+  ["pywebview", "https://pywebview.flowrl.com", "La ventana de la aplicacion."],
+];
+const creditsModal = document.getElementById("creditsModal");
+document.getElementById("optCreditsBtn").addEventListener("click", () => {
+  optionsModal.style.display = "none";
+  const list = document.getElementById("creditsList");
+  list.innerHTML = "";
+  for (const [name, url, what] of CREDITS) {
+    const row = document.createElement("div");
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = name;
+    const w = document.createElement("div");
+    w.className = "what";
+    w.textContent = what;
+    row.append(a, w);
+    list.appendChild(row);
+  }
+  creditsModal.style.display = "block";
+});
+document.getElementById("closeCreditsBtn").addEventListener("click", () => { creditsModal.style.display = "none"; });
+creditsModal.addEventListener("click", (e) => { if (e.target === creditsModal) creditsModal.style.display = "none"; });
 
 // --- Buscador de empleo autonomo (n.º 7 del roadmap, ver job_search.py) ---
 const jobsModal = document.getElementById("jobsModal");
@@ -3746,7 +3849,7 @@ function buildPermissionCard(view, perm) {
   return box;
 }
 
-async function streamChatInto(bubble, endpoint, text, agentOverride, imageBase64) {
+async function streamChatInto(bubble, endpoint, text, agentOverride, imageBase64, signal) {
   const body = { message: text, agent: agentOverride || null, session_id: getSessionId(), verify: verifyToggle.checked };
   if (MODES[currentMode].isText && profileSelect.value) body.model_profile = profileSelect.value;
   if (imageBase64) body.image_base64 = imageBase64;
@@ -3757,6 +3860,7 @@ async function streamChatInto(bubble, endpoint, text, agentOverride, imageBase64
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!resp.ok || !resp.body) {
     bubble.className = "bubble error";
@@ -3805,6 +3909,7 @@ async function streamChatInto(bubble, endpoint, text, agentOverride, imageBase64
         if (tagWrap) tagWrap.textContent = evt.agent_used;
         if (evt.agent_used === "image" || evt.agent_used === "video") {
           cancelBtn.style.display = "inline-block";
+          currentAbortIsMedia = true;
         }
       } else if (evt.type === "chunk") {
         if (!textNode) {
