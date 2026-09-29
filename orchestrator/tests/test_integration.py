@@ -1216,7 +1216,7 @@ def test_agent_follow_up_goes_to_the_same_task():
     with patch.object(main.opencode_client, "continue_task") as mock_continue:
         assert client.post("/agent/tasks/ses_1/message", json={"text": "  ahora en Trabajo "}).status_code == 200
         assert client.post("/agent/tasks/ses_1/message", json={"text": "   "}).status_code == 400
-    assert mock_continue.call_args.args[1:] == ("ses_1", "ahora en Trabajo")
+    assert mock_continue.call_args.args[1:] == ("ses_1", "ahora en Trabajo", None)  # None: el mismo agente
     guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
     assert guest.post("/agent/tasks/ses_1/message", json={"text": "x"}).status_code == 403
 
@@ -1337,3 +1337,29 @@ def test_attachments_limits_and_guests():
     assert client.post("/agent/attachments", files=too_many).status_code == 400
     guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
     assert guest.post("/agent/attachments", files=[("files", ("a.txt", b"x", "text/plain"))]).status_code == 403
+
+
+def test_code_mode_tasks_go_to_the_project_with_the_chosen_agent(tmp_path):
+    """Modo Codigo: planificar/construir en la carpeta del proyecto, y "Hacerlo"
+    sigue la misma tarea con el agente de construir."""
+    with patch.object(main.opencode_client, "start_task", return_value="ses_c") as mock_start:
+        r = client.post("/agent/tasks", json={"task": "revisa la estructura", "project": str(tmp_path), "plan": True})
+        assert r.json() == {"session_id": "ses_c"}
+        assert mock_start.call_args.args[1:] == ("revisa la estructura", "chati-code-plan", str(tmp_path), None)
+        client.post("/agent/tasks", json={"task": "hazlo", "project": str(tmp_path), "rapido": True})
+        assert mock_start.call_args.args[2:] == ("chati-code", str(tmp_path), main.CONFIG["opencode"]["model"])
+        assert client.post("/agent/tasks", json={"task": "x", "project": str(tmp_path / "no-existe")}).status_code == 400
+    with patch.object(main.opencode_client, "continue_task") as mock_continue:
+        client.post("/agent/tasks/ses_c/message", json={"text": "adelante", "code_mode": "build"})
+    assert mock_continue.call_args.args[1:] == ("ses_c", "adelante", "chati-code")
+
+
+def test_code_projects_are_remembered_and_git_is_only_activated_on_request(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("x")
+    info = client.post("/code/projects", json={"path": str(tmp_path)}).json()
+    assert info["exists"] and not info["git"] and info["entries"] == ["README.md", "src/"]
+    assert client.get("/code/projects").json()["projects"][0]["path"] == str(tmp_path)
+    assert not (tmp_path / ".git").exists()
+    assert client.post("/code/git_init", json={"path": str(tmp_path)}).json()["git"]
+    assert client.post("/code/projects", json={"path": str(tmp_path / "nada")}).status_code == 400

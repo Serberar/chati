@@ -24,6 +24,7 @@ import face_detect
 import agent_attachments
 import job_search
 import shopping
+import web_tools
 import deep_search
 import llm_proxy
 import model_registry
@@ -169,7 +170,17 @@ def _free_memory_for_generation() -> None:
         _active_heavy_model = None
 
 
-def _free_memory_for_agent(agent: str | None, wait: bool = False) -> None:
+def _agent_model(agent: str | None, model: str | None = None) -> str:
+    """El modelo con el que va a trabajar el agente: el elegido para la tarea
+    ("Rapido" en modo Codigo) o el suyo. Los de modo Codigo usan el potente."""
+    if model:
+        return model
+    oc = CONFIG["opencode"]
+    heavy = {oc["agent_potente"], oc.get("agent_code"), oc.get("agent_code_plan")}
+    return oc["model_potente"] if agent in heavy else oc["model"]
+
+
+def _free_memory_for_agent(agent: str | None, model: str | None = None, wait: bool = False) -> None:
     """Antes de una tarea del agente, en segundo plano (OpenCode tarda
     igualmente en pedir el modelo), deja sitio a su modelo:
     - agente rapido (qwen3:8b, ~7,6GB de GPU con su contexto): no cabe junto
@@ -177,8 +188,8 @@ def _free_memory_for_agent(agent: str | None, wait: bool = False) -> None:
     - agente potente (qwen3-coder, ~26GB de RAM): medido el 2026-09-25, con
       el modelo de vision tambien cargado y ComfyUI reteniendo la ultima
       imagen, cargarlo tardo 425s de los 477s de una tarea "crea hello.txt"."""
-    potente = agent == CONFIG["opencode"]["agent_potente"]
-    model = CONFIG["opencode"]["model_potente" if potente else "model"]
+    model = _agent_model(agent, model)
+    potente = model == CONFIG["opencode"]["model_potente"]
 
     def work():
         # el potente va en CPU: el ligero del chat (GPU) puede quedarse
@@ -591,6 +602,11 @@ class AgentTaskRequest(BaseModel):
     potente: bool = False
     confirmed: bool = False  # el usuario ya eligio modelo: no volver a valorar
     attachments: list[dict] = []  # lo que devolvio /agent/attachments
+    # modo Codigo: carpeta del proyecto, planificar (sin cambiar nada) o
+    # construir, y "rapido" (qwen3:8b en GPU en vez de qwen3-coder en CPU)
+    project: str | None = None
+    plan: bool = False
+    rapido: bool = False
 
 
 IMAGE_DESCRIBE_PROMPT = ("Describe en una sola frase, en español, que se ve en esta imagen, para poder "
@@ -658,6 +674,14 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
     if not req.task.strip():
         return JSONResponse({"detail": "Describe la tarea."}, status_code=400)
     task = req.task.strip()
+    if req.project:
+        project = Path(req.project)
+        if not project.is_dir():
+            return JSONResponse({"detail": f"No existe la carpeta {req.project}."}, status_code=400)
+        agent = CONFIG["opencode"]["agent_code_plan" if req.plan else "agent_code"]
+        model = CONFIG["opencode"]["model"] if req.rapido else None
+        result = _opencode_call(opencode_client.start_task, task, agent, str(project), model)
+        return result if isinstance(result, JSONResponse) else {"session_id": result}
     if not req.potente and not req.confirmed:
         choice = _assess_for_fast_agent(task)
         if choice:
@@ -726,7 +750,7 @@ def agent_task_live(request: Request, session_id: str):
             yield snapshot()
             last = 0.0
             with requests.get(f"{base}/event", stream=True, timeout=(5, 60),
-                              **opencode_client._dir()) as upstream:
+                              **opencode_client._sparams(base, session_id)) as upstream:
                 for line in upstream.iter_lines():
                     if not line.startswith(b"data:"):
                         continue
@@ -1001,8 +1025,104 @@ def deep_cancel(request: Request):
     return {"ok": True}
 
 
+# --- Modo Codigo: proyectos del usuario ---
+
+_code_store = web_tools.EncryptedStore("code_meta.json")
+MAX_RECENT_PROJECTS = 10
+
+# El selector de carpetas de Windows, en un proceso aparte (tkinter no puede
+# vivir en los hilos del servidor). Sale en el escritorio del usuario tanto si
+# usa la app como el navegador.
+_PICK_FOLDER_SCRIPT = (
+    "import tkinter as tk\nfrom tkinter import filedialog\n"
+    "root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)\n"
+    "print(filedialog.askdirectory(title='Elige la carpeta del proyecto', mustexist=True) or '')\n")
+
+
+class CodeProjectRequest(BaseModel):
+    path: str
+
+
+def _project_info(path: str) -> dict:
+    p = Path(path)
+    if not p.is_dir():
+        return {"path": path, "exists": False}
+    try:
+        entries = sorted((e.name + ("/" if e.is_dir() else "") for e in p.iterdir()
+                          if not e.name.startswith(".")), key=str.lower)
+    except OSError:
+        entries = []
+    return {"path": str(p), "name": p.name or str(p), "exists": True, "git": (p / ".git").exists(),
+            "agents_md": (p / "AGENTS.md").exists(), "entries": entries[:60], "total": len(entries)}
+
+
+@app.post("/code/pick_folder")
+def code_pick_folder(request: Request):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        out = subprocess.run([sys.executable, "-c", _PICK_FOLDER_SCRIPT], capture_output=True, text=True,
+                             timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        return {"path": None}
+    path = out.stdout.strip()
+    return {"path": str(Path(path)) if path else None}
+
+
+@app.get("/code/projects")
+def code_recent_projects(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    recent = _code_store.load("code_projects", session["user_id"], session["dek"], session["key_generation"], [])
+    return {"projects": [_project_info(p) for p in recent]}
+
+
+@app.post("/code/projects")
+def code_open_project(request: Request, req: CodeProjectRequest):
+    """Abre un proyecto: comprueba la carpeta y la pone la primera de las recientes."""
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    info = _project_info(req.path.strip())
+    if not info["exists"]:
+        return JSONResponse({"detail": "Esa carpeta no existe."}, status_code=400)
+    uid, dek, gen = session["user_id"], session["dek"], session["key_generation"]
+    recent = [p for p in _code_store.load("code_projects", uid, dek, gen, []) if p != info["path"]]
+    _code_store.save("code_projects", ([info["path"]] + recent)[:MAX_RECENT_PROJECTS], uid, dek, gen)
+    return info
+
+
+@app.post("/code/git_init")
+def code_git_init(request: Request, req: CodeProjectRequest):
+    """Convierte el proyecto en repositorio git para poder ver y deshacer los
+    cambios del agente (OpenCode solo los registra con git). Solo si el
+    usuario lo pide desde la interfaz."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    p = Path(req.path)
+    if not p.is_dir():
+        return JSONResponse({"detail": "Esa carpeta no existe."}, status_code=400)
+    if not (p / ".git").exists():
+        out = subprocess.run(["git", "init", "-q", str(p)], capture_output=True, text=True,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if out.returncode != 0:
+            return JSONResponse({"detail": f"git no pudo: {out.stderr.strip()}"}, status_code=400)
+    return _project_info(str(p))
+
+
+@app.get("/code/tasks")
+def code_tasks(request: Request, path: str):
+    """Conversaciones anteriores en este proyecto."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    return _opencode_call(opencode_client.list_tasks, 20, path)
+
+
 class AgentFollowUp(BaseModel):
     text: str
+    # modo Codigo: "plan" o "build" para cambiar de agente al seguir ("adelante")
+    code_mode: str | None = None
 
 
 @app.post("/agent/tasks/{session_id}/message")
@@ -1012,7 +1132,10 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
         return _guest_blocked()
     if not req.text.strip():
         return JSONResponse({"detail": "Escribe que quieres que haga."}, status_code=400)
-    result = _opencode_call(opencode_client.continue_task, session_id, req.text.strip())
+    agent = None
+    if req.code_mode in ("plan", "build"):
+        agent = CONFIG["opencode"]["agent_code_plan" if req.code_mode == "plan" else "agent_code"]
+    result = _opencode_call(opencode_client.continue_task, session_id, req.text.strip(), agent)
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
 
@@ -1885,7 +2008,7 @@ def delete_video_model(model_id: str, request: Request):
 # Se trabaja en segundo plano; si se cambia de modo a medio preparar, solo
 # cuenta el ultimo (ticket).
 
-PREPARE_MODES = {"chat", "texto", "image", "video", "agente", "voice"}
+PREPARE_MODES = {"chat", "texto", "image", "video", "agente", "codigo", "voice"}
 _prepare_state = {"mode": None, "state": "idle", "detail": None, "label": None, "ticket": 0}
 _prepare_lock = threading.Lock()
 
@@ -1971,7 +2094,7 @@ def _prepare_work(req: PrepareRequest) -> None:
             video_agent.generate(comfyui_client.WARMUP_PROMPT, width=256, height=160, length=9, steps=2,
                                  model_id=model_id, timeout=600)
         _last_comfy_warmup = (mode, model_id)
-    elif mode == "agente":
+    elif mode in ("agente", "codigo"):  # codigo: potente salvo con "Rapido"
         _free_comfyui()
         model = CONFIG["opencode"]["model_potente" if req.potente else "model"]
         # el agente rapido (GPU) no cabe junto al modelo del chat; el potente (CPU) si

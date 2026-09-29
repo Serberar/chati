@@ -311,6 +311,18 @@ $opencodeConfig = @'
       "mode": "primary", "model": "ollama/qwen3-coder:30b-cpu", "temperature": 0.1,
       "prompt": "{file:./chati_agent_prompt.md}",
       "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false }
+    },
+    "chati-code": {
+      "description": "Chati modo Codigo: programa en el proyecto del usuario (construir)",
+      "mode": "primary", "model": "ollama/qwen3-coder:30b-cpu", "temperature": 0.1,
+      "prompt": "{file:./chati_code_prompt.md}",
+      "tools": { "task": false, "webfetch": false, "skill": false }
+    },
+    "chati-code-plan": {
+      "description": "Chati modo Codigo: analiza el proyecto y propone, sin cambiar nada (planificar)",
+      "mode": "primary", "model": "ollama/qwen3-coder:30b-cpu", "temperature": 0.1,
+      "prompt": "{file:./chati_code_plan_prompt.md}",
+      "tools": { "task": false, "webfetch": false, "skill": false, "edit": false, "write": false, "patch": false }
     }
   }
 }
@@ -321,6 +333,9 @@ $opencodeConfig = @'
 # instrucciones cortas propias en vez de las de OpenCode - medido: una tarea
 # "crea un archivo" paso de 8-10 min a 15s (chati) / 2-3 min (potente).
 Copy-Item "$PSScriptRoot\chati_agent_prompt.md" "$opencodeConfigDir\chati_agent_prompt.md" -Force
+# modo Codigo (chati-code / chati-code-plan)
+Copy-Item "$PSScriptRoot\chati_code_prompt.md" "$opencodeConfigDir\chati_code_prompt.md" -Force
+Copy-Item "$PSScriptRoot\chati_code_plan_prompt.md" "$opencodeConfigDir\chati_code_plan_prompt.md" -Force
 Set-Content -Path "$opencodeConfigDir\opencode.json" -Value $opencodeConfig -Encoding utf8
 Write-Host "Config de OpenCode escrita en $opencodeConfigDir\opencode.json" -ForegroundColor Green
 

@@ -48,12 +48,54 @@ before_task: Callable[[str | None], None] | None = None
 WORKDIR: Path | None = None
 
 
+# Modo Codigo: cada tarea puede ir en la carpeta de un proyecto del usuario.
+# OpenCode separa por carpeta sus listas, estados, permisos y eventos, asi que
+# cada llamada lleva la carpeta de SU tarea (se averigua una vez con GET
+# /session/{id}, que responde sin saberla - comprobado el 2026-09-29).
+_session_dirs: dict[str, str] = {}
+# modelo elegido para una tarea ("Rapido" en modo Codigo); sin entrada, el del agente
+_session_models: dict[str, str] = {}
+
+
+def _params(directory: str | None = None) -> dict:
+    d = directory or (str(WORKDIR) if WORKDIR else None)
+    return {"params": {"directory": d}} if d else {}
+
+
 def _dir() -> dict:
-    return {"params": {"directory": str(WORKDIR)}} if WORKDIR else {}
+    return _params()
 
 
-def workdir_undoable() -> bool:
-    return bool(WORKDIR) and (WORKDIR / ".git").exists()
+def session_dir(base_url: str, session_id: str) -> str | None:
+    if session_id not in _session_dirs:
+        try:
+            resp = requests.get(f"{base_url}/session/{session_id}", timeout=TIMEOUT)
+            resp.raise_for_status()
+            found = resp.json().get("directory")
+        except (requests.RequestException, ValueError, AttributeError):
+            found = None  # no se sabe: la de trabajo (sin guardarlo, por si luego responde)
+        if not found:
+            return str(WORKDIR) if WORKDIR else None
+        _session_dirs[session_id] = found
+    return _session_dirs[session_id] or None
+
+
+def _sparams(base_url: str, session_id: str) -> dict:
+    return _params(session_dir(base_url, session_id))
+
+
+def known_dirs() -> list[str | None]:
+    """La carpeta de trabajo y las de los proyectos con tareas en esta ejecucion."""
+    dirs = [str(WORKDIR) if WORKDIR else None]
+    for d in _session_dirs.values():
+        if d and d not in dirs:
+            dirs.append(d)
+    return dirs
+
+
+def workdir_undoable(directory: str | None = None) -> bool:
+    d = Path(directory) if directory else WORKDIR
+    return bool(d) and (d / ".git").exists()
 
 
 def ensure_workdir() -> None:
@@ -72,11 +114,14 @@ def ensure_workdir() -> None:
 _HIDDEN_TOOLS = {"question", "todowrite", "todoread"}
 
 
-def create_session(base_url: str) -> str:
-    ensure_workdir()
-    resp = requests.post(f"{base_url}/session", json={}, **_dir(), timeout=TIMEOUT)
+def create_session(base_url: str, directory: str | None = None) -> str:
+    if not directory:
+        ensure_workdir()
+    resp = requests.post(f"{base_url}/session", json={}, **_params(directory), timeout=TIMEOUT)
     resp.raise_for_status()
-    return resp.json()["id"]
+    session_id = resp.json()["id"]
+    _session_dirs[session_id] = directory or (str(WORKDIR) if WORKDIR else "")
+    return session_id
 
 
 # ruta de Windows: unidad + barra invertida, hasta un caracter que no puede ir en una ruta
@@ -92,34 +137,50 @@ def forward_slash_paths(text: str) -> str:
     return _WINDOWS_PATH.sub(lambda m: m.group(0).replace("\\", "/"), text)
 
 
-def send_prompt_async(base_url: str, session_id: str, text: str, agent: str | None = None) -> None:
+def send_prompt_async(base_url: str, session_id: str, text: str, agent: str | None = None,
+                      model: str | None = None) -> None:
     system = SYSTEM_CONTEXT
-    if WORKDIR:
+    directory = session_dir(base_url, session_id)
+    if directory and (not WORKDIR or Path(directory) != WORKDIR):
+        system += (f" Estas trabajando en el proyecto de la carpeta {Path(directory).as_posix()}: "
+                   "las rutas relativas son desde ahi.")
+    elif WORKDIR:
         system += (f" Tu carpeta de trabajo es {WORKDIR.as_posix()}: si el usuario no dice donde "
                    "guardar algo, guardalo ahi (lo que cambies en ella se puede deshacer).")
     body = {"parts": [{"type": "text", "text": forward_slash_paths(text)}], "system": system}
     if agent:
         body["agent"] = agent
-    resp = requests.post(f"{base_url}/session/{session_id}/prompt_async", json=body, **_dir(), timeout=TIMEOUT)
+    if model:
+        body["model"] = {"providerID": "ollama", "modelID": model}
+    resp = requests.post(f"{base_url}/session/{session_id}/prompt_async", json=body,
+                         **_params(directory), timeout=TIMEOUT)
     resp.raise_for_status()
 
 
-def start_task(base_url: str, task: str, agent: str | None = None) -> str:
+def start_task(base_url: str, task: str, agent: str | None = None, directory: str | None = None,
+               model: str | None = None) -> str:
+    """directory: la carpeta de un proyecto (modo Codigo); None = la carpeta
+    de trabajo del agente. model: otro modelo que el del agente (p.ej. el
+    rapido en modo Codigo)."""
     if before_task is not None:
-        before_task(agent)
-    session_id = create_session(base_url)
-    send_prompt_async(base_url, session_id, task, agent)
+        before_task(agent, model)
+    session_id = create_session(base_url, directory)
+    if model:
+        _session_models[session_id] = model
+    send_prompt_async(base_url, session_id, task, agent, model)
     return session_id
 
 
-def continue_task(base_url: str, session_id: str, text: str) -> None:
+def continue_task(base_url: str, session_id: str, text: str, agent: str | None = None) -> None:
     """Otro mensaje en una tarea ya existente ("no, ponlo en la carpeta
     Trabajo"), con el mismo agente con el que empezo (rapido o potente) - el
-    agente ve todo lo anterior de la tarea, no empieza de cero."""
-    agent = _get(base_url, f"/session/{session_id}").get("agent")
+    agente ve todo lo anterior de la tarea, no empieza de cero. `agent` lo
+    cambia (modo Codigo: de planificar a construir, "adelante")."""
+    agent = agent or _get(base_url, f"/session/{session_id}", session_id=session_id).get("agent")
+    model = _session_models.get(session_id)
     if before_task is not None:
-        before_task(agent)
-    send_prompt_async(base_url, session_id, text, agent)
+        before_task(agent, model)
+    send_prompt_async(base_url, session_id, text, agent, model)
 
 
 def delegate(base_url: str, task: str, agent: str | None = None) -> tuple[str, str | None]:
@@ -138,8 +199,11 @@ def delegate(base_url: str, task: str, agent: str | None = None) -> tuple[str, s
     )
 
 
-def _get(base_url: str, path: str):
-    resp = requests.get(f"{base_url}{path}", **_dir(), timeout=TIMEOUT)
+def _get(base_url: str, path: str, session_id: str | None = None, directory: str | None = None):
+    """GET a OpenCode con la carpeta de la tarea `session_id` (o `directory`,
+    o la de trabajo del agente)."""
+    params = _sparams(base_url, session_id) if session_id else _params(directory)
+    resp = requests.get(f"{base_url}{path}", **params, timeout=TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
@@ -220,11 +284,12 @@ def get_task_view(base_url: str, session_id: str) -> dict:
     """Todo lo que la interfaz necesita para pintar una tarea en un solo
     viaje: estado, pasos (texto y herramientas usadas), y las preguntas y
     permisos pendientes de ESTA tarea."""
-    session = _get(base_url, f"/session/{session_id}")
-    statuses = _get(base_url, "/session/status")
-    messages = _get(base_url, f"/session/{session_id}/message")
-    questions = [q for q in _get(base_url, "/question") if q.get("sessionID") == session_id]
-    permissions = [p for p in _get(base_url, "/permission") if p.get("sessionID") == session_id]
+    kw = {"session_id": session_id}
+    session = _get(base_url, f"/session/{session_id}", **kw)
+    statuses = _get(base_url, "/session/status", **kw)
+    messages = _get(base_url, f"/session/{session_id}/message", **kw)
+    questions = [q for q in _get(base_url, "/question", **kw) if q.get("sessionID") == session_id]
+    permissions = [p for p in _get(base_url, "/permission", **kw) if p.get("sessionID") == session_id]
 
     # /session/status solo lista las sesiones activas - ausente = parada
     status = statuses.get(session_id, {"type": "idle"})
@@ -249,7 +314,8 @@ def get_task_view(base_url: str, session_id: str) -> dict:
         } for p in permissions],
         "changes": _changes_summary(messages),
         "reverted": bool(session.get("revert")),
-        "undoable": workdir_undoable(),
+        "undoable": workdir_undoable(session_dir(base_url, session_id)),
+        "directory": session_dir(base_url, session_id),
     }
 
 
@@ -266,9 +332,11 @@ def _changes_summary(messages: list) -> dict:
     return {"files": len(files), "additions": additions, "deletions": deletions}
 
 
-def list_tasks(base_url: str, limit: int = 20) -> list:
-    sessions = _get(base_url, "/session")
-    statuses = _get(base_url, "/session/status")
+def list_tasks(base_url: str, limit: int = 20, directory: str | None = None) -> list:
+    sessions = _get(base_url, "/session", directory=directory)
+    statuses = _get(base_url, "/session/status", directory=directory)
+    for s in sessions:
+        _session_dirs.setdefault(s["id"], s.get("directory") or directory or (str(WORKDIR) if WORKDIR else ""))
     sessions = [s for s in sessions if not s.get("parentID")]  # subagentes internos, no tareas del usuario
     sessions.sort(key=lambda s: s.get("time", {}).get("updated", 0), reverse=True)
     return [{
@@ -282,10 +350,10 @@ def list_tasks(base_url: str, limit: int = 20) -> list:
 def task_summary(base_url: str, session_id: str) -> str:
     """Nombre legible de una tarea: su titulo, o lo que pidio el usuario si
     OpenCode no le puso titulo ("New session - 2026-09-25T07:55...")."""
-    title = _get(base_url, f"/session/{session_id}").get("title", "")
+    title = _get(base_url, f"/session/{session_id}", session_id=session_id).get("title", "")
     if title and not title.startswith("New session"):
         return title
-    for msg in _get(base_url, f"/session/{session_id}/message"):
+    for msg in _get(base_url, f"/session/{session_id}/message", session_id=session_id):
         if msg.get("info", {}).get("role") == "user":
             for part in msg.get("parts", []):
                 if part.get("type") == "text" and part.get("text", "").strip():
@@ -299,9 +367,10 @@ def waiting_sessions(base_url: str) -> dict[str, str]:
     al usuario. {} si OpenCode no responde."""
     waiting: dict[str, str] = {}
     try:
-        for path, reason in (("/permission", "permission"), ("/question", "question")):
-            for item in requests.get(f"{base_url}{path}", **_dir(), timeout=3).json():
-                waiting[item["sessionID"]] = reason
+        for directory in known_dirs():
+            for path, reason in (("/permission", "permission"), ("/question", "question")):
+                for item in requests.get(f"{base_url}{path}", **_params(directory), timeout=3).json():
+                    waiting[item["sessionID"]] = reason
     except (requests.RequestException, ValueError, KeyError, TypeError):
         return {}
     return waiting
@@ -310,10 +379,10 @@ def waiting_sessions(base_url: str) -> dict[str, str]:
 def stop_task(base_url: str, session_id: str) -> None:
     """Cierra una tarea del todo: rechaza lo que tenga pendiente (pregunta o
     permiso) y la detiene. Solo detenerla la dejaria con la pregunta colgando."""
-    for question in _get(base_url, "/question"):
+    for question in _get(base_url, "/question", session_id=session_id):
         if question.get("sessionID") == session_id:
             reject_question(base_url, question["id"])
-    for permission in _get(base_url, "/permission"):
+    for permission in _get(base_url, "/permission", session_id=session_id):
         if permission.get("sessionID") == session_id:
             reply_permission(base_url, permission["id"], "reject")
     abort(base_url, session_id)
@@ -326,30 +395,41 @@ def busy_session_ids(base_url: str) -> list[str]:
     retendria 26GB de RAM indefinidamente (paso de verdad: una tarea llevaba
     dias esperando). Si OpenCode no responde, ninguna."""
     try:
-        statuses = requests.get(f"{base_url}/session/status", **_dir(), timeout=3).json()
-        waiting = {item["sessionID"]
-                   for path in ("/question", "/permission")
-                   for item in requests.get(f"{base_url}{path}", **_dir(), timeout=3).json()}
-        return [sid for sid, st in statuses.items() if st.get("type") != "idle" and sid not in waiting]
+        busy = []
+        for directory in known_dirs():
+            kw = _params(directory)
+            statuses = requests.get(f"{base_url}/session/status", **kw, timeout=3).json()
+            waiting = {item["sessionID"]
+                       for path in ("/question", "/permission")
+                       for item in requests.get(f"{base_url}{path}", **kw, timeout=3).json()}
+            busy += [sid for sid, st in statuses.items() if st.get("type") != "idle" and sid not in waiting]
+        return busy
     except (requests.RequestException, ValueError, AttributeError, KeyError, TypeError):
         return []
 
 
+def _post_to_owner(base_url: str, path: str, body: dict) -> None:
+    """Preguntas y permisos llegan solo con su id: se mandan a la carpeta que
+    los tenga (la de trabajo o la de un proyecto)."""
+    resp = None
+    for directory in known_dirs():
+        resp = requests.post(f"{base_url}{path}", json=body, **_params(directory), timeout=TIMEOUT)
+        if resp.status_code != 404:
+            break
+    if resp is not None:
+        resp.raise_for_status()
+
+
 def reply_question(base_url: str, request_id: str, answers: list[list[str]]) -> None:
-    resp = requests.post(f"{base_url}/question/{request_id}/reply",
-                         json={"answers": answers}, **_dir(), timeout=TIMEOUT)
-    resp.raise_for_status()
+    _post_to_owner(base_url, f"/question/{request_id}/reply", {"answers": answers})
 
 
 def reject_question(base_url: str, request_id: str) -> None:
-    resp = requests.post(f"{base_url}/question/{request_id}/reject", json={}, **_dir(), timeout=TIMEOUT)
-    resp.raise_for_status()
+    _post_to_owner(base_url, f"/question/{request_id}/reject", {})
 
 
 def reply_permission(base_url: str, request_id: str, reply: str) -> None:
-    resp = requests.post(f"{base_url}/permission/{request_id}/reply",
-                         json={"reply": reply}, **_dir(), timeout=TIMEOUT)
-    resp.raise_for_status()
+    _post_to_owner(base_url, f"/permission/{request_id}/reply", {"reply": reply})
 
 
 PATCH_MAX_CHARS = 8000
@@ -360,7 +440,7 @@ def get_changes(base_url: str, session_id: str) -> dict:
     tarea y cada "continuar"): OpenCode lo guarda en cada mensaje del usuario
     (info.summary.diffs) - el diff de la sesion entera viene vacio."""
     turns = []
-    for msg in _get(base_url, f"/session/{session_id}/message"):
+    for msg in _get(base_url, f"/session/{session_id}/message", session_id=session_id):
         info = msg.get("info", {})
         if info.get("role") != "user":
             continue
@@ -377,29 +457,32 @@ def get_changes(base_url: str, session_id: str) -> dict:
                 "patch": (d.get("patch") or "")[:PATCH_MAX_CHARS],
             } for d in diffs],
         })
-    session = _get(base_url, f"/session/{session_id}")
+    session = _get(base_url, f"/session/{session_id}", session_id=session_id)
+    directory = session_dir(base_url, session_id)
     return {"turns": turns, "reverted": bool(session.get("revert")),
-            "workdir": WORKDIR.as_posix() if WORKDIR else None}
+            "workdir": Path(directory).as_posix() if directory else None}
 
 
 def revert_task(base_url: str, session_id: str) -> None:
     """Deshace todo lo que la tarea cambio en la carpeta de trabajo (desde su
     primer mensaje). Se puede volver atras con unrevert_task mientras no se
     mande otro mensaje a la tarea."""
-    messages = _get(base_url, f"/session/{session_id}/message")
+    messages = _get(base_url, f"/session/{session_id}/message", session_id=session_id)
     first_user = next((m for m in messages if m.get("info", {}).get("role") == "user"), None)
     if first_user is None:
         return
     resp = requests.post(f"{base_url}/session/{session_id}/revert",
-                         json={"messageID": first_user["info"]["id"]}, **_dir(), timeout=60)
+                         json={"messageID": first_user["info"]["id"]}, **_sparams(base_url, session_id), timeout=60)
     resp.raise_for_status()
 
 
 def unrevert_task(base_url: str, session_id: str) -> None:
-    resp = requests.post(f"{base_url}/session/{session_id}/unrevert", json={}, **_dir(), timeout=60)
+    resp = requests.post(f"{base_url}/session/{session_id}/unrevert", json={},
+                         **_sparams(base_url, session_id), timeout=60)
     resp.raise_for_status()
 
 
 def abort(base_url: str, session_id: str) -> None:
-    resp = requests.post(f"{base_url}/session/{session_id}/abort", json={}, **_dir(), timeout=TIMEOUT)
+    resp = requests.post(f"{base_url}/session/{session_id}/abort", json={},
+                         **_sparams(base_url, session_id), timeout=TIMEOUT)
     resp.raise_for_status()

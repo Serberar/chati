@@ -13,6 +13,7 @@ def _no_workdir(monkeypatch):
     # main.py la fija al importarse (lo hacen otros tests): aqui se prueba sin
     # ella salvo en los tests de la carpeta de trabajo
     monkeypatch.setattr(opencode_client, "WORKDIR", None)
+    monkeypatch.setattr(opencode_client, "_session_dirs", {})
 
 
 def _ok_response(json_data):
@@ -52,7 +53,7 @@ def test_delegate_returns_text_and_task_id(mock_create, mock_send):
 
     text, task_id = opencode_client.delegate(BASE, "arregla el bug X", "chati")
 
-    mock_send.assert_called_once_with(BASE, "ses_abc123", "arregla el bug X", "chati")
+    mock_send.assert_called_once_with(BASE, "ses_abc123", "arregla el bug X", "chati", None)
     assert task_id == "ses_abc123"
     assert "agente" in text
     assert "http" not in text
@@ -188,6 +189,7 @@ def test_busy_session_ids_ignores_tasks_waiting_for_the_user_and_silence_when_do
 @patch("opencode_client.requests.get")
 def test_stop_task_rejects_what_is_pending_and_aborts(mock_get, mock_post):
     mock_get.side_effect = _fake_get({
+        "/session/ses_1": {"directory": None},
         "/question": [{"id": "que_1", "sessionID": "ses_1"}, {"id": "que_x", "sessionID": "otra"}],
         "/permission": [{"id": "per_1", "sessionID": "ses_1"}],
     })
@@ -224,7 +226,7 @@ def test_continue_task_keeps_the_agent_the_task_started_with(mock_get, mock_post
     mock_get.side_effect = _fake_get({"/session/ses_1": {"id": "ses_1", "agent": "chati-potente"}})
     mock_post.return_value = _ok_response({})
     freed = []
-    monkeypatch.setattr(opencode_client, "before_task", freed.append)
+    monkeypatch.setattr(opencode_client, "before_task", lambda agent, model=None: freed.append(agent))
 
     opencode_client.continue_task(BASE, "ses_1", "ponlo en la carpeta Trabajo")
 
@@ -343,7 +345,7 @@ def test_changes_summary_counts_distinct_files_and_lines():
 
 @patch("opencode_client._get")
 def test_get_changes_lists_the_diffs_of_each_turn(mock_get):
-    mock_get.side_effect = lambda base, path: _DIFFED_MESSAGES if path.endswith("/message") else {"revert": None}
+    mock_get.side_effect = lambda base, path, **kw: _DIFFED_MESSAGES if path.endswith("/message") else {"revert": None}
     info = opencode_client.get_changes(BASE, "ses_1")
     assert [t["message_id"] for t in info["turns"]] == ["msg_1", "msg_2"]
     assert info["turns"][0]["files"][0] == {"file": "nuevo.txt", "status": "added", "additions": 1,
@@ -359,3 +361,29 @@ def test_revert_undoes_from_the_first_message_of_the_task(mock_get, mock_post):
     opencode_client.revert_task(BASE, "ses_1")
     assert mock_post.call_args.args[0] == f"{BASE}/session/ses_1/revert"
     assert mock_post.call_args.kwargs["json"] == {"messageID": "msg_1"}
+
+
+# --- modo Codigo: tareas en la carpeta de un proyecto ---
+
+@patch("opencode_client.requests.post")
+def test_a_project_task_goes_to_its_folder_and_is_told_so(mock_post, tmp_path, monkeypatch):
+    monkeypatch.setattr(opencode_client, "WORKDIR", tmp_path / "Chati")
+    project = str(tmp_path / "mi-proyecto")
+    mock_post.return_value = _ok_response({"id": "ses_p"})
+    opencode_client.start_task(BASE, "revisa la estructura", "chati-code", directory=project)
+    create, prompt = mock_post.call_args_list
+    assert create.kwargs["params"] == {"directory": project}
+    assert prompt.kwargs["params"] == {"directory": project}
+    assert "proyecto de la carpeta" in prompt.kwargs["json"]["system"]
+    assert project in opencode_client.known_dirs()
+    assert not (tmp_path / "mi-proyecto" / ".git").exists()  # el proyecto del usuario no se toca
+
+
+@patch("opencode_client.requests.post")
+def test_replies_go_to_the_folder_that_has_the_request(mock_post, monkeypatch):
+    monkeypatch.setattr(opencode_client, "_session_dirs", {"ses_p": "C:/proyecto"})
+    not_found, ok = MagicMock(status_code=404), _ok_response({})
+    ok.status_code = 200
+    mock_post.side_effect = [not_found, ok]
+    opencode_client.reply_permission(BASE, "per_9", "once")
+    assert [c.kwargs.get("params") for c in mock_post.call_args_list] == [None, {"directory": "C:/proyecto"}]

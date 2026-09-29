@@ -435,6 +435,33 @@
   #agentAttachRow .aa-chip button:hover { color: var(--error); }
   .agent-attach-list { font-size: 12px; color: var(--muted); margin-top: 6px; }
   #agentShortcutsRow { display: none; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  /* modo Codigo: barra del proyecto */
+  #codeBar { display: none; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; position: relative; }
+  #codeBar.show { display: flex; }
+  #codeBar button { font-size: 12.5px; padding: 5px 10px; border-radius: var(--radius-sm); cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+  #codeBar button:hover { border-color: var(--accent); }
+  #codeProjectBtn { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .code-seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+  .code-seg button { border: none !important; border-radius: 0 !important; background: none !important; color: var(--muted) !important; }
+  .code-seg button.active { background: var(--accent) !important; color: #fff !important; }
+  #codeBar label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
+  #codeBar label input { width: auto; }
+  #codeGitWarn { color: var(--warn); font-size: 12px; }
+  #codeGitWarn a { color: var(--accent); cursor: pointer; }
+  #codeProjectMenu { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 6px; z-index: 30; width: 420px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  #codeProjectMenu.show { display: block; }
+  #codeProjectMenu .item { display: block; width: 100%; text-align: left; border: none !important; background: none !important;
+    padding: 7px 8px !important; border-radius: 6px !important; }
+  #codeProjectMenu .item:hover { background: var(--panel-2) !important; }
+  #codeProjectMenu .item small { display: block; color: var(--muted); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #codeProjectMenu .path-row { display: flex; gap: 6px; padding: 6px 4px 2px; border-top: 1px solid var(--border); margin-top: 4px; }
+  #codeProjectMenu .path-row input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 12px; }
+  .code-welcome .files { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); margin: 6px 0; line-height: 1.6; }
+  .agent-follow .do-it { background: var(--accent); color: #fff; border: none; }
   #agentShortcutsRow.show { display: flex; }
   #agentShortcutsRow button { font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 999px; cursor: pointer;
     border: 1px solid var(--border); background: var(--panel-2); color: var(--text); max-width: 220px;
@@ -885,7 +912,8 @@
       <option value="texto">Chat</option>
       <option value="image">Imagen</option>
       <option value="video">Video</option>
-      <option value="agente">Agente de codigo</option>
+      <option value="agente">Agente</option>
+      <option value="codigo">Código</option>
       <option value="voice">Voz</option>
     </select>
   </div>
@@ -1031,6 +1059,16 @@
   <div id="inputbar">
     <div class="inner">
       <div id="agentShortcutsRow"></div>
+      <div id="codeBar">
+        <button id="codeProjectBtn" title="Proyecto en el que trabaja el modo Código">📁 <span id="codeProjectName">Abrir un proyecto…</span> ▾</button>
+        <div id="codeProjectMenu"></div>
+        <div class="code-seg" title="Planificar: mira el proyecto y te propone, sin cambiar nada. Construir: hace los cambios (pidiendo permiso).">
+          <button data-code-mode="plan">🧭 Planificar</button><button data-code-mode="build">🛠 Construir</button>
+        </div>
+        <label title="Usa qwen3:8b en la GPU: varias veces más rápido, pero menos listo. Sin marcar, qwen3-coder 30B (CPU)."><input type="checkbox" id="codeFast"> Rápido</label>
+        <button id="codeAnalyzeBtn" title="Lee el proyecto y escribe un AGENTS.md con su estructura y cómo se trabaja en él: el agente lo leerá en cada conversación">📋 Analizar proyecto</button>
+        <span id="codeGitWarn" style="display:none;">Sin git: no se podrán ver ni deshacer los cambios · <a id="codeGitInit">Activar</a></span>
+      </div>
       <div id="agentAttachRow"></div>
       <div id="attachPreviewRow">
         <span class="chip">
@@ -1951,6 +1989,7 @@ const MODES = {
   image: { desc: "Crear imágenes", endpoint: "/chat/stream", agent: "image", showTopbar: true, allowAttach: true, faceEndpoint: "/image_with_face", modelsEndpoint: "/models/image", credits: ["comfyui"] },
   video: { desc: "Crear vídeos", endpoint: "/chat/stream", agent: "video", showTopbar: true, allowAttach: true, faceEndpoint: "/video_with_face", modelsEndpoint: "/models/video", credits: ["comfyui"] },
   agente: { desc: "Tareas con tus archivos", isAgent: true, allowAttach: true, credits: ["opencode", "ollama"] },
+  codigo: { desc: "Programar en tus proyectos", isAgent: true, isCode: true, credits: ["opencode", "ollama"] },
   voice: { desc: "Habla y te responde con voz", isVoice: true, credits: ["whisper", "ollama", "piper"] },
 };
 
@@ -2336,10 +2375,12 @@ function applyMode(mode) {
   modeSelect.value = mode;
   currentMode = mode;
   const m = MODES[currentMode];
-  document.getElementById("agentPowerLabel").classList.toggle("show", !!m.isAgent);
-  agentShortcutsRow.classList.toggle("show", !!m.isAgent);
-  document.getElementById("agentAttachRow").style.display = m.isAgent ? "" : "none";
-  if (m.isAgent) loadAgentShortcuts();
+  const plainAgent = !!m.isAgent && !m.isCode;
+  document.getElementById("agentPowerLabel").classList.toggle("show", plainAgent);
+  agentShortcutsRow.classList.toggle("show", plainAgent);
+  document.getElementById("agentAttachRow").style.display = plainAgent ? "" : "none";
+  document.getElementById("codeBar").classList.toggle("show", !!m.isCode);
+  if (plainAgent) loadAgentShortcuts();
   setModeDesc(m);
   promptEl.style.display = m.isVoice ? "none" : "block";
   sendBtn.style.display = m.isVoice ? "none" : "block";
@@ -2353,7 +2394,9 @@ function applyMode(mode) {
     attachPreviewRow.classList.remove("show");
   }
   loadModelsFor(currentMode);
-  if (m.isAgent) showAgentTaskList();
+  if (plainAgent) showAgentTaskList();
+  // en diferido: al cargar la pagina en modo Codigo, codeState (mas abajo) aun no existe
+  if (m.isCode) setTimeout(initCodeMode, 0);
   try { localStorage.setItem("ia_mode", currentMode); } catch (e) { /* sin almacenamiento: no se recuerda */ }
   prepareModelsForMode();
 }
@@ -2570,6 +2613,11 @@ async function prepareModelsForMode() {
   const body = { mode: currentMode };
   if (profileSelect.value) body.model_profile = profileSelect.value;
   if (currentMode === "agente") body.potente = agentPowerToggle.checked;
+  if (currentMode === "codigo") {  // localStorage: al cargar la pagina, codeState aun no existe
+    let fast = false;
+    try { fast = localStorage.getItem("ia_code_fast") === "on"; } catch (e) { /* nada */ }
+    body.potente = !fast;
+  }
   if (currentMode === "image" && modelSelect.value) body.image_model = modelSelect.value;
   if (currentMode === "video" && modelSelect.value) body.video_model = modelSelect.value;
   try {
@@ -2927,6 +2975,172 @@ async function showAgentTaskList() {
   }
   bubble.append(title, list);
 }
+
+// --- Modo Codigo: trabajar en un proyecto del usuario (como un asistente de programacion) ---
+const codeState = { project: null, mode: "plan", fast: false, recent: [] };
+try {
+  codeState.mode = localStorage.getItem("ia_code_mode") || "plan";
+  codeState.fast = localStorage.getItem("ia_code_fast") === "on";
+} catch (e) { /* sin almacenamiento */ }
+const codeMenu = document.getElementById("codeProjectMenu");
+
+function renderCodeBar() {
+  const p = codeState.project;
+  document.getElementById("codeProjectName").textContent = p ? p.name : "Abrir un proyecto…";
+  document.getElementById("codeProjectBtn").title = p ? p.path : "Elige la carpeta de tu proyecto";
+  document.querySelectorAll("[data-code-mode]").forEach((b) => b.classList.toggle("active", b.dataset.codeMode === codeState.mode));
+  document.getElementById("codeFast").checked = codeState.fast;
+  document.getElementById("codeGitWarn").style.display = p && !p.git ? "inline" : "none";
+  document.getElementById("codeAnalyzeBtn").style.display = p ? "inline-block" : "none";
+  document.getElementById("codeAnalyzeBtn").textContent = p && p.agents_md ? "📋 Actualizar AGENTS.md" : "📋 Analizar proyecto";
+}
+
+async function initCodeMode() {
+  renderCodeBar();
+  try {
+    const data = await (await fetch("/code/projects")).json();
+    codeState.recent = data.projects || [];
+  } catch (e) { codeState.recent = []; }
+  let last = null;
+  try { last = localStorage.getItem("ia_code_project"); } catch (e) { /* nada */ }
+  const known = codeState.recent.find((p) => p.path === last && p.exists);
+  if (known && !codeState.project) await openCodeProject(known.path, true);
+  else if (codeState.project) showCodeWelcome();
+  else {
+    const bubble = addMessage("assistant", "código");
+    bubble.innerHTML = "Abre la carpeta de un proyecto con <b>📁</b> (abajo) y pregúntame lo que quieras sobre él: " +
+      "cómo está organizado, cómo mejorar su estructura, o que haga cambios.<br><br>" +
+      "<b>🧭 Planificar</b> mira y propone sin tocar nada · <b>🛠 Construir</b> hace los cambios, pidiendo permiso.";
+  }
+}
+
+async function openCodeProject(path, quiet = false) {
+  let info;
+  try {
+    info = await agentPost("/code/projects", { path });
+  } catch (err) {
+    if (!quiet) alert(err.message || err);
+    return;
+  }
+  codeState.project = info;
+  try { localStorage.setItem("ia_code_project", info.path); } catch (e) { /* nada */ }
+  codeState.recent = [info, ...codeState.recent.filter((p) => p.path !== info.path)];
+  renderCodeBar();
+  codeMenu.classList.remove("show");
+  showCodeWelcome();
+}
+
+async function showCodeWelcome() {
+  const p = codeState.project;
+  if (!p || currentMode !== "codigo") return;
+  const bubble = addMessage("assistant", "código");
+  bubble.classList.add("code-welcome");
+  const title = document.createElement("div");
+  title.innerHTML = "📁 <b></b>";
+  title.querySelector("b").textContent = p.name;
+  const path = document.createElement("div");
+  path.className = "files";
+  path.textContent = p.path;
+  const files = document.createElement("div");
+  files.className = "files";
+  files.textContent = p.entries.join("   ") + (p.total > p.entries.length ? `   … (+${p.total - p.entries.length})` : "");
+  const tip = document.createElement("div");
+  tip.style.fontSize = "12.5px";
+  tip.textContent = p.agents_md
+    ? "Tiene AGENTS.md: el agente lo lee en cada conversación."
+    : "Consejo: pulsa «📋 Analizar proyecto» para que escriba un AGENTS.md con la estructura y cómo se trabaja en él.";
+  bubble.append(title, path, files, tip);
+  try {
+    const tasks = await (await fetch(`/code/tasks?path=${encodeURIComponent(p.path)}`)).json();
+    if (Array.isArray(tasks) && tasks.length) {
+      const t = document.createElement("div");
+      t.className = "agent-tasks-title";
+      t.style.marginTop = "10px";
+      t.textContent = "Conversaciones anteriores en este proyecto:";
+      const list = document.createElement("div");
+      list.className = "agent-tasks";
+      for (const task of tasks.slice(0, 6)) {
+        const btn = document.createElement("button");
+        const name = document.createElement("span");
+        name.textContent = task.title || task.session_id;
+        const when = document.createElement("span");
+        when.className = "when";
+        when.textContent = task.status === "idle" ? agentTimeAgo(task.updated) : "en marcha";
+        btn.append(name, when);
+        btn.addEventListener("click", () => openAgentView(task.session_id, null, codeState.mode));
+        list.appendChild(btn);
+      }
+      bubble.append(t, list);
+    }
+  } catch (e) { /* sin historial */ }
+}
+
+function renderCodeMenu() {
+  codeMenu.innerHTML = "";
+  for (const p of codeState.recent.filter((x) => x.exists).slice(0, 8)) {
+    const b = document.createElement("button");
+    b.className = "item";
+    b.textContent = p.name;
+    const small = document.createElement("small");
+    small.textContent = p.path;
+    b.appendChild(small);
+    b.addEventListener("click", () => openCodeProject(p.path));
+    codeMenu.appendChild(b);
+  }
+  const pick = document.createElement("button");
+  pick.className = "item";
+  pick.textContent = "📂 Abrir otra carpeta…";
+  pick.addEventListener("click", async () => {
+    codeMenu.classList.remove("show");
+    pick.disabled = true;
+    try {
+      const data = await agentPost("/code/pick_folder");
+      if (data.path) await openCodeProject(data.path);
+    } catch (err) { alert(err.message || err); }
+  });
+  codeMenu.appendChild(pick);
+  const row = document.createElement("div");
+  row.className = "path-row";
+  const input = document.createElement("input");
+  input.placeholder = "o escribe la ruta: C:\\Users\\...\\mi-proyecto";
+  const go = document.createElement("button");
+  go.textContent = "Abrir";
+  const openTyped = () => { if (input.value.trim()) openCodeProject(input.value.trim()); };
+  go.addEventListener("click", openTyped);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") openTyped(); });
+  row.append(input, go);
+  codeMenu.appendChild(row);
+}
+
+document.getElementById("codeProjectBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (codeMenu.classList.toggle("show")) renderCodeMenu();
+});
+codeMenu.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", () => codeMenu.classList.remove("show"));
+document.querySelectorAll("[data-code-mode]").forEach((b) => b.addEventListener("click", () => {
+  codeState.mode = b.dataset.codeMode;
+  try { localStorage.setItem("ia_code_mode", codeState.mode); } catch (e) { /* nada */ }
+  renderCodeBar();
+}));
+document.getElementById("codeFast").addEventListener("change", (e) => {
+  codeState.fast = e.target.checked;
+  try { localStorage.setItem("ia_code_fast", codeState.fast ? "on" : "off"); } catch (err) { /* nada */ }
+  prepareModelsForMode();
+});
+document.getElementById("codeGitInit").addEventListener("click", async () => {
+  const p = codeState.project;
+  if (!p || !confirm(`¿Activar git en «${p.name}»?\n\nSe crea una carpeta oculta .git en el proyecto. Sirve para que Chati pueda enseñarte y deshacer los cambios del agente. No se sube nada a internet.`)) return;
+  try {
+    codeState.project = await agentPost("/code/git_init", { path: p.path });
+    renderCodeBar();
+  } catch (err) { alert(err.message || err); }
+});
+document.getElementById("codeAnalyzeBtn").addEventListener("click", () => {
+  startAgentTask("Analiza este proyecto: para qué sirve, estructura de carpetas, tecnologías, cómo se ejecuta y cómo " +
+    "se prueba, y las convenciones del código. Después crea (o actualiza, si ya existe) el archivo AGENTS.md en la raíz " +
+    "del proyecto con ese resumen: breve, concreto y útil para quien vaya a programar en él.", { codeMode: "build" });
+});
 
 // Tarea que parece compleja para el agente rapido: se recomienda el
 // potente y el usuario elige (ver _assess_for_fast_agent en main.py)
@@ -3891,9 +4105,15 @@ async function startAgentTask(text, opts = {}) {
         prepareOverlay.classList.remove("show");
       }
     }
-    const data = await agentPost("/agent/tasks", { task: text, potente: !!opts.potente || agentPowerToggle.checked, attachments });
+    const body = { task: text, potente: !!opts.potente || agentPowerToggle.checked, attachments };
+    if (MODES[currentMode].isCode) {
+      if (!codeState.project) throw new Error("Primero abre un proyecto (📁 abajo a la izquierda).");
+      Object.assign(body, { project: codeState.project.path, plan: (opts.codeMode || codeState.mode) === "plan",
+                            rapido: codeState.fast, potente: false });
+    }
+    const data = await agentPost("/agent/tasks", body);
     if (data.needs_choice) renderAgentChoice(data.task, data.reason, data.attachments || []);
-    else openAgentView(data.session_id, Date.now());
+    else openAgentView(data.session_id, Date.now(), MODES[currentMode].isCode ? (opts.codeMode || codeState.mode) : null);
   } catch (err) {
     const bubble = addMessage("assistant", "agente");
     bubble.className = "bubble error";
@@ -3903,7 +4123,7 @@ async function startAgentTask(text, opts = {}) {
   }
 }
 
-function openAgentView(sessionId, startedAt) {
+function openAgentView(sessionId, startedAt, codeMode = null) {
   const existing = agentViews[sessionId];
   if (existing && document.body.contains(existing.card)) {
     existing.card.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -3933,15 +4153,32 @@ function openAgentView(sessionId, startedAt) {
     changesEl: card.querySelector(".agent-changes"), changesKey: null,
     saveScEl: null, task: "",
     stepsAtSend: 0, sentAt: null,
+    codeMode,  // modo Codigo: "plan" o "build"; null en el modo Agente
   };
   const followInput = view.followEl.querySelector("input");
   const followBtn = view.followEl.querySelector("button");
-  const sendFollowUp = async () => {
-    const text = followInput.value.trim();
+  if (codeMode) {
+    followInput.placeholder = "Sigue… (p.ej. explícame el archivo X, o cambia esto)";
+    // tras un plan: hacerlo tal cual, ya en modo Construir
+    const doIt = document.createElement("button");
+    doIt.className = "do-it";
+    doIt.textContent = "▶ Hacerlo";
+    doIt.title = "Sigue en modo Construir: hace lo que ha propuesto (pidiendo permiso para cada cambio)";
+    doIt.addEventListener("click", () => sendFollowUp("Adelante: hazlo tal como lo has propuesto.", "build"));
+    view.followEl.appendChild(doIt);
+    view.doItBtn = doIt;
+  }
+  const sendFollowUp = async (presetText, presetMode) => {
+    const text = presetText || followInput.value.trim();
     if (!text) return;
     followInput.disabled = followBtn.disabled = true;
+    const body = { text };
+    if (view.codeMode) {
+      view.codeMode = presetMode || codeState.mode;
+      body.code_mode = view.codeMode;
+    }
     try {
-      await agentPost(`/agent/tasks/${sessionId}/message`, { text });
+      await agentPost(`/agent/tasks/${sessionId}/message`, body);
     } catch (err) {
       alert("No se pudo mandar: " + (err.message || err));
       followInput.disabled = followBtn.disabled = false;
@@ -3958,7 +4195,7 @@ function openAgentView(sessionId, startedAt) {
     view.startedAt = Date.now();
     followAgentView(view);
   };
-  followBtn.addEventListener("click", sendFollowUp);
+  followBtn.addEventListener("click", () => sendFollowUp());
   followInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendFollowUp(); });
   agentViews[sessionId] = view;
   view.stopBtn.addEventListener("click", async () => {
@@ -4105,6 +4342,7 @@ function renderAgentView(view, data) {
   } else if (!canFollow) {
     view.followEl.style.display = "none";
   }
+  if (view.doItBtn) view.doItBtn.style.display = view.codeMode === "plan" ? "inline-block" : "none";
 
   // las tarjetas de pregunta/permiso se crean una sola vez por id (no en cada
   // sondeo) para no borrar lo que el usuario este escribiendo
@@ -4172,6 +4410,10 @@ function renderAgentChanges(view, data, busy) {
   el.innerHTML = "";
   if (!show) return;
 
+  // modo Codigo: la carpeta es el proyecto; modo Agente: Documentos/Chati
+  const folder = (data.directory || "").split(/[\\/]/).filter(Boolean).pop() || "";
+  const where = view.codeMode ? `el proyecto «${folder}»` : "su carpeta de trabajo (Documentos/Chati)";
+  const whereShort = view.codeMode ? `el proyecto «${folder}»` : "su carpeta de trabajo";
   const bar = document.createElement("div");
   bar.className = "bar";
   const note = document.createElement("div");
@@ -4204,8 +4446,9 @@ function renderAgentChanges(view, data, busy) {
   } else if (ch.files > 0) {
     const msg = document.createElement("span");
     const n = ch.files === 1 ? "1 archivo" : `${ch.files} archivos`;
-    msg.innerHTML = `📝 Ha cambiado <b>${n}</b> en su carpeta de trabajo ` +
+    msg.innerHTML = `📝 Ha cambiado <b>${n}</b> en <span class="where"></span> ` +
       `<span class="plus">+${ch.additions}</span> <span class="minus">−${ch.deletions}</span>`;
+    msg.querySelector(".where").textContent = whereShort;
     const list = document.createElement("div");
     list.className = "diff-list";
     list.style.display = "none";
@@ -4227,13 +4470,13 @@ function renderAgentChanges(view, data, busy) {
       b.textContent = "Ocultar cambios";
     });
     bar.append(msg, seeBtn, button("Deshacer", (b) => act(b, "revert",
-      "¿Deshacer lo que ha hecho esta tarea en su carpeta de trabajo (Documentos/Chati)?\n\n" +
+      `¿Deshacer lo que ha hecho esta tarea en ${where}?\n\n` +
       "Los archivos vuelven a como estaban antes. Podrás rehacerlo mientras no continúes la tarea.")));
-    note.textContent = "Solo se puede deshacer lo hecho dentro de Documentos/Chati; lo de otras carpetas no.";
+    note.textContent = `Solo se puede deshacer lo hecho dentro de ${where}; lo de otras carpetas no.`;
     el.append(bar, note, list);
     return;
   } else {
-    note.textContent = "No ha cambiado nada en su carpeta de trabajo (Documentos/Chati): " +
+    note.textContent = `No ha cambiado nada en ${where}: ` +
       "lo que haya hecho en otras carpetas no se puede deshacer desde aquí.";
   }
   el.append(bar, note);

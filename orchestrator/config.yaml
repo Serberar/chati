@@ -25,6 +25,12 @@ opencode:
   model: "qwen3:8b"
   agent_potente: "chati-potente"
   model_potente: "qwen3-coder:30b-cpu"
+  # Modo Codigo (proyectos del usuario): construir y planificar (este sin
+  # herramientas para editar). Con qwen3-coder en CPU: medido el 2026-09-29,
+  # pasar capas a la GPU lo hace MAS lento (10,6 tok/s en CPU, 5,9 con 16
+  # capas y 3,7 con 24: no caben en 8GB y tira de memoria compartida).
+  agent_code: "chati-code"
+  agent_code_plan: "chati-code-plan"
   # modelos a los que la pasarela (llm_proxy.py) les quita el razonamiento
   # previo: con el, qwen3 tardaba ~10 veces mas en cada paso del agente
   no_think_models: ["qwen3:8b"]
