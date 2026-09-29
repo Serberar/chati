@@ -166,6 +166,19 @@ class OllamaClient:
         except (requests.RequestException, ValueError, KeyError):
             return []
 
+    def gpu_share(self, model: str) -> float | None:
+        """Que parte del modelo cargado esta en la GPU (0 a 1), o None si no
+        esta cargado u Ollama no responde."""
+        try:
+            resp = requests.get(f"{self.base_url}/api/ps", timeout=10)
+            resp.raise_for_status()
+            for m in resp.json().get("models", []):
+                if m.get("name") == model and m.get("size"):
+                    return m.get("size_vram", 0) / m["size"]
+        except (requests.RequestException, ValueError, KeyError):
+            pass
+        return None
+
     def embed(self, model: str, texts: list[str]) -> list[list[float]]:
         resp = requests.post(
             f"{self.base_url}/api/embed",

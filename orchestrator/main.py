@@ -23,6 +23,7 @@ import auth_sessions
 import face_detect
 import agent_attachments
 import job_search
+import shopping
 import llm_proxy
 import model_registry
 import paths
@@ -167,7 +168,7 @@ def _free_memory_for_generation() -> None:
         _active_heavy_model = None
 
 
-def _free_memory_for_agent(agent: str | None) -> None:
+def _free_memory_for_agent(agent: str | None, wait: bool = False) -> None:
     """Antes de una tarea del agente, en segundo plano (OpenCode tarda
     igualmente en pedir el modelo), deja sitio a su modelo:
     - agente rapido (qwen3:8b, ~7,6GB de GPU con su contexto): no cabe junto
@@ -183,7 +184,18 @@ def _free_memory_for_agent(agent: str | None) -> None:
         keep = {model, EMBED_MODEL} | ({_LIGHT_MODEL} if potente else set())
         _keep_only_ollama(keep, heavy=model)
         comfyui_client.free_memory(CONFIG["comfyui"]["base_url"])
-    threading.Thread(target=work, daemon=True).start()
+        # si se cargo cuando la GPU estaba ocupada, Ollama lo dejo en CPU y
+        # ahi se queda aunque se libere (medido el 2026-09-29: 60s por
+        # respuesta en vez de 7s) - se descarga para que vuelva a la GPU
+        share = ollama.gpu_share(model)
+        if not potente and share is not None and share < 0.5 \
+                and not opencode_client.busy_session_ids(CONFIG["opencode"]["base_url"]):
+            ollama.unload(model)
+
+    if wait:  # las apps (empleo, compras) usan el modelo nada mas volver
+        work()
+    else:
+        threading.Thread(target=work, daemon=True).start()
 
 
 comfyui_client.before_submit = _free_memory_for_generation
@@ -847,7 +859,7 @@ def jobs_start(request: Request):
         return _guest_blocked()
     try:
         job_search.start(session["user_id"], session["dek"], session["key_generation"], _job_chat,
-                         before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"]))
+                         before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"], wait=True))
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
     return {"ok": True}
@@ -867,6 +879,69 @@ def jobs_cancel(request: Request):
     if session["role"] == "guest":
         return _guest_blocked()
     job_search.cancel(session["user_id"])
+    return {"ok": True}
+
+
+# --- Compras (Mis apps, ver shopping.py) ---
+
+class ShoppingSearchRequest(BaseModel):
+    descripcion: str = ""
+    image_base64: str | None = None
+    precio_min: float | str | None = None
+    precio_max: float | str | None = None
+    solo_espana: bool = True
+    valoraciones: bool = True
+
+
+def _describe_product_image(b64: str) -> str:
+    _ensure_active_model(vision_agent.model)
+    try:
+        return "".join(vision_agent.respond_with_image_stream(shopping.IMAGE_PROMPT, b64))
+    finally:
+        # fuera de la GPU: el resto de la busqueda la hace qwen3:8b, que no
+        # cabe junto a el (si no, Ollama lo cargaria en CPU, 8 veces mas lento)
+        ollama.unload(vision_agent.model)
+
+
+@app.get("/shopping")
+def shopping_overview(request: Request):
+    """Busquedas anteriores (las ultimas 10) y si hay una en marcha."""
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    return {"history": shopping.get_history(session["user_id"], session["dek"], session["key_generation"]),
+            "status": shopping.status(session["user_id"])}
+
+
+@app.post("/shopping/search")
+def shopping_start(request: Request, req: ShoppingSearchRequest):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        shopping.start(session["user_id"], session["dek"], session["key_generation"],
+                       req.model_dump(exclude={"image_base64"}), _job_chat,
+                       describe_image=_describe_product_image, image_b64=req.image_base64,
+                       before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"], wait=True))
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return {"ok": True}
+
+
+@app.get("/shopping/status")
+def shopping_status(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    return shopping.status(session["user_id"])
+
+
+@app.post("/shopping/cancel")
+def shopping_cancel(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    shopping.cancel(session["user_id"])
     return {"ok": True}
 
 

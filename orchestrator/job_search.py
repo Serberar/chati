@@ -12,19 +12,21 @@ qwen3:8b manejando el navegador el mismo a lo largo de muchas paginas se
 perdia. Navegador: Edge invisible (viene con Windows) via Playwright.
 Google bloquea a los navegadores automatizados (comprobado); Bing no."""
 
-import base64
-import json
 import re
 import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Callable
-from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.parse import quote_plus
 
-import crypto_utils
 import profile_store
 from rag import _extract_text
+from web_tools import BING, Blocked, Browser, ChatFn, EncryptedStore, json_from, site_label, unbing
+
+# nombres de antes, usados desde los tests y otros modulos
+_json_from, _site_label, _unbing = json_from, site_label, unbing
+_store = EncryptedStore("jobs_meta.json")
 
 # {puesto} y {lugar} se rellenan con el perfil de busqueda. Una web sin
 # {puesto} (las que añade el usuario, solo con su direccion) se busca con
@@ -39,7 +41,6 @@ DEFAULT_SITES = [
 ]
 DEFAULT_PREFS = {"puestos": [], "lugar": "", "preferencias": "", "internet": True,
                  "max_ofertas": 12, "sites": DEFAULT_SITES}
-BING = "https://www.bing.com/search?setlang=es&cc=es&q={q}"
 MAX_SITES = 30
 LETTERS_FOR_TOP = 3
 MIN_SCORE_FOR_LETTER = 60
@@ -47,33 +48,14 @@ CV_MAX_CHARS = 6000
 PAGE_MAX_CHARS = 7000
 MAX_LINKS_TO_MODEL = 120
 
-ChatFn = Callable[[str], str]  # prompt -> respuesta del modelo
-
-
 # ---------- guardado (cifrado, como el resto de datos del perfil) ----------
 
-def _paths(user_id: str) -> tuple[Path, Path]:
-    d = profile_store._user_dir(user_id)
-    return d, d / "jobs_meta.json"
-
-
 def _load(name: str, user_id: str, dek: bytes, key_generation: int, default):
-    d, meta = _paths(user_id)
-    path = d / f"{name}.json.enc"
-    if not path.exists() or not meta.exists():
-        return default
-    if json.loads(meta.read_text(encoding="utf-8")).get("key_generation") != key_generation:
-        return default  # contraseña restablecida: DEK nueva, lo viejo no se puede leer
-    raw = crypto_utils.decrypt_bytes(dek, path.read_bytes())
-    return json.loads(raw.decode("utf-8")) if raw else default
+    return _store.load(name, user_id, dek, key_generation, default)
 
 
 def _save(name: str, data, user_id: str, dek: bytes, key_generation: int) -> None:
-    d, meta = _paths(user_id)
-    d.mkdir(parents=True, exist_ok=True)
-    (d / f"{name}.json.enc").write_bytes(
-        crypto_utils.encrypt_bytes(dek, json.dumps(data, ensure_ascii=False).encode("utf-8")))
-    meta.write_text(json.dumps({"key_generation": key_generation}), encoding="utf-8")
+    _store.save(name, data, user_id, dek, key_generation)
 
 
 def get_prefs(user_id: str, dek: bytes, key_generation: int) -> dict:
@@ -116,19 +98,7 @@ def get_results(user_id: str, dek: bytes, key_generation: int) -> dict:
     return _load("jobs_results", user_id, dek, key_generation, {"offers": [], "run_at": None, "seen": []})
 
 
-def _site_label(url: str) -> str:
-    host = urlparse(url if "//" in url else "https://" + url).netloc or url
-    return host.removeprefix("www.")
-
-
 # ---------- el modelo ----------
-
-def _json_from(raw: str) -> dict:
-    try:
-        return json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
-    except ValueError:
-        return {}
-
 
 def cv_text(filename: str, content: bytes) -> str:
     suffix = Path(filename).suffix.lower() or ".txt"
@@ -249,80 +219,6 @@ Oferta: {titulo} en {empresa}
 def write_letter(chat: ChatFn, cv: str, offer: dict, page: str) -> str:
     return chat(LETTER_PROMPT.format(cv=cv, titulo=offer["titulo"], empresa=offer["empresa"] or "la empresa",
                                      page=page[:4000])).strip()
-
-
-# ---------- el navegador ----------
-
-def _unbing(href: str) -> str:
-    """bing.com/ck/a?...&u=a1<base64 de la url>... -> la url real."""
-    if "bing.com/ck/a" not in href:
-        return href
-    u = parse_qs(urlparse(href).query).get("u", [""])[0]
-    if not u.startswith("a1"):
-        return href
-    try:
-        raw = u[2:]
-        return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return href
-
-
-class Blocked(Exception):
-    """La web ha pedido demostrar que no somos un robot."""
-
-
-_BLOCK_PAGE = re.compile(r"eres humano o un robot|not a robot|are you a human|captcha|cloudflare|"
-                         r"verificaci[oó]n adicional|tr[aá]fico inusual|unusual traffic", re.I)
-
-
-class Browser:
-    """Edge con la ventana fuera de la pantalla (el usuario no la ve; solo sale
-    su icono en la barra de tareas mientras busca). Medido el 2026-09-28: en
-    modo invisible (headless) InfoJobs pedia "¿eres humano o un robot?" e
-    Indeed bloqueaba las ofertas con Cloudflare; con ventana normal, ninguno.
-    fetch(url) -> (url final, texto visible, [(texto, href)])."""
-
-    def __enter__(self):
-        from playwright.sync_api import sync_playwright
-        self._pw = sync_playwright().start()
-        args = ["--window-position=-32000,-32000", "--window-size=1280,900",
-                "--disable-blink-features=AutomationControlled"]
-        try:
-            self._browser = self._pw.chromium.launch(channel="msedge", headless=False, args=args)
-        except Exception:
-            self._browser = self._pw.chromium.launch(headless=False, args=args)  # sin Edge: el de Playwright
-        self._ctx = self._browser.new_context(locale="es-ES", viewport={"width": 1280, "height": 900})
-        return self
-
-    def __exit__(self, *exc):
-        try:
-            self._browser.close()
-        finally:
-            self._pw.stop()
-
-    def fetch(self, url: str) -> tuple[str, str, list[tuple[str, str]]]:
-        page = self._ctx.new_page()
-        try:
-            page.goto(url, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)  # las webs de empleo pintan la lista con JavaScript
-            text = re.sub(r"\s+\n", "\n", page.inner_text("body"))
-            if _BLOCK_PAGE.search(text[:1500]):
-                raise Blocked(url)
-            links = page.eval_on_selector_all(
-                "a[href]", "els => els.map(e => [e.innerText.trim().replace(/\\s+/g, ' '), e.href])")
-            return page.url, text, [(t, h) for t, h in links if h.startswith("http")]
-        finally:
-            page.close()
-
-    def bing(self, query: str, n: int) -> list[str]:
-        page = self._ctx.new_page()
-        try:
-            page.goto(BING.format(q=quote_plus(query)), timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
-            hrefs = page.eval_on_selector_all("li.b_algo h2 a", "els => els.map(e => e.href)")
-            return [_unbing(h) for h in hrefs if h.startswith("http")][:n]
-        finally:
-            page.close()
 
 
 # ---------- la busqueda completa ----------
@@ -467,7 +363,7 @@ def start(user_id: str, dek: bytes, key_generation: int, chat: ChatFn,
     filename = profile_store.cv_filename(user_id=user_id)
     content = profile_store.get_cv_bytes(user_id, dek, key_generation)
     if not filename or not content:
-        raise ValueError("Primero sube tu CV (Opciones → Mi perfil).")
+        raise ValueError("Primero sube tu CV (pestaña «Mi CV»).")
     with _runs_lock:
         if (_runs.get(user_id) or {}).get("running"):
             raise ValueError("Ya hay una busqueda en marcha.")

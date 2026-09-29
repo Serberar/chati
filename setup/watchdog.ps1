@@ -27,6 +27,10 @@ $CheckIntervalSeconds = 30
 # modelo, ComfyUI arrancando) puede tardar mas de 5s en contestar sin estar
 # caido. Con 1 solo fallo se reiniciaban servicios sanos (visto el 2026-09-28).
 $FailuresBeforeRestart = 2
+# Ollama y ComfyUI tardan mas de un minuto en arrancar al encender el PC: con
+# 2 fallos (1 min) el vigilante los reiniciaba mientras aun arrancaban (visto
+# el 2026-09-29, a ComfyUI dos veces seguidas).
+$SlowStartFailures = 4
 $Failures = @{}
 
 function Write-Log($msg) {
@@ -45,15 +49,15 @@ function Update-EnvFromUser {
     }
 }
 
-function Test-Down($name, $url) {
-    # $true solo tras $FailuresBeforeRestart comprobaciones fallidas seguidas
+function Test-Down($name, $url, $threshold = $FailuresBeforeRestart) {
+    # $true solo tras $threshold comprobaciones fallidas seguidas
     if (Test-Url $url) {
         $Failures[$name] = 0
         return $false
     }
     $Failures[$name] = 1 + [int]$Failures[$name]
-    if ($Failures[$name] -lt $FailuresBeforeRestart) {
-        Write-Log "$name no responde (aviso $($Failures[$name])/$FailuresBeforeRestart)."
+    if ($Failures[$name] -lt $threshold) {
+        Write-Log "$name no responde (aviso $($Failures[$name])/$threshold)."
         return $false
     }
     $Failures[$name] = 0
@@ -71,9 +75,20 @@ function Test-Url($url) {
 }
 
 function Ensure-Ollama {
-    if (Test-Down "Ollama" "http://127.0.0.1:11434/api/tags") {
+    # Ollama se esta actualizando: no tocar nada. El 2026-09-29 el vigilante
+    # mato la actualizacion a medias y Ollama se quedo sin la carpeta cuda_v13
+    # (toda la IA en CPU, 8 veces mas lenta).
+    if (Get-Process -Name "OllamaSetup*" -ErrorAction SilentlyContinue) {
+        $Failures["Ollama"] = 0
+        return
+    }
+    if (Test-Down "Ollama" "http://127.0.0.1:11434/api/tags" $SlowStartFailures) {
         Write-Log "Ollama caido. Reiniciando..."
-        Get-Process -Name "ollama*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        # solo el servidor que escucha en el puerto, nunca "ollama*": eso
+        # incluye la aplicacion de Ollama, que es la que instala las actualizaciones
+        foreach ($c in Get-NetTCPConnection -LocalPort 11434 -State Listen -ErrorAction SilentlyContinue) {
+            Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
+        }
         Start-Sleep -Seconds 1
         # Bug conocido de Ollama con GPUs Blackwell (RTX 50, esta laptop incluida):
         # flash attention se activa sola y hace crashear el modelo al cargar en GPU
@@ -101,7 +116,7 @@ function Stop-ByPort($port) {
 }
 
 function Ensure-ComfyUI {
-    if (Test-Down "ComfyUI" "http://127.0.0.1:8188/system_stats") {
+    if (Test-Down "ComfyUI" "http://127.0.0.1:8188/system_stats" $SlowStartFailures) {
         Write-Log "ComfyUI caido. Reiniciando..."
         Stop-ByPort 8188
         Start-Sleep -Seconds 2
