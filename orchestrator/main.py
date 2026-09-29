@@ -24,6 +24,7 @@ import face_detect
 import agent_attachments
 import job_search
 import shopping
+import deep_search
 import llm_proxy
 import model_registry
 import paths
@@ -820,10 +821,17 @@ class JobPrefsRequest(BaseModel):
     prefs: dict
 
 
+# Contexto de las apps del navegador (empleo, compras, busqueda profunda): sus
+# peticiones caben en 8K. Con los 16K del agente, qwen3:8b no cabe entero en
+# 8GB de VRAM (75% en GPU, 27 tok/s); con 8K, 92% y 47 tok/s (medido el
+# 2026-09-29).
+APPS_NUM_CTX = 8192
+
+
 def _job_chat(prompt: str) -> str:
     # el mismo modelo que el agente rapido (qwen3:8b), sin razonamiento previo
     return ollama.chat(CONFIG["opencode"]["model"], [{"role": "user", "content": prompt}],
-                       temperature=0.2, think=False)
+                       temperature=0.2, think=False, num_ctx=APPS_NUM_CTX)
 
 
 @app.get("/jobs")
@@ -942,6 +950,54 @@ def shopping_cancel(request: Request):
     if session["role"] == "guest":
         return _guest_blocked()
     shopping.cancel(session["user_id"])
+    return {"ok": True}
+
+
+# --- Busqueda profunda (Mis apps, ver deep_search.py) ---
+
+class DeepSearchRequest(BaseModel):
+    consulta: str
+    afinar_de: str | None = None  # id de una busqueda anterior: "consulta" se añade a ella
+
+
+@app.get("/deep")
+def deep_overview(request: Request):
+    """Busquedas anteriores (las ultimas 10) y si hay una en marcha."""
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    return {"history": deep_search.get_history(session["user_id"], session["dek"], session["key_generation"]),
+            "status": deep_search.status(session["user_id"])}
+
+
+@app.post("/deep/search")
+def deep_start(request: Request, req: DeepSearchRequest):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        deep_search.start(session["user_id"], session["dek"], session["key_generation"], req.consulta, _job_chat,
+                          afinar_de=req.afinar_de,
+                          before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"], wait=True))
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return {"ok": True}
+
+
+@app.get("/deep/status")
+def deep_status(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    return deep_search.status(session["user_id"])
+
+
+@app.post("/deep/cancel")
+def deep_cancel(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    deep_search.cancel(session["user_id"])
     return {"ok": True}
 
 

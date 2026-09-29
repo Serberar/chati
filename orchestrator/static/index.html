@@ -355,6 +355,32 @@
   .shop-flag.warn { color: var(--error); border: 1px solid var(--error); }
   .shop-flag.off { color: var(--muted); border: 1px solid var(--border); }
   .shop-section { font-size: 12px; font-weight: 600; color: var(--muted); margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+  /* Busqueda profunda (Mis apps) */
+  #deepQuery, #deepRefine, #deepHistory { background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13px; box-sizing: border-box; }
+  #deepQuery { width: 100%; min-height: 60px; resize: vertical; }
+  #deepQuery:focus, #deepRefine:focus { outline: none; border-color: var(--accent); }
+  .deep-understood { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px;
+    background: var(--panel-2); font-size: 13px; }
+  .deep-understood .lbl { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .deep-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .deep-chips span { font-size: 11.5px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; color: var(--muted); }
+  .deep-summary { font-size: 13.5px; line-height: 1.55; margin-bottom: 12px; }
+  .deep-item { padding: 9px 0; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: 34px 1fr auto; gap: 2px 10px; }
+  .deep-item.top { border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 9px 10px; margin-bottom: 8px; }
+  .deep-score { grid-row: span 3; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; background: rgba(63, 185, 80, .18); color: #3fb950; }
+  .deep-score.mid { background: rgba(210, 153, 34, .18); color: #d29922; }
+  .deep-item .t { font-size: 13px; font-weight: 600; }
+  .deep-item a { font-size: 12px; color: var(--accent); white-space: nowrap; grid-row: 1; grid-column: 3; }
+  .deep-item .d { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
+  .deep-item .d b { color: var(--muted); font-weight: 500; }
+  .deep-item .n { grid-column: 2 / 4; font-size: 12px; color: var(--muted); }
+  .deep-report { font-size: 13.5px; line-height: 1.6; }
+  .deep-sources { font-size: 12px; margin-top: 12px; display: flex; flex-direction: column; gap: 3px; }
+  .deep-sources a { color: var(--accent); }
+  .deep-refine { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
+  .deep-refine input { flex: 1; }
   /* ver cambios / deshacer (roadmap n.º 6) */
   .agent-changes { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
   .agent-changes .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -1094,6 +1120,11 @@
           <div class="name">Compras</div>
           <div class="desc" id="appShopDesc">Dile qué buscas (o pásale una foto) y compara precios en todo internet.</div>
         </button>
+        <button class="app-tile" data-app="deep">
+          <div class="ic">🔎</div>
+          <div class="name">Búsqueda profunda</div>
+          <div class="desc" id="appDeepDesc">Pídele lo que quieras encontrar en internet y se lo curra: casas, coches, cursos, información…</div>
+        </button>
         <div class="app-tile soon">
           <div class="ic">✨</div>
           <div class="name">Próximamente</div>
@@ -1101,6 +1132,33 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="deepModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:840px; margin:30px auto; max-height:90vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>🔎 Búsqueda profunda</strong>
+      <select id="deepHistory" title="Búsquedas anteriores" style="margin-left:auto; margin-right:10px; max-width:280px;"></select>
+      <button id="closeDeepBtn" class="modal-close">&times;</button>
+    </div>
+    <div class="shop-form">
+      <textarea id="deepQuery" placeholder="¿Qué quieres encontrar? p.ej. búscame casas en compra en Valladolid en los barrios de La Victoria, Girón o cerca"></textarea>
+    </div>
+    <div class="jobs-run">
+      <div class="txt"><span id="deepRunText"></span><div class="bar" id="deepRunBar" style="display:none;"><div></div></div></div>
+      <button class="dc-btn" id="deepCancelBtn" style="display:none;">Cancelar</button>
+      <button class="dc-btn primary" id="deepSearchBtn">🔎 Buscar</button>
+    </div>
+    <div style="padding:14px 16px; overflow-y:auto; flex:1;" id="deepResults"></div>
+    <div class="deep-refine" id="deepRefineRow" style="display:none;">
+      <input type="text" id="deepRefine" placeholder="Afinar esta búsqueda… p.ej. solo con ascensor y hasta 200.000 €">
+      <button class="dc-btn" id="deepRefineBtn">Afinar</button>
+    </div>
+    <div class="jobs-credit">Navega con <a href="https://www.microsoft.com/edge" target="_blank" rel="noopener">Microsoft Edge</a>
+      mediante <a href="https://playwright.dev" target="_blank" rel="noopener">Playwright</a>, busca con
+      <a href="https://www.bing.com" target="_blank" rel="noopener">Bing</a> y en las webs que elige para cada caso, y piensa con
+      <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>. Comprueba siempre los datos en la web original.</div>
   </div>
 </div>
 
@@ -2984,6 +3042,235 @@ document.getElementById("optCreditsBtn").addEventListener("click", () => {
 document.getElementById("closeCreditsBtn").addEventListener("click", () => { creditsModal.style.display = "none"; });
 creditsModal.addEventListener("click", (e) => { if (e.target === creditsModal) creditsModal.style.display = "none"; });
 
+// --- Busqueda profunda (Mis apps, ver deep_search.py) ---
+const deepModal = document.getElementById("deepModal");
+let deepData = { history: [], status: { running: false } };
+let deepPoll = null;
+let deepShownId = null;
+let deepUnseen = false;
+
+async function loadDeep() {
+  const resp = await fetch("/deep");
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.detail || resp.status);
+  deepData = data;
+  renderDeepHistory();
+  renderDeepStatus();
+}
+
+function openDeepModal() {
+  deepUnseen = false;
+  deepModal.style.display = "block";
+  document.getElementById("deepRunText").textContent = "Cargando…";
+  loadDeep().then(() => {
+    const st = deepData.status || {};
+    if (!st.running && !deepShownId && deepData.history.length) showDeepResult(deepData.history[0].id);
+    if (st.running) followDeep();
+  }).catch((err) => { document.getElementById("deepRunText").textContent = "Error: " + err.message; });
+}
+document.getElementById("closeDeepBtn").addEventListener("click", () => { deepModal.style.display = "none"; updateJobsChip(); });
+
+function renderDeepHistory() {
+  const sel = document.getElementById("deepHistory");
+  sel.innerHTML = '<option value="">Búsquedas anteriores…</option>';
+  for (const h of deepData.history) {
+    const opt = document.createElement("option");
+    opt.value = h.id;
+    const when = new Date(h.fecha * 1000).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
+    opt.textContent = `${h.consulta.split("\n")[0].slice(0, 60)} · ${when}`;
+    sel.appendChild(opt);
+  }
+  sel.value = deepShownId || "";
+}
+document.getElementById("deepHistory").addEventListener("change", (e) => { if (e.target.value) showDeepResult(e.target.value); });
+
+function renderDeepStatus() {
+  const st = deepData.status || {};
+  const text = document.getElementById("deepRunText");
+  const bar = document.getElementById("deepRunBar");
+  document.getElementById("deepSearchBtn").style.display = st.running ? "none" : "inline-block";
+  document.getElementById("deepCancelBtn").style.display = st.running ? "inline-block" : "none";
+  document.getElementById("deepRefineBtn").disabled = !!st.running;
+  bar.style.display = st.running && st.total ? "block" : "none";
+  if (st.running) {
+    const secs = Math.floor(Date.now() / 1000 - st.started);
+    const mins = secs >= 60 ? `${Math.floor(secs / 60)} min ${secs % 60}s` : `${secs}s`;
+    text.textContent = `${st.text} (${mins}) · puedes cerrar esta ventana, sigue buscando`;
+    bar.firstElementChild.style.width = st.total ? `${Math.round(100 * st.done / st.total)}%` : "0";
+  } else if (st.error) {
+    text.textContent = st.error;
+  } else {
+    text.textContent = "Entiende lo que pides, elige dónde buscar, lee cada página y te lo resume (tarda unos minutos).";
+  }
+  updateJobsChip();
+}
+
+function deepChips(label, values) {
+  const wrap = document.createElement("div");
+  wrap.style.marginTop = "8px";
+  const l = document.createElement("div");
+  l.className = "lbl";
+  l.textContent = label;
+  const chips = document.createElement("div");
+  chips.className = "deep-chips";
+  for (const v of values) {
+    const c = document.createElement("span");
+    c.textContent = v;
+    chips.appendChild(c);
+  }
+  wrap.append(l, chips);
+  return wrap;
+}
+
+function deepItemRow(it, why) {
+  const row = document.createElement("div");
+  row.className = "deep-item" + (why ? " top" : "");
+  const score = document.createElement("div");
+  score.className = "deep-score" + (it.encaje < 8 ? " mid" : "");
+  score.textContent = it.encaje;
+  score.title = "Lo bien que cumple lo pedido (0-10)";
+  const t = document.createElement("div");
+  t.className = "t";
+  t.textContent = it.titulo;
+  const a = document.createElement("a");
+  a.href = it.url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.textContent = `Ver en ${it.fuente} ↗`;
+  const d = document.createElement("div");
+  d.className = "d";
+  for (const [k, v] of Object.entries(it.datos || {})) {
+    const span = document.createElement("span");
+    const b = document.createElement("b");
+    b.textContent = k + ": ";
+    span.append(b, document.createTextNode(v));
+    d.appendChild(span);
+  }
+  const n = document.createElement("div");
+  n.className = "n";
+  n.textContent = [why || it.nota, it.tambien_en && it.tambien_en.length ? "También en " + it.tambien_en.join(", ") : ""]
+    .filter(Boolean).join(" · ");
+  row.append(score, t, a, d, n);
+  return row;
+}
+
+function showDeepResult(id) {
+  const h = deepData.history.find((x) => x.id === id);
+  const box = document.getElementById("deepResults");
+  box.innerHTML = "";
+  deepShownId = id;
+  renderDeepHistory();
+  document.getElementById("deepRefineRow").style.display = h ? "flex" : "none";
+  if (!h) return;
+  const u = document.createElement("div");
+  u.className = "deep-understood";
+  u.innerHTML = '<div class="lbl">Lo que he entendido</div>';
+  u.appendChild(document.createTextNode(h.entendido));
+  if (h.criterios.length) u.appendChild(deepChips("Criterios", h.criterios));
+  if (h.webs.length) u.appendChild(deepChips("Dónde he buscado, además de todo internet", h.webs));
+  const meta = document.createElement("div");
+  meta.className = "lbl";
+  meta.style.marginTop = "8px";
+  meta.textContent = `${h.paginas} páginas revisadas`;
+  u.appendChild(meta);
+  box.appendChild(u);
+  for (const w of h.avisos || []) {
+    const div = document.createElement("div");
+    div.className = "jobs-warn";
+    div.textContent = "⚠ " + w;
+    box.appendChild(div);
+  }
+  if (h.tipo === "informe") {
+    const rep = document.createElement("div");
+    rep.className = "deep-report";
+    renderMarkdownInto(rep, h.informe || "No se encontró información útil.", { highlight: false });
+    box.appendChild(rep);
+    if (h.fuentes.length) {
+      const src = document.createElement("div");
+      src.className = "deep-sources";
+      h.fuentes.forEach((f, i) => {
+        const a = document.createElement("a");
+        a.href = f.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = `[${i + 1}] ${f.titulo} — ${f.fuente}`;
+        src.appendChild(a);
+      });
+      box.appendChild(src);
+    }
+    return;
+  }
+  if (h.resumen) {
+    const sum = document.createElement("div");
+    sum.className = "deep-summary";
+    sum.textContent = h.resumen;
+    box.appendChild(sum);
+  }
+  if (h.destacados.length) {
+    const t = document.createElement("div");
+    t.className = "shop-section";
+    t.textContent = "Destacados";
+    box.appendChild(t);
+    for (const dst of h.destacados) {
+      const it = h.resultados.find((x) => x.url === dst.url && x.titulo === dst.titulo) || h.resultados.find((x) => x.url === dst.url);
+      if (it) box.appendChild(deepItemRow(it, dst.por_que));
+    }
+  }
+  if (h.resultados.length) {
+    const t = document.createElement("div");
+    t.className = "shop-section";
+    t.textContent = `Todos (${h.resultados.length}), de más a menos encaje`;
+    box.appendChild(t);
+    for (const it of h.resultados) box.appendChild(deepItemRow(it));
+  } else {
+    box.insertAdjacentHTML("beforeend", '<p class="personas-intro">No se encontró nada que cumpla lo pedido. Prueba a afinar o a pedirlo de otra forma.</p>');
+  }
+}
+
+async function startDeep(body) {
+  try {
+    await agentPost("/deep/search", body);
+  } catch (err) {
+    document.getElementById("deepRunText").textContent = err.message;
+    return;
+  }
+  deepData.status = { running: true, text: "Empezando…", started: Date.now() / 1000, done: 0, total: 0 };
+  renderDeepStatus();
+  followDeep();
+}
+document.getElementById("deepSearchBtn").addEventListener("click", () => {
+  const consulta = document.getElementById("deepQuery").value.trim();
+  if (!consulta) { document.getElementById("deepQuery").focus(); return; }
+  startDeep({ consulta });
+});
+document.getElementById("deepRefineBtn").addEventListener("click", () => {
+  const input = document.getElementById("deepRefine");
+  const extra = input.value.trim();
+  if (!extra || !deepShownId) { input.focus(); return; }
+  input.value = "";
+  startDeep({ consulta: extra, afinar_de: deepShownId });
+});
+document.getElementById("deepRefine").addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("deepRefineBtn").click(); });
+document.getElementById("deepCancelBtn").addEventListener("click", () => agentPost("/deep/cancel").catch(() => {}));
+
+function followDeep() {
+  if (deepPoll) return;
+  deepPoll = setInterval(async () => {
+    let st;
+    try { st = await (await fetch("/deep/status")).json(); } catch (e) { return; }
+    deepData.status = st;
+    if (st.running) { renderDeepStatus(); return; }
+    clearInterval(deepPoll);
+    deepPoll = null;
+    await loadDeep().catch(() => {});
+    if (st.last_id && !st.error) {
+      showDeepResult(st.last_id);
+      if (deepModal.style.display !== "block") deepUnseen = true;
+    }
+    updateJobsChip();
+  }, 2000);
+}
+
 // --- Compras (Mis apps, ver shopping.py) ---
 const shopModal = document.getElementById("shopModal");
 let shopData = { history: [], status: { running: false } };
@@ -3209,7 +3496,11 @@ function updateJobsChip() {
   const note = running ? "buscando…" : jobsUnseen ? `${jobsUnseen} ofertas nuevas` : "";
   const shopRunning = shopData.status && shopData.status.running;
   const shopNote = shopRunning ? "comparando precios…" : shopUnseen ? "resultados listos" : "";
-  const all = note || shopNote;
+  const deepRunning = deepData.status && deepData.status.running;
+  const deepNote = deepRunning ? "buscando a fondo…" : deepUnseen ? "búsqueda lista" : "";
+  document.getElementById("appDeepDesc").textContent = deepNote ? `🔎 ${deepNote[0].toUpperCase()}${deepNote.slice(1)}`
+    : "Pídele lo que quieras encontrar en internet y se lo curra: casas, coches, cursos, información…";
+  const all = note || shopNote || deepNote;
   document.getElementById("appsBtn").textContent = "🧩 Mis apps" + (all ? ` · ${all}` : "");
   document.getElementById("appJobsDesc").textContent = note ? `💼 ${note[0].toUpperCase()}${note.slice(1)}`
     : "Busca ofertas según tu CV, las puntúa y te prepara las cartas de presentación.";
@@ -3228,6 +3519,10 @@ document.querySelector('[data-app="jobs"]').addEventListener("click", () => {
 document.querySelector('[data-app="shopping"]').addEventListener("click", () => {
   appsModal.style.display = "none";
   openShopModal();
+});
+document.querySelector('[data-app="deep"]').addEventListener("click", () => {
+  appsModal.style.display = "none";
+  openDeepModal();
 });
 
 async function loadJobs() {

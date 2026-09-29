@@ -40,12 +40,13 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
 
     def chat(self, model: str, messages: list[dict], temperature: float = 0.7,
-              keep_alive: str = DEFAULT_KEEP_ALIVE, think: bool | None = None) -> str:
+              keep_alive: str = DEFAULT_KEEP_ALIVE, think: bool | None = None,
+              num_ctx: int | None = None) -> str:
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": {"temperature": temperature, **({"num_ctx": num_ctx} if num_ctx else {})},
             "keep_alive": keep_alive,
         }
         if think is not None:
