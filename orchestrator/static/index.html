@@ -65,6 +65,23 @@
     transition: background 0.15s, color 0.15s;
   }
   #themeToggle:hover { background: var(--panel-3); color: var(--text); }
+  #sidebarHideBtn, #sidebarShowBtn {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 15px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+  }
+  #sidebarHideBtn:hover, #sidebarShowBtn:hover { background: var(--panel-3); color: var(--text); }
+  #sidebarShowBtn { display: none; position: absolute; top: 8px; left: 8px; z-index: 30; }
+  body.sidebar-hidden #sidebar { display: none; }
+  body.sidebar-hidden #sidebarShowBtn { display: flex; }
+  body.sidebar-hidden #topbar { padding-left: 50px; }
+  .media-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .media-actions button, .media-actions a {
+    font-size: 12px; padding: 4px 10px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; cursor: pointer; text-decoration: none;
+  }
+  .media-actions button:hover, .media-actions a:hover { background: var(--panel-3); }
 
   #modeRow { padding: 0 16px 14px; }
   #modeRowLabel { display: block; font-size: 10.5px; color: var(--muted); margin-bottom: 5px; }
@@ -903,6 +920,7 @@
     <img src="/static/logo.svg" alt="" width="28" height="28">
     <h1>Chati IA</h1>
     <button id="themeToggle" title="Cambiar tema">&#9789;</button>
+    <button id="sidebarHideBtn" title="Ocultar barra lateral (Ctrl+B)">&laquo;</button>
   </div>
 
   <div id="modeRow">
@@ -1018,6 +1036,7 @@
 </div>
 
 <div id="main">
+  <button id="sidebarShowBtn" title="Mostrar barra lateral (Ctrl+B)">&#9776;</button>
   <div id="topbar">
     <span id="profileSelectLabel">Perfil de chat:</span>
     <select id="profileSelect"></select>
@@ -1501,6 +1520,21 @@ document.getElementById("themeToggle").addEventListener("click", () => {
   applyTheme(next);
 });
 initTheme();
+
+// Barra lateral ocultable (mejoras.md): se recuerda en este navegador
+function setSidebarHidden(hidden) {
+  document.body.classList.toggle("sidebar-hidden", hidden);
+  try { localStorage.setItem("ia_sidebar_hidden", hidden ? "1" : "0"); } catch (e) {}
+}
+document.getElementById("sidebarHideBtn").addEventListener("click", () => setSidebarHidden(true));
+document.getElementById("sidebarShowBtn").addEventListener("click", () => setSidebarHidden(false));
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+    e.preventDefault();
+    setSidebarHidden(!document.body.classList.contains("sidebar-hidden"));
+  }
+});
+try { if (localStorage.getItem("ia_sidebar_hidden") === "1") document.body.classList.add("sidebar-hidden"); } catch (e) {}
 </script>
 <style>
   html[data-theme="light"] {
@@ -4813,30 +4847,40 @@ function renderResult(bubble, data) {
   }
 }
 
+function downloadLink(fileUrl) {
+  // mismo origen: el atributo download guarda el archivo en vez de abrirlo
+  const a = document.createElement("a");
+  a.href = withKey(fileUrl);
+  a.download = fileUrl.split("?")[0].split("/").pop() || "chati";
+  a.textContent = "⬇ Descargar";
+  a.title = "Guardar en tu ordenador";
+  return a;
+}
+
 function appendMediaWithActions(bubble, fileUrl, filePath) {
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "media-actions";
+  actionsRow.appendChild(downloadLink(fileUrl));
+
   if (fileUrl.endsWith(".mp4")) {
     const vid = document.createElement("video");
     vid.src = withKey(fileUrl);
     vid.controls = true;
     vid.autoplay = true;
     vid.loop = true;
-    bubble.appendChild(vid);
+    bubble.append(vid, actionsRow);
     return;
   }
 
   const img = document.createElement("img");
   img.className = "attach";
   img.src = withKey(fileUrl);
-  bubble.appendChild(img);
+  bubble.append(img, actionsRow);
 
-  if (!filePath) return;  // sin ruta del servidor no se puede reutilizar (p.ej. audio no aplica aqui)
-
-  const actionsRow = document.createElement("div");
-  actionsRow.style.cssText = "margin-top:8px; display:flex; gap:6px;";
+  if (!filePath) return;  // sin ruta del servidor no se puede escalar ni editar
 
   const upscaleBtn = document.createElement("button");
   upscaleBtn.textContent = "Escalar x4";
-  upscaleBtn.style.cssText = "font-size:12px; padding:4px 10px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;";
   upscaleBtn.addEventListener("click", async () => {
     upscaleBtn.disabled = true;
     upscaleBtn.textContent = "Escalando...";
@@ -4860,12 +4904,9 @@ function appendMediaWithActions(bubble, fileUrl, filePath) {
 
   const editBtn = document.createElement("button");
   editBtn.textContent = "Editar (repintar zona)";
-  editBtn.style.cssText = upscaleBtn.style.cssText;
   editBtn.addEventListener("click", () => openInpaintEditor(fileUrl, filePath));
 
-  actionsRow.appendChild(upscaleBtn);
-  actionsRow.appendChild(editBtn);
-  bubble.appendChild(actionsRow);
+  actionsRow.append(upscaleBtn, editBtn);
 }
 
 // --- Sidebar: conversaciones (siempre visibles, tipo ChatGPT) ---
