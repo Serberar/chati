@@ -23,6 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import auth
 import auth_sessions
 import face_detect
+import access
 import agent_attachments
 import job_search
 import shopping
@@ -34,7 +35,8 @@ import media_store
 import model_registry
 import paths
 import persona_trainer
-import rate_limit
+import routes_apps
+import routes_auth
 import security
 import users
 
@@ -270,10 +272,10 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
         if session is None:
             return JSONResponse({"detail": "No autorizado. Inicia sesion."}, status_code=401)
         path = request.url.path
-        if session["role"] == "guest" and not _guest_may_use(path):
-            return _guest_blocked()
-        if path.startswith(PC_PATH_PREFIXES) and not _can_use_pc(session):
-            return _pc_blocked()
+        if session["role"] == "guest" and not access.guest_may_use(path):
+            return access.guest_blocked()
+        if path.startswith(access.PC_PATH_PREFIXES) and not access.can_use_pc(session):
+            return access.pc_blocked()
         request.state.session = session
         _mark_activity(True, request.method)
         try:
@@ -282,310 +284,37 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
             _mark_activity(False, request.method)
 
 
-# Invitado: lista cerrada de lo que SI puede usar (chat, imagen, video, voz).
-# Antes se bloqueaba endpoint a endpoint y uno nuevo quedaba abierto si se
-# olvidaba la comprobacion (auditoria 2026-09-29).
-GUEST_PATHS = {
-    "/auth/me", "/auth/logout", "/chat", "/chat/stream", "/cancel", "/voice_chat", "/speak",
-    "/image_with_face", "/video_with_face", "/image_with_controlnet", "/image/upscale", "/image/inpaint",
-    "/models/status", "/models/profiles", "/models/roles", "/models/prepare", "/models/image",
-    "/models/video", "/work/pending",
-}
-GUEST_PATH_PREFIXES = ("/plan/", "/media/")
-# Tocan el ordenador de verdad (agente, proyectos de codigo)
-PC_PATH_PREFIXES = ("/agent/", "/code/", "/work/agent/")
-
-
-def _guest_may_use(path: str) -> bool:
-    return path in GUEST_PATHS or path.startswith(GUEST_PATH_PREFIXES)
-
-
-def _can_use_pc(session: dict) -> bool:
-    """Agente, leer archivos del equipo y ejecutar codigo: con los permisos de
-    Windows de quien arranco Chati. El admin siempre, invitados nunca, el
-    resto si el admin se lo activa (auditoria 2026-09-29: cualquier usuario o
-    invitado leia el Escritorio del dueño y podia ejecutar codigo)."""
-    if session.get("role") == "admin":
-        return True
-    return session.get("role") != "guest" and users.can_use_pc(session.get("username"))
-
-
-def _pc_blocked() -> JSONResponse:
-    return JSONResponse({"detail": "Tu cuenta no tiene permiso para usar el ordenador (agente, archivos, "
-                                   "ejecutar codigo). Pideselo al administrador."}, status_code=403)
-
-
 app.add_middleware(SessionAuthMiddleware)
 # la ultima en añadirse es la primera en ejecutarse: Host/Origin antes que nada
 app.add_middleware(security.LocalOnlyMiddleware)
 
 
-# --- Sistema de usuarios (ver ROADMAP.md, punto 0) ---
+# --- Sistema de usuarios (rutas en routes_auth.py, politica en access.py) ---
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-class RegisterRequest(BaseModel):
-    username: str
-    password: str
-    registration_key: str
-    security_question: str | None = None
-    security_answer: str | None = None
+_session_token = access.session_token
+_current_session = access.current_session
+_guest_blocked = access.guest_blocked
+_can_use_pc = access.can_use_pc
 
 
-class ChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str
-
-
-class ResetPasswordRequest(BaseModel):
-    username: str
-    security_answer: str
-    new_password: str
-
-
-SESSION_COOKIE = "chati_session"
-
-
-def _session_token(request: Request) -> str | None:
-    """La pagina usa una cookie HttpOnly (el JavaScript no la ve: un script
-    colado no puede llevarsela). Antes iba en localStorage y en la URL de cada
-    imagen (?session=...), que acababa en el historial del navegador
-    (auditoria 2026-09-29). La cabecera queda para programas y tests."""
-    return request.headers.get("X-Session-Token") or request.cookies.get(SESSION_COOKIE)
-
-
-def _with_session_cookie(body: dict, token: str) -> JSONResponse:
-    resp = JSONResponse(body)
-    resp.set_cookie(SESSION_COOKIE, token, max_age=auth_sessions.SESSION_TTL_SECONDS,
-                    httponly=True, samesite="strict", path="/")
-    return resp
-
-
-def _too_many(seconds: int) -> JSONResponse:
-    return JSONResponse({"detail": rate_limit.wait_message(seconds)}, status_code=429,
-                        headers={"Retry-After": str(seconds)})
-
-
-def _current_session(request: Request) -> dict | None:
-    token = _session_token(request)
-    return auth_sessions.get_session(token) if token else None
-
-
-def _guest_blocked() -> JSONResponse:
-    """Modo invitado: acceso completo a chat/imagen/video, pero sin galeria
-    de caras, sin documentos, sin CV - ver ROADMAP.md, punto 0."""
-    return JSONResponse({"detail": "No disponible en modo invitado."}, status_code=403)
-
-
-@app.post("/auth/login")
-def auth_login(req: LoginRequest):
-    key = req.username.strip().lower()
-    wait = rate_limit.login.retry_after(key)
-    if wait:
-        return _too_many(wait)
-    try:
-        session = users.login(req.username, req.password)
-    except users.UserError as exc:
-        rate_limit.login.fail(key)
-        return JSONResponse({"detail": str(exc)}, status_code=401)
-    rate_limit.login.succeed(key)
-    token = auth_sessions.create_session(
-        session["id"], session["username"], session["role"], session["dek"], session["key_generation"])
+def _on_login(login: dict) -> None:
     try:  # documentos subidos antes de que se cifraran los originales
-        knowledge_base.encrypt_plain_originals(session["id"], session["dek"])
+        knowledge_base.encrypt_plain_originals(login["id"], login["dek"])
     except OSError:
         pass
-    return _with_session_cookie({"token": token, "username": session["username"], "role": session["role"]}, token)
 
 
-@app.post("/auth/guest")
-def auth_guest():
-    token = auth_sessions.create_guest_session()
-    return _with_session_cookie({"token": token, "username": None, "role": "guest"}, token)
+def _delete_user_data(user_id: str) -> None:
+    memory.delete_user_messages(user_id)
+    people.delete_all_for_user(user_id)
+    profile_store.delete_all_for_user(user_id)
+    knowledge_base.delete_all_for_user(user_id)
+    session_docs.delete_all_for_user(user_id)
+    persona_trainer.delete_all_for_user(user_id)
 
 
-@app.post("/auth/register")
-def auth_register(req: RegisterRequest):
-    wait = rate_limit.registration.retry_after("registro")
-    if wait:
-        return _too_many(wait)
-    if not secrets.compare_digest(req.registration_key.encode(), users.get_or_create_registration_key().encode()):
-        rate_limit.registration.fail("registro")
-        return JSONResponse({"detail": "Clave de registro incorrecta."}, status_code=403)
-    # el primer usuario de todo el sistema es admin automaticamente
-    role = "admin" if not users.any_users_exist() else "user"
-    try:
-        users.create_user(req.username, req.password, role, req.security_question, req.security_answer)
-    except users.UserError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-    session = users.login(req.username, req.password)
-    token = auth_sessions.create_session(
-        session["id"], session["username"], session["role"], session["dek"], session["key_generation"])
-    return _with_session_cookie({"token": token, "username": req.username, "role": role}, token)
-
-
-@app.post("/auth/logout")
-def auth_logout(request: Request):
-    token = _session_token(request)
-    if token:
-        auth_sessions.destroy_session(token)
-    resp = JSONResponse({"ok": True})
-    resp.delete_cookie(SESSION_COOKIE, path="/")
-    return resp
-
-
-@app.get("/auth/me")
-def auth_me(request: Request):
-    session = _current_session(request)
-    if not session:
-        return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
-    user = users.get_user(session["username"]) if session["username"] else None
-    return {
-        "username": session["username"], "role": session["role"], "pc_access": _can_use_pc(session),
-        "display_name": user["display_name"] if user else None,
-        "security_question": user["security_question"] if user else None,
-    }
-
-
-class ProfileUpdateRequest(BaseModel):
-    display_name: str
-
-
-class SecurityQuestionRequest(BaseModel):
-    password: str
-    question: str
-    answer: str
-
-
-@app.post("/auth/profile")
-def auth_update_profile(req: ProfileUpdateRequest, request: Request):
-    session = _current_session(request)
-    if not session or session["role"] == "guest":
-        return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
-    try:
-        users.set_display_name(session["username"], req.display_name)
-    except users.UserError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-    return {"ok": True}
-
-
-@app.post("/auth/security-question")
-def auth_set_security_question(req: SecurityQuestionRequest, request: Request):
-    session = _current_session(request)
-    if not session or session["role"] == "guest":
-        return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
-    try:
-        users.set_security_question(session["username"], req.password, req.question, req.answer)
-    except users.UserError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-    return {"ok": True}
-
-
-@app.post("/auth/change-password")
-def auth_change_password(req: ChangePasswordRequest, request: Request):
-    session = _current_session(request)
-    if not session or session["role"] == "guest":
-        return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
-    try:
-        users.change_password(session["username"], req.old_password, req.new_password)
-    except users.UserError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-    auth_sessions.destroy_all_sessions_for_user(session["username"])
-    new_session = users.login(session["username"], req.new_password)
-    new_token = auth_sessions.create_session(
-        new_session["id"], new_session["username"], new_session["role"],
-        new_session["dek"], new_session["key_generation"])
-    return _with_session_cookie({"token": new_token}, new_token)
-
-
-@app.get("/auth/security-question/{username}")
-def auth_security_question(username: str):
-    user = users.get_user(username)
-    if not user or not user["security_question"]:
-        return JSONResponse({"detail": "No hay pregunta de seguridad configurada para ese usuario."}, status_code=404)
-    return {"security_question": user["security_question"]}
-
-
-@app.post("/auth/reset-password")
-def auth_reset_password(req: ResetPasswordRequest):
-    key = req.username.strip().lower()
-    wait = rate_limit.password_reset.retry_after(key)
-    if wait:
-        return _too_many(wait)
-    try:
-        users.reset_via_security_question(req.username, req.security_answer, req.new_password)
-    except users.UserError as exc:
-        rate_limit.password_reset.fail(key)
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-    rate_limit.password_reset.succeed(key)
-    auth_sessions.destroy_all_sessions_for_user(req.username)
-    return {"ok": True}
-
-
-@app.get("/auth/users")
-def auth_list_users(request: Request):
-    session = _current_session(request)
-    if not session or session["role"] != "admin":
-        return JSONResponse({"detail": "Solo un administrador puede ver la lista de usuarios."}, status_code=403)
-    return {"users": users.list_users()}
-
-
-@app.delete("/auth/users/{username}")
-def auth_delete_user(username: str, request: Request):
-    session = _current_session(request)
-    if not session or session["role"] != "admin":
-        return JSONResponse({"detail": "Solo un administrador puede eliminar usuarios."}, status_code=403)
-    if username == session["username"]:
-        return JSONResponse({"detail": "No puedes eliminarte a ti mismo."}, status_code=400)
-    target = users.get_user(username)
-    deleted = users.delete_user(username)
-    if deleted and target:
-        # borrado en cascada de todos sus datos - no hace falta descifrar
-        # nada para borrar, coherente con zero-knowledge (ver ROADMAP.md, punto 0)
-        target_id = target["id"]
-        memory.delete_user_messages(target_id)
-        people.delete_all_for_user(target_id)
-        profile_store.delete_all_for_user(target_id)
-        knowledge_base.delete_all_for_user(target_id)
-        session_docs.delete_all_for_user(target_id)
-        persona_trainer.delete_all_for_user(target_id)
-    auth_sessions.destroy_all_sessions_for_user(username)
-    return {"ok": deleted}
-
-
-class PcAccessRequest(BaseModel):
-    allowed: bool
-
-
-@app.put("/auth/users/{username}/pc_access")
-def auth_set_pc_access(username: str, req: PcAccessRequest, request: Request):
-    session = _current_session(request)
-    if not session or session["role"] != "admin":
-        return JSONResponse({"detail": "Solo un administrador puede cambiar esto."}, status_code=403)
-    try:
-        users.set_pc_access(username, req.allowed)
-    except users.UserError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=404)
-    return {"ok": True}
-
-
-@app.get("/auth/security-events")
-def auth_security_events(request: Request):
-    session = _current_session(request)
-    if not session or session["role"] != "admin":
-        return JSONResponse({"detail": "Solo un administrador puede ver esto."}, status_code=403)
-    return {"events": users.list_security_events()}
-
-
-@app.get("/auth/registration-key")
-def auth_registration_key(request: Request):
-    session = _current_session(request)
-    if not session or session["role"] != "admin":
-        return JSONResponse({"detail": "Solo un administrador puede ver esto."}, status_code=403)
-    return {"registration_key": users.get_or_create_registration_key()}
+routes_auth.configure(on_login=_on_login, delete_user_data=_delete_user_data)
+app.include_router(routes_auth.router)
 
 
 class ChatRequest(BaseModel):
@@ -1028,11 +757,7 @@ def agent_save_shortcuts(request: Request, req: AgentShortcutsRequest):
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
-# --- Buscador de empleo autonomo (roadmap n.º 7, ver job_search.py) ---
-
-class JobPrefsRequest(BaseModel):
-    prefs: dict
-
+# --- Mis apps: empleo, compras y busqueda profunda (rutas en routes_apps.py) ---
 
 # Contexto de las apps del navegador (empleo, compras, busqueda profunda): sus
 # peticiones caben en 8K. Con los 16K del agente, qwen3:8b no cabe entero en
@@ -1051,73 +776,6 @@ def _job_chat(prompt: str) -> str:
                        temperature=0.2, think=False, num_ctx=APPS_NUM_CTX, num_predict=APPS_NUM_PREDICT)
 
 
-@app.get("/jobs")
-def jobs_overview(request: Request):
-    """Todo lo del buscador de empleo: preferencias, ultimos resultados y si
-    hay una busqueda en marcha."""
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    uid, dek, gen = session["user_id"], session["dek"], session["key_generation"]
-    results = job_search.get_results(uid, dek, gen)
-    return {"prefs": job_search.get_prefs(uid, dek, gen),
-            "results": {k: v for k, v in results.items() if k != "seen"},
-            "status": job_search.status(uid),
-            "has_cv": profile_store.cv_filename(user_id=uid) is not None}
-
-
-@app.put("/jobs/prefs")
-def jobs_save_prefs(request: Request, req: JobPrefsRequest):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    try:
-        return job_search.save_prefs(req.prefs, session["user_id"], session["dek"], session["key_generation"])
-    except ValueError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-
-
-@app.post("/jobs/search")
-def jobs_start(request: Request):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    try:
-        job_search.start(session["user_id"], session["dek"], session["key_generation"], _job_chat,
-                         before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"], wait=True))
-    except ValueError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-    return {"ok": True}
-
-
-@app.get("/jobs/status")
-def jobs_status(request: Request):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    return job_search.status(session["user_id"])
-
-
-@app.post("/jobs/cancel")
-def jobs_cancel(request: Request):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    job_search.cancel(session["user_id"])
-    return {"ok": True}
-
-
-# --- Compras (Mis apps, ver shopping.py) ---
-
-class ShoppingSearchRequest(BaseModel):
-    descripcion: str = ""
-    image_base64: str | None = None
-    precio_min: float | str | None = None
-    precio_max: float | str | None = None
-    solo_espana: bool = True
-    valoraciones: bool = True
-
-
 def _describe_product_image(b64: str) -> str:
     _ensure_active_model(vision_agent.model)
     try:
@@ -1128,94 +786,10 @@ def _describe_product_image(b64: str) -> str:
         ollama.unload(vision_agent.model)
 
 
-@app.get("/shopping")
-def shopping_overview(request: Request):
-    """Busquedas anteriores (las ultimas 10) y si hay una en marcha."""
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    return {"history": shopping.get_history(session["user_id"], session["dek"], session["key_generation"]),
-            "status": shopping.status(session["user_id"])}
-
-
-@app.post("/shopping/search")
-def shopping_start(request: Request, req: ShoppingSearchRequest):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    try:
-        shopping.start(session["user_id"], session["dek"], session["key_generation"],
-                       req.model_dump(exclude={"image_base64"}), _job_chat,
-                       describe_image=_describe_product_image, image_b64=req.image_base64,
-                       before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"], wait=True))
-    except ValueError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-    return {"ok": True}
-
-
-@app.get("/shopping/status")
-def shopping_status(request: Request):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    return shopping.status(session["user_id"])
-
-
-@app.post("/shopping/cancel")
-def shopping_cancel(request: Request):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    shopping.cancel(session["user_id"])
-    return {"ok": True}
-
-
-# --- Busqueda profunda (Mis apps, ver deep_search.py) ---
-
-class DeepSearchRequest(BaseModel):
-    consulta: str
-    afinar_de: str | None = None  # id de una busqueda anterior: "consulta" se añade a ella
-
-
-@app.get("/deep")
-def deep_overview(request: Request):
-    """Busquedas anteriores (las ultimas 10) y si hay una en marcha."""
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    return {"history": deep_search.get_history(session["user_id"], session["dek"], session["key_generation"]),
-            "status": deep_search.status(session["user_id"])}
-
-
-@app.post("/deep/search")
-def deep_start(request: Request, req: DeepSearchRequest):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    try:
-        deep_search.start(session["user_id"], session["dek"], session["key_generation"], req.consulta, _job_chat,
-                          afinar_de=req.afinar_de,
-                          before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"], wait=True))
-    except ValueError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
-    return {"ok": True}
-
-
-@app.get("/deep/status")
-def deep_status(request: Request):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    return deep_search.status(session["user_id"])
-
-
-@app.post("/deep/cancel")
-def deep_cancel(request: Request):
-    session = request.state.session
-    if session["role"] == "guest":
-        return _guest_blocked()
-    deep_search.cancel(session["user_id"])
-    return {"ok": True}
+routes_apps.configure(chat=_job_chat,
+                      before=lambda: _free_memory_for_agent(CONFIG["opencode"]["agent"], wait=True),
+                      describe_image=_describe_product_image)
+app.include_router(routes_apps.router)
 
 
 # --- Modo Codigo: proyectos del usuario ---

@@ -415,6 +415,7 @@ const cvUploadBtn = document.getElementById("cvUploadBtn");
 cvUploadBtn.addEventListener("click", () => cvInput.click());
 
 async function loadCvStatus() {
+  if (getSessionRole() === "guest") return;  // invitado: sin CV (la ruta le da 403)
   try {
     const resp = await fetch("/cv");
     const data = await resp.json();
@@ -3425,6 +3426,7 @@ function formatRelativeTime(iso) {
 }
 
 async function loadConversations() {
+  if (getSessionRole() === "guest") return;  // invitado: sin historial
   let sessions;
   try {
     const resp = await fetch("/sessions");

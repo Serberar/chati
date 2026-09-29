@@ -10,7 +10,7 @@ Anadir un modelo mas pesado para 12gb/16gb_plus es cuestion de investigarlo
 y verificarlo primero (Civitai/HuggingFace API, nunca una URL inventada) y
 sumarlo aqui - la estructura ya esta lista para eso."""
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 
 @dataclass

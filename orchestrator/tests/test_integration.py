@@ -1470,3 +1470,14 @@ def test_login_is_locked_after_repeated_failures():
         assert anon.post("/auth/login", json={"username": uname, "password": "mal"}).status_code == 429
     finally:
         rate_limit.login.succeed(uname.lower())
+
+
+def test_my_apps_routes_after_moving_them_out_of_main():
+    """routes_apps.py: las mismas rutas, solo para usuarios registrados."""
+    for path in ("/jobs", "/shopping", "/deep", "/jobs/status", "/shopping/status", "/deep/status"):
+        assert client.get(path).status_code == 200, path
+    with patch.object(main.routes_apps.deep_search, "start") as mock_start:
+        assert client.post("/deep/search", json={"consulta": "casas en Valladolid"}).json() == {"ok": True}
+    assert mock_start.call_args.args[3] == "casas en Valladolid"
+    guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+    assert guest.get("/deep").status_code == 403
