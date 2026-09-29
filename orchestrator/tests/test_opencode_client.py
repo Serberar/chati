@@ -30,7 +30,8 @@ def test_create_session_returns_id(mock_post):
     session_id = opencode_client.create_session(BASE)
 
     assert session_id == "ses_abc123"
-    mock_post.assert_called_once_with(f"{BASE}/session", json={}, timeout=opencode_client.TIMEOUT)
+    mock_post.assert_called_once_with(f"{BASE}/session", json={}, auth=opencode_client.AUTH,
+                                      timeout=opencode_client.TIMEOUT)
 
 
 @patch("opencode_client.requests.post")
@@ -70,7 +71,7 @@ def test_delegate_reports_connection_failure_without_raising(mock_create):
 
 
 def _fake_get(responses):
-    def fake(url, timeout):
+    def fake(url, timeout, auth=None):
         return _ok_response(responses[url.removeprefix(BASE)])
     return fake
 

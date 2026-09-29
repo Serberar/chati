@@ -22,6 +22,7 @@ invocarla."""
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -87,22 +88,36 @@ def _class_token(persona_folder_name: str) -> str:
     return f"ohwx-{persona_folder_name} person"
 
 
-def persona_dir(name: str) -> Path:
-    return PERSONAS_DIR / _sanitize_name(name)
+# Cada usuario tiene sus personas en su propia carpeta (auditoria
+# 2026-09-29: eran comunes, y cualquier usuario podia generar imagenes con la
+# cara que otro habia entrenado).
+def _owner_folder(owner: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "", owner or "")
+    if not safe:
+        raise ValueError("Falta el usuario dueño de la persona.")
+    return safe
 
 
-def _status_path(name: str, architecture: str) -> Path:
-    return persona_dir(name) / architecture / "status.json"
+def persona_dir(owner: str, name: str) -> Path:
+    return PERSONAS_DIR / _owner_folder(owner) / _sanitize_name(name)
 
 
-def _write_status(name: str, architecture: str, status: dict) -> None:
-    path = _status_path(name, architecture)
+def _dataset_dir(owner: str, name: str) -> Path:
+    return DATASETS_DIR / _owner_folder(owner) / _sanitize_name(name)
+
+
+def _status_path(owner: str, name: str, architecture: str) -> Path:
+    return persona_dir(owner, name) / architecture / "status.json"
+
+
+def _write_status(owner: str, name: str, architecture: str, status: dict) -> None:
+    path = _status_path(owner, name, architecture)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _read_status(name: str, architecture: str) -> dict | None:
-    path = _status_path(name, architecture)
+def _read_status(owner: str, name: str, architecture: str) -> dict | None:
+    path = _status_path(owner, name, architecture)
     if not path.exists():
         return None
     try:
@@ -157,31 +172,43 @@ def training_progress(log_path: Path) -> dict:
             "eta": _eta_text(m.group(5))}
 
 
-def lora_for(name: str, architecture: str = "sdxl") -> tuple[str, str] | None:
-    """(nombre del LoRA para el nodo LoraLoader de ComfyUI, palabra clave para
-    el prompt) si la persona esta lista; None si no."""
+def _lora_path(owner: str, name: str, architecture: str) -> Path:
     folder = _sanitize_name(name)
-    path = PERSONAS_DIR / folder / architecture / f"{folder}_{architecture}.safetensors"
+    return persona_dir(owner, name) / architecture / f"{folder}_{architecture}.safetensors"
+
+
+def lora_for(owner: str, name: str, architecture: str = "sdxl") -> tuple[str, str] | None:
+    """(nombre del LoRA para el nodo LoraLoader de ComfyUI, palabra clave para
+    el prompt) si la persona de ESTE usuario esta lista; None si no."""
+    path = _lora_path(owner, name, architecture)
     if not path.exists():
         return None
-    # separador nativo del SO, como lo lista ComfyUI ("personas\x\sdxl\x_sdxl.safetensors")
-    return str(path.relative_to(PERSONAS_DIR.parent)), _class_token(folder)
+    # separador nativo del SO, como lo lista ComfyUI ("personas\<usuario>\x\sdxl\x_sdxl.safetensors")
+    return str(path.relative_to(PERSONAS_DIR.parent)), _class_token(_sanitize_name(name))
 
 
-def get_training_status(name: str, architecture: str = "sdxl") -> dict:
+def _drop_dataset(owner: str, name: str) -> None:
+    """Las fotos de entrenamiento se copian en claro para sd-scripts: en cuanto
+    termina (bien o mal) se borran."""
+    shutil.rmtree(_dataset_dir(owner, name), ignore_errors=True)
+
+
+def get_training_status(owner: str, name: str, architecture: str = "sdxl") -> dict:
     """Estado real, no solo lo que dice el archivo: si el .safetensors final
     ya existe se considera terminado aunque el proceso ya no este vivo (pudo
     cerrarse limpio); si el archivo de estado dice "training" pero el
     proceso ya no esta vivo y no hay .safetensors, es que fallo a medio
     camino."""
-    lora_path = persona_dir(name) / architecture / f"{_sanitize_name(name)}_{architecture}.safetensors"
+    lora_path = _lora_path(owner, name, architecture)
     if lora_path.exists():
+        _drop_dataset(owner, name)
         return {"status": "listo", "file": str(lora_path)}
 
-    status = _read_status(name, architecture)
+    status = _read_status(owner, name, architecture)
     if status is None:
         return {"status": "sin_empezar"}
     if status.get("status") == "training" and not _pid_alive(status.get("pid", -1)):
+        _drop_dataset(owner, name)
         return {"status": "error", "error": "El entrenamiento se interrumpio antes de terminar."}
     if status.get("status") == "training" and status.get("log_file"):
         status = {**status, **training_progress(Path(status["log_file"]))}
@@ -219,7 +246,7 @@ def _write_dataset_toml(dataset_dir: Path, class_tokens: str, num_repeats: int) 
     return toml_path
 
 
-def start_training(name: str, photo_paths: list[Path], epochs: int = 10) -> dict:
+def start_training(owner: str, name: str, photo_paths: list[Path], epochs: int = 10) -> dict:
     """Prepara el dataset y lanza el entrenamiento SDXL en segundo plano.
     Devuelve inmediatamente (no espera a que termine) - usa
     get_training_status() para seguir el progreso. photo_paths: fotos YA
@@ -228,7 +255,7 @@ def start_training(name: str, photo_paths: list[Path], epochs: int = 10) -> dict
     if not ACCELERATE_EXE.exists() or not SD_SCRIPTS_PYTHON.exists():
         raise RuntimeError(f"sd-scripts no esta instalado en {SD_SCRIPTS_DIR} (ver ROADMAP.md).")
 
-    existing = get_training_status(name, "sdxl")
+    existing = get_training_status(owner, name, "sdxl")
     if existing.get("status") == "training":
         raise TrainingAlreadyRunningError(f"Ya hay un entrenamiento en curso para '{name}'.")
 
@@ -236,7 +263,7 @@ def start_training(name: str, photo_paths: list[Path], epochs: int = 10) -> dict
     folder_name = _sanitize_name(name)
     class_tokens = _class_token(folder_name)
 
-    dataset_images_dir = DATASETS_DIR / folder_name / "images"
+    dataset_images_dir = _dataset_dir(owner, name) / "images"
     dataset_images_dir.mkdir(parents=True, exist_ok=True)
     for old in dataset_images_dir.iterdir():
         old.unlink()
@@ -249,7 +276,7 @@ def start_training(name: str, photo_paths: list[Path], epochs: int = 10) -> dict
     if not ACCELERATE_CONFIG.exists():
         ACCELERATE_CONFIG.write_text(_ACCELERATE_CONFIG_YAML, encoding="utf-8")
 
-    output_dir = persona_dir(name) / "sdxl"
+    output_dir = persona_dir(owner, name) / "sdxl"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_name = f"{folder_name}_sdxl"
     log_path = output_dir / "train.log"
@@ -293,24 +320,42 @@ def start_training(name: str, photo_paths: list[Path], epochs: int = 10) -> dict
             creationflags=subprocess.CREATE_NO_WINDOW, env=env,
         )
 
-    _write_status(name, "sdxl", {
+    _write_status(owner, name, "sdxl", {
         "status": "training", "pid": proc.pid, "started_at": time.time(),
         "photos": len(photo_paths), "epochs": epochs, "log_file": str(log_path),
     })
     return {"status": "training", "persona": name, "architecture": "sdxl"}
 
 
-def list_personas() -> list[dict]:
-    """Una fila por persona con nombre y el estado de cada arquitectura que
+def list_personas(owner: str) -> list[dict]:
+    """Las personas de ESTE usuario, con el estado de cada arquitectura que
     tenga (por ahora solo sdxl existe de verdad, ver fase 2 para flux)."""
-    if not PERSONAS_DIR.exists():
+    base = PERSONAS_DIR / _owner_folder(owner)
+    if not base.exists():
         return []
     result = []
-    for entry in sorted(PERSONAS_DIR.iterdir()):
+    for entry in sorted(base.iterdir()):
         if not entry.is_dir():
             continue
         result.append({
             "name": entry.name,
-            "sdxl": get_training_status(entry.name, "sdxl"),
+            "sdxl": get_training_status(owner, entry.name, "sdxl"),
         })
     return result
+
+
+def delete_persona(owner: str, name: str) -> bool:
+    """Borra el LoRA (la "cara" aprendida) y lo que quede de sus fotos. No se
+    puede borrar mientras entrena (el proceso tiene los archivos abiertos)."""
+    if get_training_status(owner, name).get("status") == "training":
+        raise TrainingAlreadyRunningError("Esta persona sigue entrenando: espera a que termine para borrarla.")
+    target = persona_dir(owner, name)
+    existed = target.exists()
+    shutil.rmtree(target, ignore_errors=True)
+    _drop_dataset(owner, name)
+    return existed
+
+
+def delete_all_for_user(owner: str) -> None:
+    shutil.rmtree(PERSONAS_DIR / _owner_folder(owner), ignore_errors=True)
+    shutil.rmtree(DATASETS_DIR / _owner_folder(owner), ignore_errors=True)

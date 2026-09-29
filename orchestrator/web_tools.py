@@ -8,8 +8,10 @@ robot?" e Indeed bloqueaba con Cloudflare; con ventana normal, ninguno.
 Google bloquea siempre a los navegadores automatizados; Bing no."""
 
 import base64
+import ipaddress
 import json
 import re
+import socket
 from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
@@ -17,6 +19,41 @@ import crypto_utils
 import profile_store
 
 BING = "https://www.bing.com/search?setlang=es&cc=es&q={q}"
+
+# El navegador de las apps abre webs cualquiera y ejecuta su JavaScript: una
+# pagina maliciosa podia atacar desde ahi a los servicios de este ordenador
+# (ComfyUI no tiene contraseña) o a la red de casa (auditoria 2026-09-29).
+_host_cache: dict[str, bool] = {}
+
+
+def _ip_is_private(ip) -> bool:
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified \
+        or ip.is_multicast
+
+
+def is_private_host(host: str | None) -> bool:
+    """localhost, 127.x, 192.168.x, 10.x, fe80::... o un nombre que apunte ahi."""
+    host = (host or "").strip("[]").lower().rstrip(".")
+    if not host or host == "localhost" or host.endswith((".localhost", ".local", ".lan", ".internal")):
+        return True
+    try:
+        return _ip_is_private(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    if host not in _host_cache:
+        try:
+            _host_cache[host] = any(_ip_is_private(ipaddress.ip_address(info[4][0].split("%")[0]))
+                                    for info in socket.getaddrinfo(host, None))
+        except (OSError, ValueError):
+            _host_cache[host] = False  # no resuelve: el navegador tampoco podra
+    return _host_cache[host]
+
+
+def _guard(route) -> None:
+    if is_private_host(urlparse(route.request.url).hostname):
+        route.abort("blockedbyclient")
+    else:
+        route.continue_()
 
 ChatFn = Callable[[str], str]  # prompt -> respuesta del modelo
 
@@ -150,6 +187,7 @@ class Browser:
         except Exception:
             self._browser = self._pw.chromium.launch(headless=False, args=args)  # sin Edge: el de Playwright
         self._ctx = self._browser.new_context(locale="es-ES", viewport={"width": 1280, "height": 900})
+        self._ctx.route("**/*", _guard)
         return self
 
     def __exit__(self, *exc):

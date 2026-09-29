@@ -17,7 +17,11 @@ ORPHANED_PLACEHOLDER = "[contenido no disponible - se cifro con una clave anteri
 
 
 def _connect():
-    return sqlite3.connect(DB_PATH)
+    # el chat y el indexado en segundo plano escriben a la vez: sin espera
+    # (5 s por defecto) y sin WAL salia "database is locked"
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 
 def _ensure_column(conn, table: str, column: str, coltype: str) -> None:
@@ -187,6 +191,23 @@ def session_owner(session_id: str) -> str | None:
         row = conn.execute("SELECT user_id FROM messages WHERE session_id = ? AND user_id IS NOT NULL LIMIT 1",
                            (session_id,)).fetchone()
     return row[0] if row else None
+
+
+def session_exists(session_id: str) -> bool:
+    with closing(_connect()) as conn:
+        return conn.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone() is not None
+
+
+def purge_guest_messages(older_than_hours: float = 24) -> int:
+    """Modo invitado = sin historial: sus mensajes se cifran con una clave que
+    muere con la sesion (nadie puede leerlos despues), asi que se borran. Solo
+    los de invitado (key_generation 0), nunca los antiguos sin cifrar."""
+    with closing(_connect()) as conn:
+        cur = conn.execute(
+            "DELETE FROM messages WHERE user_id IS NULL AND key_generation = 0 "
+            "AND created_at < datetime('now', ?)", (f"-{float(older_than_hours)} hours",))
+        conn.commit()
+        return cur.rowcount
 
 
 def message_session(message_id: int) -> str | None:

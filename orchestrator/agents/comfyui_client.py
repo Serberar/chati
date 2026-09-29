@@ -1,9 +1,14 @@
 import json
+import logging
+import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Callable
 
 import requests
+
+import paths
 
 
 class GenerationCancelled(Exception):
@@ -14,6 +19,13 @@ class GenerationCancelled(Exception):
 # Ollama antes de cada generacion. Aqui porque TODA generacion de imagen y
 # video pasa por submit_and_wait - un solo punto en vez de uno por endpoint.
 before_submit: Callable[[], None] | None = None
+
+def _comfy_dir() -> Path:
+    return paths.DATA_ROOT / "ComfyUI"
+
+
+# carpeta de ComfyUI (su input/ y output/); los tests la cambian
+COMFY_DIR: Callable[[], Path] | Path = _comfy_dir
 
 # memoria de GPU que retiene ComfyUI sin ningun modelo cargado (medido: ~60MB)
 FREED_VRAM_BYTES = 512 * 1024 * 1024
@@ -63,6 +75,7 @@ def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: 
         if prompt_id in hist:
             status = hist[prompt_id].get("status", {})
             if status.get("status_str") == "error":
+                forget(base_url, prompt_id, workflow)
                 messages = status.get("messages", [])
                 was_interrupted = any(m[0] == "execution_interrupted" for m in messages)
                 if was_interrupted:
@@ -85,14 +98,63 @@ def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: 
                 timeout=60,
             )
             file_resp.raise_for_status()
+            forget(base_url, prompt_id, workflow, info)
             return {"content": file_resp.content, "prompt_id": prompt_id}
 
         if time.time() > grace_deadline and not _is_still_queued(base_url, prompt_id):
+            forget(base_url, prompt_id, workflow)
             raise GenerationCancelled(f"Generacion cancelada (prompt_id={prompt_id})")
 
         time.sleep(1)
 
     raise TimeoutError(f"Generacion no termino en {timeout}s (prompt_id={prompt_id})")
+
+
+def _try_unlink(path: Path) -> bool:
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _unlink_later(paths: list[Path], attempts: int = 20, delay: float = 1.0) -> None:
+    for _ in range(attempts):
+        time.sleep(delay)
+        paths = [p for p in paths if not _try_unlink(p)]
+        if not paths:
+            return
+    for p in paths:
+        logging.getLogger("chati").warning("No se pudo borrar la copia de ComfyUI %s", p.name)
+
+
+def forget(base_url: str, prompt_id: str, workflow: dict, output_info: dict | None = None) -> None:
+    """ComfyUI guarda su propia copia de todo: la foto subida (input/), el
+    resultado (output/) y el texto pedido (/history). Chati ya se ha quedado
+    el resultado cifrado, asi que aqui se borra el rastro en claro (auditoria
+    2026-09-29: habia 87 fotos de cara y 181 imagenes sin cifrar en ComfyUI).
+    Nunca falla: si algo no se puede borrar, no rompe la generacion."""
+    root = COMFY_DIR() if callable(COMFY_DIR) else COMFY_DIR
+    targets = []
+    if output_info and output_info.get("filename"):
+        kind = output_info.get("type", "output")
+        if kind in ("output", "temp"):
+            targets.append(root / kind / output_info.get("subfolder", "") / output_info["filename"])
+    for node in (workflow or {}).values():
+        if not isinstance(node, dict) or not str(node.get("class_type", "")).startswith("LoadImage"):
+            continue
+        name = (node.get("inputs") or {}).get("image")
+        if isinstance(name, str) and name and "/" not in name and "\\" not in name and ".." not in name:
+            targets.append(root / "input" / name)
+    pending = [p for p in targets if not _try_unlink(p)]
+    if pending:
+        # ComfyUI tarda un momento en soltar el archivo que acaba de servir
+        # (WinError 32, medido 2026-09-29): se reintenta sin hacer esperar
+        threading.Thread(target=_unlink_later, args=(pending,), daemon=True).start()
+    try:
+        requests.post(f"{base_url}/history", json={"delete": [prompt_id]}, timeout=5)
+    except requests.RequestException:
+        pass
 
 
 def free_memory(base_url: str) -> None:

@@ -35,6 +35,8 @@ def _mock_responses(history_by_call, queue_response=None):
             return FakeResp(history_by_call[idx])
         if url.endswith("/queue"):
             return FakeResp(queue_response or {"queue_running": [], "queue_pending": []})
+        if method == "POST" and url.endswith("/history"):  # forget(): borrar el rastro
+            return FakeResp({})
         raise AssertionError(f"URL no mockeada: {url}")
 
     return fake_request
@@ -154,3 +156,28 @@ def test_user_queue_ignores_model_warmups(monkeypatch):
 
     monkeypatch.setattr(comfyui_client.requests, "get", lambda *a, **k: R())
     assert comfyui_client.user_queue("http://x") == (0, 2)
+
+
+def test_forget_deletes_comfyui_copies_but_nothing_outside(tmp_path, monkeypatch):
+    """Auditoria 2026-09-29: ComfyUI guardaba en claro cada foto subida y cada
+    resultado. forget() los borra, y no toca nada fuera de su carpeta."""
+    from agents import comfyui_client
+
+    (tmp_path / "input").mkdir()
+    (tmp_path / "output" / "sub").mkdir(parents=True)
+    face = tmp_path / "input" / "cara.png"
+    face.write_bytes(b"x")
+    result = tmp_path / "output" / "sub" / "res_0001.png"
+    result.write_bytes(b"y")
+    outside = tmp_path / "secreto.txt"
+    outside.write_bytes(b"z")
+    monkeypatch.setattr(comfyui_client, "COMFY_DIR", tmp_path)
+    workflow = {"1": {"class_type": "LoadImage", "inputs": {"image": "cara.png"}},
+                "2": {"class_type": "LoadImage", "inputs": {"image": "../secreto.txt"}},
+                "3": {"class_type": "KSampler", "inputs": {"image": "cara.png"}}}
+    with patch("agents.comfyui_client.requests.post") as mock_post:
+        comfyui_client.forget("http://fake", "pid", workflow,
+                              {"filename": "res_0001.png", "subfolder": "sub", "type": "output"})
+    assert not face.exists() and not result.exists()
+    assert outside.exists()
+    mock_post.assert_called_once_with("http://fake/history", json={"delete": ["pid"]}, timeout=5)

@@ -59,33 +59,33 @@ def test_pick_sdxl_base_checkpoint_raises_when_nothing_installed(tmp_path, monke
 
 def test_get_training_status_sin_empezar_when_nothing_exists(tmp_path, monkeypatch):
     _isolate_dirs(tmp_path, monkeypatch)
-    assert persona_trainer.get_training_status("nueva-persona") == {"status": "sin_empezar"}
+    assert persona_trainer.get_training_status("u1", "nueva-persona") == {"status": "sin_empezar"}
 
 
 def test_get_training_status_listo_when_the_file_exists(tmp_path, monkeypatch):
     _isolate_dirs(tmp_path, monkeypatch)
-    out_dir = persona_trainer.persona_dir("sergio") / "sdxl"
+    out_dir = persona_trainer.persona_dir("u1", "sergio") / "sdxl"
     out_dir.mkdir(parents=True)
     (out_dir / "sergio_sdxl.safetensors").write_bytes(b"x")
 
-    status = persona_trainer.get_training_status("sergio")
+    status = persona_trainer.get_training_status("u1", "sergio")
 
     assert status["status"] == "listo"
 
 
 def test_get_training_status_error_when_process_died_without_output(tmp_path, monkeypatch):
     _isolate_dirs(tmp_path, monkeypatch)
-    persona_trainer._write_status("sergio", "sdxl", {"status": "training", "pid": 999999999})
+    persona_trainer._write_status("u1", "sergio", "sdxl", {"status": "training", "pid": 999999999})
     with patch.object(persona_trainer, "_pid_alive", return_value=False):
-        status = persona_trainer.get_training_status("sergio")
+        status = persona_trainer.get_training_status("u1", "sergio")
     assert status["status"] == "error"
 
 
 def test_get_training_status_still_training_when_pid_alive(tmp_path, monkeypatch):
     _isolate_dirs(tmp_path, monkeypatch)
-    persona_trainer._write_status("sergio", "sdxl", {"status": "training", "pid": 123})
+    persona_trainer._write_status("u1", "sergio", "sdxl", {"status": "training", "pid": 123})
     with patch.object(persona_trainer, "_pid_alive", return_value=True):
-        status = persona_trainer.get_training_status("sergio")
+        status = persona_trainer.get_training_status("u1", "sergio")
     assert status["status"] == "training"
 
 
@@ -94,11 +94,11 @@ def test_start_training_refuses_when_already_training(tmp_path, monkeypatch):
     _make_sdxl_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(persona_trainer, "SD_SCRIPTS_PYTHON", tmp_path)  # solo necesita .exists()
     monkeypatch.setattr(persona_trainer, "ACCELERATE_EXE", tmp_path)
-    persona_trainer._write_status("sergio", "sdxl", {"status": "training", "pid": 123})
+    persona_trainer._write_status("u1", "sergio", "sdxl", {"status": "training", "pid": 123})
 
     with patch.object(persona_trainer, "_pid_alive", return_value=True):
         with pytest.raises(persona_trainer.TrainingAlreadyRunningError):
-            persona_trainer.start_training("sergio", [])
+            persona_trainer.start_training("u1", "sergio", [])
 
 
 def test_start_training_launches_the_subprocess_and_writes_status(tmp_path, monkeypatch):
@@ -116,7 +116,7 @@ def test_start_training_launches_the_subprocess_and_writes_status(tmp_path, monk
     fake_proc = MagicMock()
     fake_proc.pid = 4242
     with patch.object(persona_trainer.subprocess, "Popen", return_value=fake_proc) as mock_popen:
-        result = persona_trainer.start_training("Sergio", [photo, photo, photo], epochs=3)
+        result = persona_trainer.start_training("u1", "Sergio", [photo, photo, photo], epochs=3)
 
     assert result == {"status": "training", "persona": "Sergio", "architecture": "sdxl"}
     mock_popen.assert_called_once()
@@ -124,10 +124,10 @@ def test_start_training_launches_the_subprocess_and_writes_status(tmp_path, monk
     assert "--max_train_epochs=3" in cmd
     assert "--network_train_unet_only" in cmd
 
-    dataset_images = persona_trainer.DATASETS_DIR / "Sergio" / "images"
+    dataset_images = persona_trainer.DATASETS_DIR / "u1" / "Sergio" / "images"
     assert len(list(dataset_images.iterdir())) == 3
 
-    status = persona_trainer._read_status("Sergio", "sdxl")
+    status = persona_trainer._read_status("u1", "Sergio", "sdxl")
     assert status["status"] == "training"
     assert status["pid"] == 4242
     assert status["photos"] == 3
@@ -135,11 +135,11 @@ def test_start_training_launches_the_subprocess_and_writes_status(tmp_path, monk
 
 def test_list_personas_includes_status_per_persona(tmp_path, monkeypatch):
     _isolate_dirs(tmp_path, monkeypatch)
-    out_dir = persona_trainer.persona_dir("ana") / "sdxl"
+    out_dir = persona_trainer.persona_dir("u1", "ana") / "sdxl"
     out_dir.mkdir(parents=True)
     (out_dir / "ana_sdxl.safetensors").write_bytes(b"x")
 
-    personas = persona_trainer.list_personas()
+    personas = persona_trainer.list_personas("u1")
 
     assert len(personas) == 1
     assert personas[0]["name"] == "ana"
@@ -162,10 +162,41 @@ def test_training_progress_before_the_first_step_is_preparing(tmp_path):
 
 def test_lora_for_gives_the_comfyui_name_and_trigger_only_when_ready(tmp_path, monkeypatch):
     monkeypatch.setattr(persona_trainer, "PERSONAS_DIR", tmp_path / "loras" / "personas")
-    assert persona_trainer.lora_for("Ana Lopez") is None
-    out = tmp_path / "loras" / "personas" / "Ana-Lopez" / "sdxl"
+    assert persona_trainer.lora_for("u1", "Ana Lopez") is None
+    out = tmp_path / "loras" / "personas" / "u1" / "Ana-Lopez" / "sdxl"
     out.mkdir(parents=True)
     (out / "Ana-Lopez_sdxl.safetensors").write_bytes(b"x")
-    name, trigger = persona_trainer.lora_for("Ana Lopez")
-    assert name.replace("\\", "/") == "personas/Ana-Lopez/sdxl/Ana-Lopez_sdxl.safetensors"
+    name, trigger = persona_trainer.lora_for("u1", "Ana Lopez")
+    assert name.replace("\\", "/") == "personas/u1/Ana-Lopez/sdxl/Ana-Lopez_sdxl.safetensors"
     assert trigger == "ohwx-Ana-Lopez person"
+
+
+def test_personas_are_private_to_their_owner(tmp_path, monkeypatch):
+    """Auditoria 2026-09-29: las personas eran comunes a todos los usuarios."""
+    _isolate_dirs(tmp_path, monkeypatch)
+    out_dir = persona_trainer.persona_dir("u1", "ana") / "sdxl"
+    out_dir.mkdir(parents=True)
+    (out_dir / "ana_sdxl.safetensors").write_bytes(b"x")
+
+    assert [p["name"] for p in persona_trainer.list_personas("u1")] == ["ana"]
+    assert persona_trainer.list_personas("u2") == []
+    assert persona_trainer.lora_for("u2", "ana") is None
+    assert persona_trainer.lora_for("u1", "ana") is not None
+    with pytest.raises(ValueError):
+        persona_trainer.persona_dir("../..", "ana")
+
+
+def test_training_photos_are_deleted_when_it_finishes_and_persona_can_be_deleted(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    photos = persona_trainer._dataset_dir("u1", "ana") / "images"
+    photos.mkdir(parents=True)
+    (photos / "000.jpg").write_bytes(b"cara")
+    out_dir = persona_trainer.persona_dir("u1", "ana") / "sdxl"
+    out_dir.mkdir(parents=True)
+    (out_dir / "ana_sdxl.safetensors").write_bytes(b"x")
+
+    assert persona_trainer.get_training_status("u1", "ana")["status"] == "listo"
+    assert not photos.exists()
+
+    assert persona_trainer.delete_persona("u1", "ana") is True
+    assert not persona_trainer.persona_dir("u1", "ana").exists()

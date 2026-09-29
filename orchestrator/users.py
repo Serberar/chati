@@ -14,6 +14,7 @@ tomadas con Sergio el 2026-09-23, no reabrir sin que el lo pida)."""
 import base64
 import json
 import os
+import re
 import secrets
 import sqlite3
 import uuid
@@ -34,6 +35,10 @@ REGISTRATION_KEY_FILE = DATA_DIR / "registration_key.txt"
 SECURITY_LOG_FILE = DATA_DIR / "security_events.jsonl"
 
 _password_hasher = PasswordHasher()
+_DUMMY_HASH = _password_hasher.hash(secrets.token_urlsafe(16))
+# letras (tambien con tilde), numeros, punto, guion y guion bajo: el nombre se
+# pinta en la interfaz y en rutas de carpetas
+USERNAME_RE = re.compile(r"[\w.\-]{3,32}")
 
 # Costes de Argon2id para derivar la clave de cifrado (KEK) a partir de la
 # contraseña - deliberadamente caros (segundos, no milisegundos) porque esto
@@ -50,7 +55,10 @@ class UserError(Exception):
 
 
 def _connect():
-    return sqlite3.connect(DB_PATH)
+    # espera hasta 30 s si otro hilo esta escribiendo (por defecto 5 s: "database is locked")
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 
 def init_db():
@@ -73,6 +81,11 @@ def init_db():
         columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
         if "display_name" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+        # "puede usar el ordenador": agente, leer archivos, ejecutar codigo
+        # (auditoria 2026-09-29: cualquier usuario leia el Escritorio del dueño
+        # del PC). El admin siempre; el resto, solo si el admin lo activa.
+        if "pc_access" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN pc_access INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
 
@@ -99,7 +112,7 @@ def _row_to_dict(row) -> dict:
         "id": row[0], "username": row[1], "role": row[2], "password_hash": row[3],
         "salt": row[4], "wrapped_dek": row[5], "key_generation": row[6],
         "security_question": row[7], "security_answer_hash": row[8], "created_at": row[9],
-        "display_name": row[10],
+        "display_name": row[10], "pc_access": bool(row[11]),
     }
 
 
@@ -107,7 +120,7 @@ def get_user(username: str) -> dict | None:
     with closing(_connect()) as conn:
         row = conn.execute(
             "SELECT id, username, role, password_hash, salt, wrapped_dek, key_generation, "
-            "security_question, security_answer_hash, created_at, display_name FROM users WHERE username = ?",
+            "security_question, security_answer_hash, created_at, display_name, pc_access FROM users WHERE username = ?",
             (username,),
         ).fetchone()
     return _row_to_dict(row) if row else None
@@ -116,9 +129,25 @@ def get_user(username: str) -> dict | None:
 def list_users() -> list[dict]:
     with closing(_connect()) as conn:
         rows = conn.execute(
-            "SELECT id, username, role, created_at FROM users ORDER BY created_at"
+            "SELECT id, username, role, created_at, pc_access FROM users ORDER BY created_at"
         ).fetchall()
-    return [{"id": r[0], "username": r[1], "role": r[2], "created_at": r[3]} for r in rows]
+    return [{"id": r[0], "username": r[1], "role": r[2], "created_at": r[3],
+             "pc_access": r[2] == "admin" or bool(r[4])} for r in rows]
+
+
+def can_use_pc(username: str | None) -> bool:
+    """Agente, lectura de archivos del equipo y ejecutar codigo: tocan el
+    ordenador de verdad con los permisos de quien arranco Chati."""
+    user = get_user(username) if username else None
+    return bool(user) and (user["role"] == "admin" or user["pc_access"])
+
+
+def set_pc_access(username: str, allowed: bool) -> None:
+    with closing(_connect()) as conn:
+        cur = conn.execute("UPDATE users SET pc_access = ? WHERE username = ?", (1 if allowed else 0, username))
+        conn.commit()
+    if not cur.rowcount:
+        raise UserError(f"No existe el usuario '{username}'.")
 
 
 def any_users_exist() -> bool:
@@ -133,6 +162,8 @@ def create_user(username: str, password: str, role: str,
     username = username.strip()
     if not username:
         raise UserError("El nombre de usuario no puede estar vacio.")
+    if not USERNAME_RE.fullmatch(username):
+        raise UserError("El nombre de usuario solo puede tener letras, numeros, punto, guion y guion bajo (3-32).")
     if len(password) < 8:
         raise UserError("La contraseña debe tener al menos 8 caracteres.")
     if role not in ("admin", "user"):
@@ -167,6 +198,11 @@ def login(username: str, password: str) -> dict:
     Lanza UserError si las credenciales no son validas."""
     user = get_user(username)
     if not user:
+        # mismo tiempo que con un usuario real: si no, se sabria que nombres existen
+        try:
+            _password_hasher.verify(_DUMMY_HASH, password)
+        except VerifyMismatchError:
+            pass
         raise UserError("Usuario o contraseña incorrectos.")
     try:
         _password_hasher.verify(user["password_hash"], password)

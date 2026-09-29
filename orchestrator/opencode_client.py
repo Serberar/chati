@@ -11,6 +11,7 @@ y la interfaz consulta el estado cada pocos segundos (get_task_view)."""
 
 import os
 import re
+import secrets
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,7 +19,29 @@ from typing import Callable
 
 import requests
 
+import paths
+
 TIMEOUT = 15
+
+# OpenCode ejecuta comandos: sin contraseña, cualquier web abierta en el
+# navegador podia usarlo apuntando su dominio a 127.0.0.1 (DNS rebinding,
+# auditoria 2026-09-29). El vigilante arranca OpenCode con esta misma
+# contraseña (OPENCODE_SERVER_PASSWORD, usuario "opencode").
+PASSWORD_FILE = paths.DATA_DIR / "opencode_password.txt"
+
+
+def server_password() -> str:
+    if PASSWORD_FILE.exists():
+        existing = PASSWORD_FILE.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+    password = secrets.token_urlsafe(24)
+    PASSWORD_FILE.write_text(password, encoding="utf-8")
+    return password
+
+
+AUTH = ("opencode", server_password())
 
 # Sin esto el modelo no sabe en que sistema esta y se para a preguntar cosas
 # que podria averiguar solo (medido: pregunto "¿cual es la ruta del
@@ -69,7 +92,7 @@ def _dir() -> dict:
 def session_dir(base_url: str, session_id: str) -> str | None:
     if session_id not in _session_dirs:
         try:
-            resp = requests.get(f"{base_url}/session/{session_id}", timeout=TIMEOUT)
+            resp = requests.get(f"{base_url}/session/{session_id}", auth=AUTH, timeout=TIMEOUT)
             resp.raise_for_status()
             found = resp.json().get("directory")
         except (requests.RequestException, ValueError, AttributeError):
@@ -117,7 +140,7 @@ _HIDDEN_TOOLS = {"question", "todowrite", "todoread"}
 def create_session(base_url: str, directory: str | None = None) -> str:
     if not directory:
         ensure_workdir()
-    resp = requests.post(f"{base_url}/session", json={}, **_params(directory), timeout=TIMEOUT)
+    resp = requests.post(f"{base_url}/session", json={}, **_params(directory), auth=AUTH, timeout=TIMEOUT)
     resp.raise_for_status()
     session_id = resp.json()["id"]
     _session_dirs[session_id] = directory or (str(WORKDIR) if WORKDIR else "")
@@ -153,7 +176,7 @@ def send_prompt_async(base_url: str, session_id: str, text: str, agent: str | No
     if model:
         body["model"] = {"providerID": "ollama", "modelID": model}
     resp = requests.post(f"{base_url}/session/{session_id}/prompt_async", json=body,
-                         **_params(directory), timeout=TIMEOUT)
+                         **_params(directory), auth=AUTH, timeout=TIMEOUT)
     resp.raise_for_status()
 
 
@@ -203,7 +226,7 @@ def _get(base_url: str, path: str, session_id: str | None = None, directory: str
     """GET a OpenCode con la carpeta de la tarea `session_id` (o `directory`,
     o la de trabajo del agente)."""
     params = _sparams(base_url, session_id) if session_id else _params(directory)
-    resp = requests.get(f"{base_url}{path}", **params, timeout=TIMEOUT)
+    resp = requests.get(f"{base_url}{path}", **params, auth=AUTH, timeout=TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
@@ -369,7 +392,7 @@ def waiting_sessions(base_url: str) -> dict[str, str]:
     try:
         for directory in known_dirs():
             for path, reason in (("/permission", "permission"), ("/question", "question")):
-                for item in requests.get(f"{base_url}{path}", **_params(directory), timeout=3).json():
+                for item in requests.get(f"{base_url}{path}", **_params(directory), auth=AUTH, timeout=3).json():
                     waiting[item["sessionID"]] = reason
     except (requests.RequestException, ValueError, KeyError, TypeError):
         return {}
@@ -398,10 +421,10 @@ def busy_session_ids(base_url: str) -> list[str]:
         busy = []
         for directory in known_dirs():
             kw = _params(directory)
-            statuses = requests.get(f"{base_url}/session/status", **kw, timeout=3).json()
+            statuses = requests.get(f"{base_url}/session/status", **kw, auth=AUTH, timeout=3).json()
             waiting = {item["sessionID"]
                        for path in ("/question", "/permission")
-                       for item in requests.get(f"{base_url}{path}", **kw, timeout=3).json()}
+                       for item in requests.get(f"{base_url}{path}", **kw, auth=AUTH, timeout=3).json()}
             busy += [sid for sid, st in statuses.items() if st.get("type") != "idle" and sid not in waiting]
         return busy
     except (requests.RequestException, ValueError, AttributeError, KeyError, TypeError):
@@ -413,7 +436,7 @@ def _post_to_owner(base_url: str, path: str, body: dict) -> None:
     los tenga (la de trabajo o la de un proyecto)."""
     resp = None
     for directory in known_dirs():
-        resp = requests.post(f"{base_url}{path}", json=body, **_params(directory), timeout=TIMEOUT)
+        resp = requests.post(f"{base_url}{path}", json=body, **_params(directory), auth=AUTH, timeout=TIMEOUT)
         if resp.status_code != 404:
             break
     if resp is not None:
@@ -472,17 +495,17 @@ def revert_task(base_url: str, session_id: str) -> None:
     if first_user is None:
         return
     resp = requests.post(f"{base_url}/session/{session_id}/revert",
-                         json={"messageID": first_user["info"]["id"]}, **_sparams(base_url, session_id), timeout=60)
+                         json={"messageID": first_user["info"]["id"]}, **_sparams(base_url, session_id), auth=AUTH, timeout=60)
     resp.raise_for_status()
 
 
 def unrevert_task(base_url: str, session_id: str) -> None:
     resp = requests.post(f"{base_url}/session/{session_id}/unrevert", json={},
-                         **_sparams(base_url, session_id), timeout=60)
+                         **_sparams(base_url, session_id), auth=AUTH, timeout=60)
     resp.raise_for_status()
 
 
 def abort(base_url: str, session_id: str) -> None:
     resp = requests.post(f"{base_url}/session/{session_id}/abort", json={},
-                         **_sparams(base_url, session_id), timeout=TIMEOUT)
+                         **_sparams(base_url, session_id), auth=AUTH, timeout=TIMEOUT)
     resp.raise_for_status()

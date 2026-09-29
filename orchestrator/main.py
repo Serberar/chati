@@ -1,5 +1,7 @@
+import contextlib
 import json
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -27,9 +29,13 @@ import shopping
 import web_tools
 import deep_search
 import llm_proxy
+import logging_setup
+import media_store
 import model_registry
 import paths
 import persona_trainer
+import rate_limit
+import security
 import users
 
 from agents import ollama_client as ollama_client_module
@@ -55,7 +61,10 @@ import session_docs
 import tools
 from rag import EMBED_MODEL, KnowledgeBase
 
-with open("config.yaml", "r", encoding="utf-8") as f:
+log = logging_setup.setup()
+
+# junto a este archivo, no en la carpeta desde la que se arranque
+with open(Path(__file__).parent / "config.yaml", "r", encoding="utf-8") as f:
     CONFIG = yaml.safe_load(f)
 
 # se genera aqui (no de forma perezosa en el propio endpoint) para que el
@@ -95,7 +104,7 @@ AGENTS = {"text": text_agent, "code": code_agent}
 
 # --- Politica de "un solo modelo de texto pesado en RAM a la vez" (ver
 # ROADMAP.md, punto 14, pedido explicito por Sergio) ---
-# CONFIG["router"]["model"] (qwen2.5:7b) vive en VRAM, no en RAM del
+# CONFIG["router"]["model"] (qwen3:8b desde 2026-09-29) vive en VRAM, no en RAM del
 # sistema, y se usa en cada mensaje sin importar el perfil (router +
 # verificador + perfil "rapido" lo comparten) - se deja siempre cargado, no
 # es el problema. Los demas modelos de texto/codigo/vision (perfiles
@@ -139,13 +148,18 @@ def _index_in_background(session_id: str, message: str, answer: str, user_id: st
     """Indexar el intercambio en la memoria larga necesita embeddings (~2s
     medido) - antes se hacia ANTES de mandar la respuesta y el usuario lo
     esperaba en cada mensaje. No hace falta: solo se usa en mensajes futuros."""
+    if not user_id:
+        # invitado: sin memoria larga (se guardaba sin dueño y quedaba al
+        # alcance de las busquedas "de todos", auditoria 2026-09-29)
+        return
+
     def work():
         try:
             knowledge_base.add_conversation(session_id, message, answer, user_id=user_id,
                                             dek=dek, key_generation=key_generation)
         except Exception as exc:
             # la respuesta ya se entrego; perder este recuerdo no debe romper nada
-            print(f"No se pudo indexar la conversacion en la memoria larga: {exc}", file=sys.stderr)
+            log.warning("No se pudo indexar la conversacion en la memoria larga: %s", exc)
     threading.Thread(target=work, daemon=True).start()
 
 
@@ -219,7 +233,28 @@ opencode_client.before_task = _free_memory_for_agent
 OUTPUT_DIR = paths.OUTPUT_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="IA personal - orquestador")
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    removed = media_store.cleanup_tmp()
+    if removed:
+        log.info("Temporales huerfanos borrados: %d", removed)
+    purged = memory.purge_guest_messages(older_than_hours=24)
+    if purged:
+        log.info("Mensajes de invitado antiguos borrados: %d", purged)
+    log.info("Orquestador arrancado")
+    yield
+
+
+app = FastAPI(title="IA personal - orquestador", lifespan=_lifespan)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: Request, exc: Exception):
+    """Un fallo no previsto: queda en el log con su traza (sin datos del
+    usuario) y el usuario ve un mensaje claro en vez de un 500 vacio."""
+    log.exception("Error no controlado en %s %s", request.method, request.url.path)
+    return JSONResponse({"detail": "Error interno. Esta anotado en el registro de Chati."}, status_code=500)
+
 
 
 class SessionAuthMiddleware(BaseHTTPMiddleware):
@@ -230,15 +265,59 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS" or auth.is_public_path(request.url.path):
             return await call_next(request)
-        token = request.headers.get("X-Session-Token") or request.query_params.get("session")
+        token = _session_token(request)
         session = auth_sessions.get_session(token) if token else None
         if session is None:
             return JSONResponse({"detail": "No autorizado. Inicia sesion."}, status_code=401)
+        path = request.url.path
+        if session["role"] == "guest" and not _guest_may_use(path):
+            return _guest_blocked()
+        if path.startswith(PC_PATH_PREFIXES) and not _can_use_pc(session):
+            return _pc_blocked()
         request.state.session = session
-        return await call_next(request)
+        _mark_activity(True, request.method)
+        try:
+            return await call_next(request)
+        finally:
+            _mark_activity(False, request.method)
+
+
+# Invitado: lista cerrada de lo que SI puede usar (chat, imagen, video, voz).
+# Antes se bloqueaba endpoint a endpoint y uno nuevo quedaba abierto si se
+# olvidaba la comprobacion (auditoria 2026-09-29).
+GUEST_PATHS = {
+    "/auth/me", "/auth/logout", "/chat", "/chat/stream", "/cancel", "/voice_chat", "/speak",
+    "/image_with_face", "/video_with_face", "/image_with_controlnet", "/image/upscale", "/image/inpaint",
+    "/models/status", "/models/profiles", "/models/roles", "/models/prepare", "/models/image",
+    "/models/video", "/work/pending",
+}
+GUEST_PATH_PREFIXES = ("/plan/", "/media/")
+# Tocan el ordenador de verdad (agente, proyectos de codigo)
+PC_PATH_PREFIXES = ("/agent/", "/code/", "/work/agent/")
+
+
+def _guest_may_use(path: str) -> bool:
+    return path in GUEST_PATHS or path.startswith(GUEST_PATH_PREFIXES)
+
+
+def _can_use_pc(session: dict) -> bool:
+    """Agente, leer archivos del equipo y ejecutar codigo: con los permisos de
+    Windows de quien arranco Chati. El admin siempre, invitados nunca, el
+    resto si el admin se lo activa (auditoria 2026-09-29: cualquier usuario o
+    invitado leia el Escritorio del dueño y podia ejecutar codigo)."""
+    if session.get("role") == "admin":
+        return True
+    return session.get("role") != "guest" and users.can_use_pc(session.get("username"))
+
+
+def _pc_blocked() -> JSONResponse:
+    return JSONResponse({"detail": "Tu cuenta no tiene permiso para usar el ordenador (agente, archivos, "
+                                   "ejecutar codigo). Pideselo al administrador."}, status_code=403)
 
 
 app.add_middleware(SessionAuthMiddleware)
+# la ultima en añadirse es la primera en ejecutarse: Host/Origin antes que nada
+app.add_middleware(security.LocalOnlyMiddleware)
 
 
 # --- Sistema de usuarios (ver ROADMAP.md, punto 0) ---
@@ -267,8 +346,27 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
+SESSION_COOKIE = "chati_session"
+
+
 def _session_token(request: Request) -> str | None:
-    return request.headers.get("X-Session-Token") or request.query_params.get("session")
+    """La pagina usa una cookie HttpOnly (el JavaScript no la ve: un script
+    colado no puede llevarsela). Antes iba en localStorage y en la URL de cada
+    imagen (?session=...), que acababa en el historial del navegador
+    (auditoria 2026-09-29). La cabecera queda para programas y tests."""
+    return request.headers.get("X-Session-Token") or request.cookies.get(SESSION_COOKIE)
+
+
+def _with_session_cookie(body: dict, token: str) -> JSONResponse:
+    resp = JSONResponse(body)
+    resp.set_cookie(SESSION_COOKIE, token, max_age=auth_sessions.SESSION_TTL_SECONDS,
+                    httponly=True, samesite="strict", path="/")
+    return resp
+
+
+def _too_many(seconds: int) -> JSONResponse:
+    return JSONResponse({"detail": rate_limit.wait_message(seconds)}, status_code=429,
+                        headers={"Retry-After": str(seconds)})
 
 
 def _current_session(request: Request) -> dict | None:
@@ -284,28 +382,38 @@ def _guest_blocked() -> JSONResponse:
 
 @app.post("/auth/login")
 def auth_login(req: LoginRequest):
+    key = req.username.strip().lower()
+    wait = rate_limit.login.retry_after(key)
+    if wait:
+        return _too_many(wait)
     try:
         session = users.login(req.username, req.password)
     except users.UserError as exc:
+        rate_limit.login.fail(key)
         return JSONResponse({"detail": str(exc)}, status_code=401)
+    rate_limit.login.succeed(key)
     token = auth_sessions.create_session(
         session["id"], session["username"], session["role"], session["dek"], session["key_generation"])
     try:  # documentos subidos antes de que se cifraran los originales
         knowledge_base.encrypt_plain_originals(session["id"], session["dek"])
     except OSError:
         pass
-    return {"token": token, "username": session["username"], "role": session["role"]}
+    return _with_session_cookie({"token": token, "username": session["username"], "role": session["role"]}, token)
 
 
 @app.post("/auth/guest")
 def auth_guest():
     token = auth_sessions.create_guest_session()
-    return {"token": token, "username": None, "role": "guest"}
+    return _with_session_cookie({"token": token, "username": None, "role": "guest"}, token)
 
 
 @app.post("/auth/register")
 def auth_register(req: RegisterRequest):
-    if req.registration_key != users.get_or_create_registration_key():
+    wait = rate_limit.registration.retry_after("registro")
+    if wait:
+        return _too_many(wait)
+    if not secrets.compare_digest(req.registration_key.encode(), users.get_or_create_registration_key().encode()):
+        rate_limit.registration.fail("registro")
         return JSONResponse({"detail": "Clave de registro incorrecta."}, status_code=403)
     # el primer usuario de todo el sistema es admin automaticamente
     role = "admin" if not users.any_users_exist() else "user"
@@ -316,7 +424,7 @@ def auth_register(req: RegisterRequest):
     session = users.login(req.username, req.password)
     token = auth_sessions.create_session(
         session["id"], session["username"], session["role"], session["dek"], session["key_generation"])
-    return {"token": token, "username": req.username, "role": role}
+    return _with_session_cookie({"token": token, "username": req.username, "role": role}, token)
 
 
 @app.post("/auth/logout")
@@ -324,7 +432,9 @@ def auth_logout(request: Request):
     token = _session_token(request)
     if token:
         auth_sessions.destroy_session(token)
-    return {"ok": True}
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
 
 
 @app.get("/auth/me")
@@ -334,7 +444,7 @@ def auth_me(request: Request):
         return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
     user = users.get_user(session["username"]) if session["username"] else None
     return {
-        "username": session["username"], "role": session["role"],
+        "username": session["username"], "role": session["role"], "pc_access": _can_use_pc(session),
         "display_name": user["display_name"] if user else None,
         "security_question": user["security_question"] if user else None,
     }
@@ -388,7 +498,7 @@ def auth_change_password(req: ChangePasswordRequest, request: Request):
     new_token = auth_sessions.create_session(
         new_session["id"], new_session["username"], new_session["role"],
         new_session["dek"], new_session["key_generation"])
-    return {"token": new_token}
+    return _with_session_cookie({"token": new_token}, new_token)
 
 
 @app.get("/auth/security-question/{username}")
@@ -401,10 +511,16 @@ def auth_security_question(username: str):
 
 @app.post("/auth/reset-password")
 def auth_reset_password(req: ResetPasswordRequest):
+    key = req.username.strip().lower()
+    wait = rate_limit.password_reset.retry_after(key)
+    if wait:
+        return _too_many(wait)
     try:
         users.reset_via_security_question(req.username, req.security_answer, req.new_password)
     except users.UserError as exc:
+        rate_limit.password_reset.fail(key)
         return JSONResponse({"detail": str(exc)}, status_code=400)
+    rate_limit.password_reset.succeed(key)
     auth_sessions.destroy_all_sessions_for_user(req.username)
     return {"ok": True}
 
@@ -435,8 +551,25 @@ def auth_delete_user(username: str, request: Request):
         profile_store.delete_all_for_user(target_id)
         knowledge_base.delete_all_for_user(target_id)
         session_docs.delete_all_for_user(target_id)
+        persona_trainer.delete_all_for_user(target_id)
     auth_sessions.destroy_all_sessions_for_user(username)
     return {"ok": deleted}
+
+
+class PcAccessRequest(BaseModel):
+    allowed: bool
+
+
+@app.put("/auth/users/{username}/pc_access")
+def auth_set_pc_access(username: str, req: PcAccessRequest, request: Request):
+    session = _current_session(request)
+    if not session or session["role"] != "admin":
+        return JSONResponse({"detail": "Solo un administrador puede cambiar esto."}, status_code=403)
+    try:
+        users.set_pc_access(username, req.allowed)
+    except users.UserError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=404)
+    return {"ok": True}
 
 
 @app.get("/auth/security-events")
@@ -482,9 +615,21 @@ class ChatResponse(BaseModel):
     agent_choice: dict | None = None
 
 
-def _with_file(resp: ChatResponse, path: Path) -> ChatResponse:
-    resp.file_path = str(path)
-    resp.file_url = f"/outputs/{path.name}"
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # fotos y audios: de sobra, y no se lee 1 GB entero en memoria
+MAX_DOC_BYTES = 100 * 1024 * 1024  # documentos y adjuntos del agente
+
+
+def _read_upload(upload: UploadFile, limit: int = MAX_UPLOAD_BYTES) -> bytes:
+    data = upload.file.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"El archivo es demasiado grande (maximo {limit // (1024 * 1024)} MB).")
+    return data
+
+
+def _with_bytes(resp: ChatResponse, data: bytes, ext: str, session: dict) -> ChatResponse:
+    name = media_store.save(data, ext, session["dek"])
+    resp.file_path = name
+    resp.file_url = media_store.url_for(name)
     return resp
 
 
@@ -494,16 +639,57 @@ def _generation_error_message(action: str, exc: Exception) -> str:
     return f"Fallo {action}: {exc}"
 
 
+# Actividad del usuario, para que la copia de seguridad (que reinicia el
+# orquestador y cierra las sesiones) espere a un momento tranquilo
+# (auditoria 2026-09-29: se hacia a cualquier hora y cortaba lo que hubiera).
+_last_user_action = 0.0
+_in_flight = 0
+_activity_lock = threading.Lock()
+IDLE_AFTER_SECONDS = 15 * 60
+
+
+def _mark_activity(start: bool, method: str) -> None:
+    global _last_user_action, _in_flight
+    with _activity_lock:
+        _in_flight += 1 if start else -1
+        if method not in ("GET", "HEAD", "OPTIONS"):  # los GET son sobre todo consultas de estado
+            _last_user_action = time.time()
+
+
+def _is_busy() -> bool:
+    if _in_flight > 0 or time.time() - _last_user_action < IDLE_AFTER_SECONDS:
+        return True
+    for module in (job_search, shopping, deep_search):
+        if any(run.get("running") for run in list(module._runs.values())):
+            return True
+    try:
+        if opencode_client.busy_session_ids(CONFIG["opencode"]["base_url"]):
+            return True
+        if sum(comfyui_client.user_queue(CONFIG["comfyui"]["base_url"])):
+            return True
+    except Exception:  # un servicio caido no esta ocupado
+        pass
+    return False
+
+
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(busy: bool = False):
+    """Publica (la usa el vigilante cada 30 s: tiene que ser instantanea).
+    Con ?busy=true dice ademas si hay algo en marcha (antes de la copia de
+    seguridad), que consulta a OpenCode y ComfyUI y puede tardar."""
+    return {"status": "ok", "busy": _is_busy()} if busy else {"status": "ok"}
 
 
 # --- Pasarela OpenCode -> Ollama (ver llm_proxy.py): quita los parametros
-# null que el modelo del agente pone en las herramientas. Publica como el
-# propio Ollama: el servidor solo escucha en 127.0.0.1 y no lleva sesion.
+# null que el modelo del agente pone en las herramientas. No lleva sesion de
+# usuario: solo la usa OpenCode, que manda su contraseña como clave ("apiKey":
+# "{env:OPENCODE_SERVER_PASSWORD}" en opencode.json). Antes era publica y
+# cualquier programa o web podia usar los modelos por aqui (auditoria 2026-09-29).
 @app.api_route("/llm/v1/{path:path}", methods=["GET", "POST"])
 async def llm_proxy_route(path: str, request: Request):
+    expected = f"Bearer {opencode_client.AUTH[1]}"
+    if not secrets.compare_digest(request.headers.get("authorization", "").encode(), expected.encode()):
+        return JSONResponse({"detail": "No autorizado."}, status_code=401)
     target = f"{CONFIG['ollama']['base_url']}/v1/{path}"
     body = llm_proxy.disable_thinking(await request.body(), set(CONFIG["opencode"].get("no_think_models", [])))
     headers = {"Content-Type": request.headers.get("content-type", "application/json")}
@@ -625,7 +811,7 @@ def agent_upload_attachments(request: Request, files: list[UploadFile] = File(..
     if request.state.session["role"] == "guest":
         return _guest_blocked()
     try:
-        folder, saved = agent_attachments.save_batch([(f.filename, f.file.read()) for f in files])
+        folder, saved = agent_attachments.save_batch([(f.filename, _read_upload(f, MAX_DOC_BYTES)) for f in files])
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
     if any(Path(i["path"]).suffix.lower() in agent_attachments.IMAGE_SUFFIXES for i in saved):
@@ -752,7 +938,7 @@ def agent_task_live(request: Request, session_id: str):
         try:
             yield snapshot()
             last = 0.0
-            with requests.get(f"{base}/event", stream=True, timeout=(5, 60),
+            with requests.get(f"{base}/event", stream=True, timeout=(5, 60), auth=opencode_client.AUTH,
                               **opencode_client._sparams(base, session_id)) as upstream:
                 for line in upstream.iter_lines():
                     if not line.startswith(b"data:"):
@@ -1172,78 +1358,73 @@ def agent_reply_permission(request: Request, request_id: str, req: AgentPermissi
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
 
-def _resolve_source_image(file_path: str | None, image: UploadFile | None) -> Path:
-    """Reutiliza una imagen ya generada (por su ruta, evita re-subirla) o una
-    subida nueva. Solo se permiten rutas dentro de OUTPUT_DIR (no cualquier
-    ruta del sistema) para evitar servir/leer archivos arbitrarios."""
+def _source_image_bytes(file_path: str | None, image: UploadFile | None, session: dict) -> bytes:
+    """Una imagen ya generada (por su nombre en /media, descifrada con la
+    clave de este usuario: la de otro no se puede abrir) o una subida nueva."""
     if file_path:
-        candidate = Path(file_path)
-        if candidate.parent.resolve() != OUTPUT_DIR.resolve() or not candidate.exists():
-            raise ValueError("Ruta de imagen no valida.")
-        return candidate
+        data = media_store.load(Path(file_path).name, session["dek"])
+        if data is None:
+            raise ValueError("Imagen no valida.")
+        return data
     if image is not None and image.filename:
-        upload_path = OUTPUT_DIR / f"src_{uuid.uuid4().hex}_{Path(image.filename).name}"
-        upload_path.write_bytes(image.file.read())
-        return upload_path
+        return _read_upload(image)
     raise ValueError("Hay que indicar una imagen (subida o ya generada).")
 
 
 @app.post("/image/upscale", response_model=ChatResponse)
-def image_upscale(file_path: str | None = Form(None), image: UploadFile | None = File(None)):
-    """Escala x4 una imagen (ya generada, referenciada por su ruta, o una
+def image_upscale(request: Request, file_path: str | None = Form(None), image: UploadFile | None = File(None)):
+    """Escala x4 una imagen (ya generada, referenciada por su nombre, o una
     subida nueva) sin volver a generarla desde cero."""
     start = time.perf_counter()
+    session = request.state.session
     try:
-        src = _resolve_source_image(file_path, image)
+        src_bytes = _source_image_bytes(file_path, image, session)
     except ValueError as exc:
         return ChatResponse(agent_used="image_upscale", response=str(exc), verifier_gated=False)
 
     try:
-        img_bytes = image_agent.upscale(str(src))
+        with media_store.plain_copy(src_bytes, ".png") as src:
+            img_bytes = image_agent.upscale(str(src))
     except Exception as exc:
         metrics.log_event("image_upscale", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_upscale",
                              response=_generation_error_message("escalando la imagen", exc),
                              verifier_gated=False)
 
-    out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
-    out_path.write_bytes(img_bytes)
     metrics.log_event("image_upscale", (time.perf_counter() - start) * 1000)
-    return _with_file(
+    return _with_bytes(
         ChatResponse(agent_used="image_upscale", response="Imagen escalada x4.", verifier_gated=False),
-        out_path,
+        img_bytes, ".png", session,
     )
 
 
 @app.post("/image/inpaint", response_model=ChatResponse)
-def image_inpaint(prompt: str = Form(...), mask: UploadFile = File(...),
+def image_inpaint(request: Request, prompt: str = Form(...), mask: UploadFile = File(...),
                    file_path: str | None = Form(None), image: UploadFile | None = File(None),
                    denoise: float = Form(1.0)):
     """Repinta solo la zona marcada en blanco en la mascara (dibujada en la
     interfaz), dejando el resto de la imagen intacto."""
     start = time.perf_counter()
+    session = request.state.session
     try:
-        src = _resolve_source_image(file_path, image)
+        src_bytes = _source_image_bytes(file_path, image, session)
+        mask_bytes = _read_upload(mask)
     except ValueError as exc:
         return ChatResponse(agent_used="image_inpaint", response=str(exc), verifier_gated=False)
 
-    mask_path = OUTPUT_DIR / f"mask_{uuid.uuid4().hex}.png"
-    mask_path.write_bytes(mask.file.read())
-
     try:
-        img_bytes = image_agent.inpaint(prompt, str(src), str(mask_path), denoise=denoise)
+        with media_store.plain_copy(src_bytes, ".png") as src, media_store.plain_copy(mask_bytes, ".png") as mask_path:
+            img_bytes = image_agent.inpaint(prompt, str(src), str(mask_path), denoise=denoise)
     except Exception as exc:
         metrics.log_event("image_inpaint", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_inpaint",
                              response=_generation_error_message("repintando la imagen", exc),
                              verifier_gated=False)
 
-    out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
-    out_path.write_bytes(img_bytes)
     metrics.log_event("image_inpaint", (time.perf_counter() - start) * 1000)
-    return _with_file(
+    return _with_bytes(
         ChatResponse(agent_used="image_inpaint", response="Zona seleccionada repintada.", verifier_gated=False),
-        out_path,
+        img_bytes, ".png", session,
     )
 
 
@@ -1252,7 +1433,31 @@ def index():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
 
 
-app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+@app.get("/media/{name}")
+def get_media(name: str, request: Request):
+    """Imagen/video/audio generado, descifrado con la clave de quien lo pide:
+    el de otro usuario no se puede abrir (404, igual que si no existiera)."""
+    data = media_store.load(name, request.state.session["dek"])
+    if data is None:
+        return JSONResponse({"detail": "No encontrado."}, status_code=404)
+    headers = {"Cache-Control": "private, max-age=3600", "Accept-Ranges": "bytes"}
+    size = len(data)
+    rng = re.fullmatch(r"bytes=(\d*)-(\d*)", request.headers.get("range", ""))
+    if rng and (rng.group(1) or rng.group(2)):
+        # el reproductor de video pide trozos para poder saltar
+        if rng.group(1):
+            first = int(rng.group(1))
+            last = min(int(rng.group(2)), size - 1) if rng.group(2) else size - 1
+        else:
+            first, last = max(0, size - int(rng.group(2))), size - 1
+        if first >= size or first > last:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        headers["Content-Range"] = f"bytes {first}-{last}/{size}"
+        return Response(data[first:last + 1], status_code=206, media_type=media_store.media_type(name),
+                        headers=headers)
+    return Response(data, media_type=media_store.media_type(name), headers=headers)
+
+
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
@@ -1271,7 +1476,7 @@ def add_person(request: Request, name: str = Form(...), image: UploadFile = File
         return _guest_blocked()
     ext = Path(image.filename or "").suffix or ".jpg"
     try:
-        people.save_person(name, image.file.read(), ext, user_id=session["user_id"],
+        people.save_person(name, _read_upload(image), ext, user_id=session["user_id"],
                             dek=session["dek"], key_generation=session["key_generation"])
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
@@ -1314,7 +1519,11 @@ def upload_cv(request: Request, file: UploadFile = File(...)):
     session = request.state.session
     if session["role"] == "guest":
         return _guest_blocked()
-    saved = profile_store.save_cv(file.filename or "cv.pdf", file.file.read(), user_id=session["user_id"],
+    try:
+        content = _read_upload(file, MAX_DOC_BYTES)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=413)
+    saved = profile_store.save_cv(file.filename or "cv.pdf", content, user_id=session["user_id"],
                                    dek=session["dek"], key_generation=session["key_generation"])
     return {"ok": True, "filename": saved.name.removesuffix(".enc")}
 
@@ -1336,7 +1545,7 @@ def upload_avatar(request: Request, file: UploadFile = File(...)):
     if session["role"] == "guest":
         return _guest_blocked()
     try:
-        profile_store.save_avatar(file.file.read(), session["user_id"], session["dek"], session["key_generation"])
+        profile_store.save_avatar(_read_upload(file), session["user_id"], session["dek"], session["key_generation"])
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
     return {"ok": True}
@@ -1368,7 +1577,7 @@ def add_knowledge(request: Request, file: UploadFile = File(...)):
         return _guest_blocked()
     filename = file.filename or f"{uuid.uuid4().hex}.txt"
     try:
-        n_chunks = knowledge_base.add_document(filename, file.file.read(), user_id=session["user_id"],
+        n_chunks = knowledge_base.add_document(filename, _read_upload(file, MAX_DOC_BYTES), user_id=session["user_id"],
                                                 dek=session["dek"], key_generation=session["key_generation"])
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -1439,14 +1648,27 @@ def delete_memory_entry(entry_id: str, request: Request):
     return {"ok": True}
 
 
+# herramientas que tocan el ordenador: solo con permiso (ver _can_use_pc)
+PC_TOOLS = {"leer_archivo", "listar_carpeta", "ejecutar_python", "delegar_a_agente_de_codigo"}
+# herramientas sobre los datos guardados del usuario: no aplican a invitados
+OWN_DATA_TOOLS = {"buscar_en_memoria", "listar_documentos", "listar_personas"}
+
+
 def _execute_tool(name: str, arguments: dict, session_id: str, user_id: str | None = None,
-                   dek: bytes | None = None, key_generation: int | None = None) -> tuple[str, list[dict] | None]:
+                   dek: bytes | None = None, key_generation: int | None = None,
+                   pc_access: bool = False) -> tuple[str, list[dict] | None]:
     """Ejecuta una herramienta que el agente de texto ha pedido usar. Todas
     son consultas de solo lectura sobre datos que ya existen (memoria,
     documentos, personas guardadas, fecha real), salvo ejecutar_python, que
     corre en un proceso aparte con timeout y directorio temporal (ver
     tools.ejecutar_python) - pensado para verificar calculos, no para tocar
     archivos ni acceder a la red."""
+    # el modelo puede pedir una herramienta que no se le ofrecio: se comprueba aqui tambien
+    if name in PC_TOOLS and not pc_access:
+        return "Esta cuenta no tiene permiso para usar el ordenador (archivos, codigo, agente).", None
+    if name in OWN_DATA_TOOLS and not user_id:
+        # sin usuario, las busquedas de rag/people devolvian lo de TODOS
+        return "En modo invitado no hay memoria, documentos ni personas guardadas.", None
     if name == "actualizar_plan":
         pasos = (arguments or {}).get("pasos", []) if isinstance(arguments, dict) else []
         if not pasos:
@@ -1532,13 +1754,15 @@ def _resolve_agent(message: str, agent_override: str | None) -> tuple[str, bool]
     return route["agent"], route["factual"]
 
 
-def _tools_for(agent_name: str) -> list[dict]:
+def _tools_for(agent_name: str, pc_access: bool = True, guest: bool = False) -> list[dict]:
     """El chat de texto no delega en el agente de codigo: en modo Chat, al
     pedirle una imagen, se la pasaba al agente (que tampoco sabe hacerla,
-    mejoras.md 2026-09-28). Esa herramienta es solo del agente de programacion."""
-    if agent_name == "code":
-        return tools.TOOL_DEFS
-    return [t for t in tools.TOOL_DEFS if t["function"]["name"] != "delegar_a_agente_de_codigo"]
+    mejoras.md 2026-09-28). Esa herramienta es solo del agente de programacion.
+    Sin permiso para usar el ordenador, fuera tambien archivos y ejecutar codigo."""
+    defs = tools.TOOL_DEFS if agent_name == "code" else \
+        [t for t in tools.TOOL_DEFS if t["function"]["name"] != "delegar_a_agente_de_codigo"]
+    hidden = (set() if pc_access else PC_TOOLS) | (OWN_DATA_TOOLS if guest else set())
+    return [t for t in defs if t["function"]["name"] not in hidden]
 
 
 # Chino, japones o coreano: qwen2.5 a veces se pasa al chino a mitad de una
@@ -1612,12 +1836,10 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
                                  verifier_gated=False, session_id=session_id)
             _save_assistant_message(resp.response, "image")
             return resp
-        out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
-        out_path.write_bytes(img_bytes)
-        resp = _with_file(
+        resp = _with_bytes(
             ChatResponse(agent_used="image", response="Imagen generada.", verifier_gated=False,
                          session_id=session_id),
-            out_path,
+            img_bytes, ".png", auth_session,
         )
         _save_assistant_message(resp.response, "image")
         return resp
@@ -1630,12 +1852,10 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
                                  verifier_gated=False, session_id=session_id)
             _save_assistant_message(resp.response, "video")
             return resp
-        out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.mp4"
-        out_path.write_bytes(vid_bytes)
-        resp = _with_file(
+        resp = _with_bytes(
             ChatResponse(agent_used="video", response="Video generado.", verifier_gated=False,
                          session_id=session_id),
-            out_path,
+            vid_bytes, ".mp4", auth_session,
         )
         _save_assistant_message(resp.response, "video")
         return resp
@@ -1645,6 +1865,8 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
         if auth_session.get("role") == "guest":
             # el agente toca archivos reales del equipo - igual que las rutas /agent/*
             text = "El agente solo esta disponible para usuarios registrados, no en modo invitado."
+        elif not _can_use_pc(auth_session):
+            text = "Tu cuenta no tiene permiso para usar el agente (toca archivos del ordenador). Pideselo al administrador."
         else:
             choice = _assess_for_fast_agent(message)
             if choice:
@@ -1675,11 +1897,12 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
 
     if agent_name in ("text", "code"):
         _ensure_active_model(override_model or agent.model)
+        pc_access = _can_use_pc(auth_session)
         tool_executor = partial(_execute_tool, session_id=session_id, user_id=user_id,
-                                 dek=dek, key_generation=key_generation)
+                                 dek=dek, key_generation=key_generation, pc_access=pc_access)
         docs_context, docs_evidence = _attached_docs(session_id, message, auth_session)
         raw_answer, evidence = agent.respond_with_tools(
-            _with_docs(message, docs_context), history, _tools_for(agent_name), tool_executor,
+            _with_docs(message, docs_context), history, _tools_for(agent_name, pc_access, not user_id), tool_executor,
             model=override_model, think=think)
         evidence = docs_evidence + (evidence or []) or None  # lista vacia -> None, mas explicito para lo que sigue
         raw_answer = _fix_language(raw_answer, message, override_model or agent.model)
@@ -1841,10 +2064,11 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
     try:
         if agent_name in ("text", "code"):
             _ensure_active_model(override_model or agent.model)
+            pc_access = _can_use_pc(auth_session)
             tool_executor = partial(_execute_tool, session_id=session_id, user_id=user_id,
-                                     dek=dek, key_generation=key_generation)
+                                     dek=dek, key_generation=key_generation, pc_access=pc_access)
             chunks = agent.respond_with_tools_stream(
-                _with_docs(message, docs_context), history, _tools_for(agent_name), tool_executor, evidence,
+                _with_docs(message, docs_context), history, _tools_for(agent_name, pc_access, not user_id), tool_executor, evidence,
                 model=override_model, think=think)
         else:
             chunks = agent.respond_stream(message, history=history, context_chunks=None)
@@ -1935,7 +2159,7 @@ def get_personas(request: Request):
     invitado, igual que la galeria de caras: son fotos personales."""
     if request.state.session["role"] == "guest":
         return _guest_blocked()
-    return {"personas": persona_trainer.list_personas()}
+    return {"personas": persona_trainer.list_personas(request.state.session["user_id"])}
 
 
 @app.post("/personas")
@@ -1952,19 +2176,19 @@ def create_persona(request: Request, name: str = Form(...), photos: list[UploadF
     if len(photos) < 3:
         return JSONResponse({"detail": "Hacen falta al menos 3 fotos para entrenar algo decente."}, status_code=400)
 
-    tmp_dir = OUTPUT_DIR / f"_persona_upload_{uuid.uuid4().hex}"
+    tmp_dir = media_store.tmp_dir() / f"persona_{uuid.uuid4().hex}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     saved_paths = []
     try:
         for i, photo in enumerate(photos):
             ext = Path(photo.filename or "").suffix or ".jpg"
             dest = tmp_dir / f"{i:03d}{ext}"
-            dest.write_bytes(photo.file.read())
+            dest.write_bytes(_read_upload(photo))
             saved_paths.append(dest)
         # el entrenamiento necesita la GPU entera: fuera modelos de chat e imagen
         _keep_only_ollama(set(), heavy=None)
         comfyui_client.free_memory(CONFIG["comfyui"]["base_url"])
-        result = persona_trainer.start_training(name, saved_paths)
+        result = persona_trainer.start_training(session["user_id"], name, saved_paths)
     except persona_trainer.NoBaseModelError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
     except persona_trainer.TrainingAlreadyRunningError as exc:
@@ -1974,6 +2198,19 @@ def create_persona(request: Request, name: str = Form(...), photos: list[UploadF
             p.unlink(missing_ok=True)
         tmp_dir.rmdir()
     return result
+
+
+@app.delete("/personas/{name}")
+def delete_persona(name: str, request: Request):
+    """Borra una persona propia: el LoRA con su cara y lo que quede de sus fotos."""
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        deleted = persona_trainer.delete_persona(session["user_id"], name)
+    except persona_trainer.TrainingAlreadyRunningError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    return {"ok": deleted}
 
 
 @app.delete("/models/image/{model_id}")
@@ -2285,12 +2522,19 @@ def export_finetune_data(request: Request):
     if session["role"] == "guest":
         return _guest_blocked()
 
-    out_path = OUTPUT_DIR / f"finetune_export_{uuid.uuid4().hex}.jsonl"
-    count = finetune_export.export_user_conversations_chatml(
-        user_id=session["user_id"], dek=session["dek"], key_generation=session["key_generation"],
-        out_path=out_path,
-    )
-    return {"file_url": f"/outputs/{out_path.name}", "conversations_exported": count}
+    # tus conversaciones en claro: se mandan y se borran, no se quedan en disco
+    out_path = media_store.new_tmp_path(".jsonl")
+    try:
+        count = finetune_export.export_user_conversations_chatml(
+            user_id=session["user_id"], dek=session["dek"], key_generation=session["key_generation"],
+            out_path=out_path,
+        )
+        data = out_path.read_bytes() if out_path.exists() else b""
+    finally:
+        out_path.unlink(missing_ok=True)
+    return Response(data, media_type="application/x-ndjson", headers={
+        "Content-Disposition": 'attachment; filename="chati_conversaciones.jsonl"',
+        "X-Conversations-Exported": str(count)})
 
 
 @app.get("/sessions")
@@ -2313,11 +2557,22 @@ def _with_docs(message: str, docs_context: str) -> str:
 
 
 def _own_session_id(session_id: str | None, auth_session: dict) -> str:
-    """El id de conversacion que manda el cliente, salvo que sea de OTRO
-    usuario: entonces se empieza una nueva en vez de escribir en la suya."""
-    if session_id and memory.session_owner(session_id) not in (None, auth_session["user_id"]):
-        return memory.new_session_id()
-    return session_id or memory.new_session_id()
+    """El id de conversacion que manda el cliente, salvo que no sea suyo:
+    entonces se empieza una nueva en vez de escribir (y leer) en la ajena.
+    Una conversacion sin dueño (de invitado, o antigua de antes de haber
+    usuarios) solo la puede seguir la sesion que la empezo: antes cualquiera
+    que supiera el id veia su historial (auditoria 2026-09-29)."""
+    started = auth_session.setdefault("chat_sessions", set())
+    if session_id:
+        owner = memory.session_owner(session_id)
+        if owner == auth_session["user_id"] and owner is not None:
+            return session_id
+        if owner is None and (session_id in started or not memory.session_exists(session_id)):
+            started.add(session_id)
+            return session_id
+    new_id = memory.new_session_id()
+    started.add(new_id)
+    return new_id
 
 
 def _owns_session(request: Request, session_id: str) -> bool:
@@ -2346,7 +2601,7 @@ def attach_session_doc(request: Request, file: UploadFile = File(...), session_i
     session_id = _own_session_id(session_id, session)
     try:
         doc = session_docs.save(session["user_id"], session_id, file.filename or "documento.txt",
-                                file.file.read(), session["dek"], session["key_generation"])
+                                _read_upload(file, MAX_DOC_BYTES), session["dek"], session["key_generation"])
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
     # queda en el hilo en el momento en que se adjunto (la interfaz lo pinta
@@ -2444,18 +2699,22 @@ def voice_chat(request: Request, audio: UploadFile = File(...), session_id: str 
     """Conversacion por voz: transcribe el audio, lo pasa por el pipeline de
     chat normal (router + verificador + memoria), y devuelve tanto el texto
     como un audio con la respuesta hablada."""
-    audio_path = OUTPUT_DIR / f"voice_in_{uuid.uuid4().hex}.wav"
-    audio_path.write_bytes(audio.file.read())
-
-    transcript = voice_agent.transcribe(str(audio_path))
+    try:
+        audio_bytes = _read_upload(audio)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=413)
+    # lo que dijo el usuario: en claro solo mientras Whisper lo lee
+    with media_store.plain_copy(audio_bytes, ".wav") as audio_path:
+        transcript = voice_agent.transcribe(str(audio_path))
     if not transcript:
         return {"transcript": "", "agent_used": None, "response": "No se entendio ningun audio.",
                 "verifier_gated": False, "file_url": None, "session_id": session_id}
 
     result = _run_chat(transcript, None, session_id, request.state.session)
 
-    speech_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.wav"
+    speech_path = media_store.new_tmp_path(".wav")
     voice_agent.speak(result.response, str(speech_path))
+    speech_name = media_store.save_file(speech_path, request.state.session["dek"])
 
     return {
         "transcript": transcript,
@@ -2463,23 +2722,23 @@ def voice_chat(request: Request, audio: UploadFile = File(...), session_id: str 
         "response": result.response,
         "verifier_gated": result.verifier_gated,
         "verifier_reason": result.verifier_reason,
-        "file_url": f"/outputs/{speech_path.name}",
+        "file_url": media_store.url_for(speech_name),
         "session_id": result.session_id,
     }
 
 
 @app.post("/speak")
-def speak(text: str = Form(...)):
-    out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.wav"
+def speak(request: Request, text: str = Form(...)):
+    out_path = media_store.new_tmp_path(".wav")
     voice_agent.speak(text, str(out_path))
-    return {"file_url": f"/outputs/{out_path.name}"}
+    return {"file_url": media_store.url_for(media_store.save_file(out_path, request.state.session["dek"]))}
 
 
 def _resolve_reference_bytes(image: UploadFile | None, person_name: str | None, session: dict) -> bytes:
     """Usa la foto subida si la hay, si no busca la persona guardada por
     nombre (descifrando si hace falta con la dek de la sesion actual)."""
     if image is not None and image.filename:
-        return image.file.read()
+        return _read_upload(image)
     if person_name:
         ref = people.get_reference_bytes(person_name, user_id=session["user_id"],
                                           dek=session["dek"], key_generation=session["key_generation"])
@@ -2533,12 +2792,10 @@ def image_with_face(request: Request, prompt: str = Form(...), image: UploadFile
             verifier_gated=False,
         )
 
-    out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
-    out_path.write_bytes(img_bytes)
     metrics.log_event(agent_used, (time.perf_counter() - start) * 1000)
-    return _with_file(
+    return _with_bytes(
         ChatResponse(agent_used=agent_used, response=response_text, verifier_gated=False),
-        out_path,
+        img_bytes, ".png", session,
     )
 
 
@@ -2550,7 +2807,7 @@ def image_with_persona(request: Request, prompt: str = Form(...), persona: str =
     if request.state.session["role"] == "guest":
         return _guest_blocked()
     start = time.perf_counter()
-    lora = persona_trainer.lora_for(persona)
+    lora = persona_trainer.lora_for(request.state.session["user_id"], persona)
     if lora is None:
         return ChatResponse(agent_used="image_persona", verifier_gated=False,
                             response=f'La persona "{persona}" todavia no esta lista (sigue entrenando o fallo).')
@@ -2560,12 +2817,10 @@ def image_with_persona(request: Request, prompt: str = Form(...), persona: str =
         metrics.log_event("image_persona", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_persona", verifier_gated=False,
                             response=_generation_error_message("generando la imagen con la persona", exc))
-    out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
-    out_path.write_bytes(img_bytes)
     metrics.log_event("image_persona", (time.perf_counter() - start) * 1000)
-    return _with_file(
+    return _with_bytes(
         ChatResponse(agent_used="image_persona", response=f"Imagen generada con {persona}.", verifier_gated=False),
-        out_path,
+        img_bytes, ".png", request.state.session,
     )
 
 
@@ -2580,7 +2835,7 @@ def image_with_controlnet(request: Request, prompt: str = Form(...), image: Uplo
 
     try:
         img_bytes = image_agent.generate_with_controlnet(
-            prompt, image.file.read(), control_type=control_type, strength=strength,
+            prompt, _read_upload(image), control_type=control_type, strength=strength,
         )
     except ValueError as exc:
         metrics.log_event("image_controlnet", (time.perf_counter() - start) * 1000, error=str(exc))
@@ -2593,13 +2848,11 @@ def image_with_controlnet(request: Request, prompt: str = Form(...), image: Uplo
             verifier_gated=False,
         )
 
-    out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
-    out_path.write_bytes(img_bytes)
     metrics.log_event("image_controlnet", (time.perf_counter() - start) * 1000)
-    return _with_file(
+    return _with_bytes(
         ChatResponse(agent_used="image_controlnet", response="Imagen generada siguiendo la composicion de la referencia.",
                      verifier_gated=False),
-        out_path,
+        img_bytes, ".png", request.state.session,
     )
 
 
@@ -2635,25 +2888,21 @@ def video_with_face(request: Request, prompt: str = Form(...), image: UploadFile
             verifier_gated=False,
         )
 
-    frame_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.png"
-    frame_path.write_bytes(img_bytes)
-
     try:
-        vid_bytes = video_agent.generate_from_image(prompt, str(frame_path))
+        with media_store.plain_copy(img_bytes, ".png") as frame_path:
+            vid_bytes = video_agent.generate_from_image(prompt, str(frame_path))
     except Exception as exc:
         metrics.log_event("video_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
-        return _with_file(
+        return _with_bytes(
             ChatResponse(agent_used="video_faceid",
                          response=_generation_error_message("animando la imagen base ya generada", exc),
                          verifier_gated=False),
-            frame_path,
+            img_bytes, ".png", session,
         )
 
-    out_path = OUTPUT_DIR / f"{uuid.uuid4().hex}.mp4"
-    out_path.write_bytes(vid_bytes)
     metrics.log_event("video_faceid", (time.perf_counter() - start) * 1000)
-    return _with_file(
+    return _with_bytes(
         ChatResponse(agent_used="video_faceid", response="Video generado preservando la cara de referencia.",
                      verifier_gated=False),
-        out_path,
+        vid_bytes, ".mp4", session,
     )

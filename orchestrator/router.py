@@ -20,6 +20,24 @@ _SMALL_TALK = re.compile(
     r"buen trabajo|muy bien)(\s+(chati|amigo|tio))?[\s!¡?¿.,:)]*$",
     re.IGNORECASE)
 
+_QUESTION_START = re.compile(
+    r"^\s*¿?\s*((en|a|de|con|desde|hasta|para|por|sobre|y)\s+)?"  # "en que fecha...", "a quien..."
+    r"(c[oó]mo|qu[eé]|cu[aá]l(es)?|cu[aá]nt[oa]s?|d[oó]nde|cu[aá]ndo|qui[eé]n(es)?|por qu[eé]"
+    r"|para qu[eé]|sabes|conoces|existe|hay|es|son)\b", re.IGNORECASE)
+# peticion educada = orden: "¿puedes ordenar...?", "¿me creas...?"
+_POLITE_ORDER = re.compile(
+    r"\b(puedes|podr[ií]as|quieres|me (haces|creas|ordenas|mueves|renombras|borras|pones|abres))\b",
+    re.IGNORECASE)
+
+
+def _is_plain_question(query: str) -> bool:
+    """Empieza como pregunta ("¿como...", "que...", "donde...") y no es una
+    peticion educada. El chat responde; si hay que mirar archivos, tiene
+    herramientas de lectura."""
+    q = query.strip()
+    return bool(_QUESTION_START.match(q)) and not _POLITE_ORDER.search(q)
+
+
 ROUTE_PROMPT = """Analiza la peticion del usuario y responde EXACTAMENTE con
 este formato JSON, sin nada mas alrededor:
 
@@ -107,7 +125,9 @@ class Router:
             agent, factual = "text", False
 
         if agent == "agente":
-            agent = "opencode"
+            # una pregunta no es una orden: "¿como se llama mi gato?" acabo en el
+            # agente, que lanzo una tarea real (auditoria 2026-09-29)
+            agent = "text" if _is_plain_question(query) else "opencode"
         if agent not in VALID_AGENTS:
             agent = "text"
         return {"agent": agent, "factual": factual}

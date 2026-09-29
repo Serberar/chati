@@ -20,3 +20,9 @@ paths.OUTPUT_DIR.mkdir(parents=True)
 
 def pytest_sessionfinish(session, exitstatus):
     shutil.rmtree(_TEST_ROOT, ignore_errors=True)
+
+# TestClient llama al servidor "testserver": para los tests cuenta como local
+# (security.LocalOnlyMiddleware rechaza cualquier otro Host)
+import security  # noqa: E402
+
+security.LOCAL_HOSTS.add("testserver")

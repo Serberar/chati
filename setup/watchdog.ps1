@@ -34,6 +34,10 @@ $SlowStartFailures = 4
 $Failures = @{}
 
 function Write-Log($msg) {
+    # rota a los 2 MB (antes crecia sin fin)
+    if ((Test-Path $LogFile) -and (Get-Item $LogFile).Length -gt 2MB) {
+        Move-Item -Force $LogFile "$LogFile.old"
+    }
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - $msg"
     Add-Content -Path $LogFile -Value $line
 }
@@ -49,9 +53,9 @@ function Update-EnvFromUser {
     }
 }
 
-function Test-Down($name, $url, $threshold = $FailuresBeforeRestart) {
+function Test-Down($name, $url, $threshold = $FailuresBeforeRestart, $headers = @{}) {
     # $true solo tras $threshold comprobaciones fallidas seguidas
-    if (Test-Url $url) {
+    if (Test-Url $url $headers) {
         $Failures[$name] = 0
         return $false
     }
@@ -65,13 +69,31 @@ function Test-Down($name, $url, $threshold = $FailuresBeforeRestart) {
     return $true
 }
 
-function Test-Url($url) {
+function Test-Url($url, $headers = @{}) {
     try {
-        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+        $resp = Invoke-WebRequest -Uri $url -Headers $headers -UseBasicParsing -TimeoutSec 5
         return $resp.StatusCode -eq 200
     } catch {
         return $false
     }
+}
+
+function Get-OpenCodePassword {
+    # La misma que usa el orquestador (opencode_client.PASSWORD_FILE): sin
+    # contraseña, cualquier web podia mandar comandos al agente (auditoria 2026-09-29)
+    $file = "$DataRoot\data\opencode_password.txt"
+    if ((Test-Path $file) -and (Get-Content $file -Raw).Trim()) { return (Get-Content $file -Raw).Trim() }
+    $bytes = New-Object byte[] 24
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $password = [Convert]::ToBase64String($bytes).Replace("+", "-").Replace("/", "_").TrimEnd("=")
+    New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+    Set-Content -Path $file -Value $password -NoNewline -Encoding ascii
+    return $password
+}
+
+function Get-OpenCodeHeaders {
+    $pair = [Text.Encoding]::ASCII.GetBytes("opencode:" + (Get-OpenCodePassword))
+    return @{ Authorization = "Basic " + [Convert]::ToBase64String($pair) }
 }
 
 function Ensure-Ollama {
@@ -148,10 +170,11 @@ function Ensure-Orchestrator {
 }
 
 function Ensure-OpenCode {
-    if (Test-Down "OpenCode" "http://127.0.0.1:8901/") {
+    if (Test-Down "OpenCode" "http://127.0.0.1:8901/" $FailuresBeforeRestart (Get-OpenCodeHeaders)) {
         Write-Log "Agente de codigo (OpenCode) caido. Reiniciando..."
         Stop-ByPort 8901
         Start-Sleep -Seconds 1
+        $env:OPENCODE_SERVER_PASSWORD = Get-OpenCodePassword
         Start-Process -FilePath "$env:APPDATA\npm\opencode.cmd" -ArgumentList "web", "--port", "8901", "--hostname", "127.0.0.1" `
             -WorkingDirectory $AiRoot -WindowStyle Hidden
         Write-Log "Agente de codigo reiniciado."
@@ -163,6 +186,17 @@ function Ensure-DailyBackup {
     $today = Get-Date -Format "yyyy-MM-dd"
     $last = if (Test-Path $marker) { Get-Content $marker -Raw } else { "" }
     if ($last.Trim() -ne $today) {
+        # La copia reinicia el orquestador (cierra las sesiones y corta lo que
+        # este en marcha): de madrugada y sin actividad. Si lleva 2 dias sin
+        # poder, en el primer momento sin actividad (auditoria 2026-09-29).
+        $hour = (Get-Date).Hour
+        $overdue = $true
+        try { $overdue = ((Get-Date) - [datetime]::ParseExact($last.Trim(), "yyyy-MM-dd", $null)).TotalDays -ge 2 } catch {}
+        if (-not $overdue -and ($hour -lt 3 -or $hour -ge 7)) { return }
+        try {
+            $h = Invoke-RestMethod -Uri "http://127.0.0.1:8899/health?busy=true" -TimeoutSec 30
+            if ($h.busy) { return }
+        } catch {}  # orquestador caido: se puede copiar igualmente
         Write-Log "Backup diario pendiente. Ejecutando..."
         try {
             & powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\backup.ps1" *>> $LogFile

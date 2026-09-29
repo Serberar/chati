@@ -240,3 +240,14 @@ def test_the_kind_is_decided_by_how_the_title_starts():
     kind = {"si": ["casa", "chalet", "villa"], "no": ["piso", "apartamento"]}
     assert not deep_search.matches_kind(_item("Piso en Calle del Quejigo, Girón - Villa del Prado, Valladolid"), kind)
     assert deep_search.matches_kind(_item("Casa adosada en Girón, cerca de pisos nuevos"), kind)
+
+
+def test_the_apps_browser_never_opens_local_or_home_network_addresses():
+    """Auditoria 2026-09-29: una web abierta por las apps podia atacar desde el
+    navegador a ComfyUI (sin contraseña) o a la red de casa."""
+    from web_tools import is_private_host
+    for host in ("localhost", "127.0.0.1", "127.8.9.1", "::1", "[::1]", "192.168.1.10", "10.0.0.5",
+                 "172.16.3.4", "169.254.1.1", "0.0.0.0", "router.local", "nas.lan", "foo.localhost"):
+        assert is_private_host(host), host
+    for host in ("8.8.8.8", "2001:4860:4860::8888"):
+        assert not is_private_host(host), host

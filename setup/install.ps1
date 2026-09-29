@@ -104,7 +104,18 @@ if (-not (Test-Path $piperOnnx)) {
     $piperBase = "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium"
     Invoke-WebRequest -Uri "$piperBase/es_ES-davefx-medium.onnx" -OutFile $piperOnnx
     Invoke-WebRequest -Uri "$piperBase/es_ES-davefx-medium.onnx.json" -OutFile "$piperOnnx.json"
-    Write-Host "Voz de Piper descargada." -ForegroundColor Green
+    # huellas comprobadas el 2026-09-29: si el archivo cambia en el servidor, no se usa
+    $expected = @{
+        $piperOnnx = "6658b03b1a6c316ee4c265a9896abc1393353c2d9e1bca7d66c2c442e222a917"
+        "$piperOnnx.json" = "0e0dda87c732f6f38771ff274a6380d9252f327dca77aa2963d5fbdf9ec54842"
+    }
+    foreach ($f in $expected.Keys) {
+        if ((Get-FileHash $f -Algorithm SHA256).Hash.ToLower() -ne $expected[$f]) {
+            Remove-Item $f -Force
+            throw "La voz de Piper descargada no coincide con la esperada ($f). Se ha borrado por seguridad."
+        }
+    }
+    Write-Host "Voz de Piper descargada y comprobada." -ForegroundColor Green
 } else {
     Write-Host "Voz de Piper ya presente, no se descarga de nuevo." -ForegroundColor Green
 }
@@ -124,6 +135,32 @@ Start-Process -FilePath (Get-Command ollama).Source -ArgumentList "serve" -Windo
 Start-Sleep -Seconds 3
 ollama list
 
+# Versiones probadas juntas en el equipo de desarrollo (auditoria 2026-09-29:
+# antes se instalaba "lo ultimo" de cada cosa, y una instalacion nueva podia
+# romperse -o traer codigo cambiado- de un dia para otro). Para actualizar:
+# probar en desarrollo y cambiar aqui el commit/version.
+$ComfyCommit = "30bdda1ef13a3a34fce2cd2fec633f15d832122a"
+$SdScriptsCommit = "690ea7f96c23182352ec63def76d431c6120bd2f"
+$TorchPackages = @("torch==2.12.0.dev20260408+cu128", "torchvision==0.27.0.dev20260407+cu128",
+                   "torchaudio==2.11.0.dev20260407+cu128")
+$OpenCodeVersion = "1.18.32"
+
+function Install-Torch($python) {
+    # Las versiones nightly desaparecen del servidor al cabo de un tiempo: si
+    # la fijada ya no esta, se instala la nightly del momento y se avisa.
+    & $python -m pip install --pre @TorchPackages --index-url https://download.pytorch.org/whl/nightly/cu128
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "AVISO: la version probada de PyTorch ya no esta disponible; se instala la nightly actual (sin probar)." -ForegroundColor Yellow
+        & $python -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+    }
+}
+
+function Checkout-Pinned($dir, $commit) {
+    git -C $dir fetch --quiet origin $commit 2>$null
+    git -C $dir checkout --quiet $commit
+    if ($LASTEXITCODE -ne 0) { Write-Host "AVISO: no se pudo fijar $dir en $commit" -ForegroundColor Yellow }
+}
+
 # 2. ComfyUI (imagen y video) - se clona solo si falta, recrea el entorno
 # Python siempre (NO se copia entre equipos, depende de la GPU). Vive en
 # DataRoot: necesita escribir su venv y los custom_nodes libremente.
@@ -131,18 +168,23 @@ $comfy = "$DataRoot\ComfyUI"
 if (-not (Test-Path $comfy)) {
     Write-Host "Clonando ComfyUI..." -ForegroundColor Yellow
     git clone https://github.com/Comfy-Org/ComfyUI.git $comfy
+    Checkout-Pinned $comfy $ComfyCommit
 }
 
 $comfyNodes = @{
-    "ComfyUI-GGUF"           = "https://github.com/city96/ComfyUI-GGUF.git"          # necesario para FLUX (GGUF)
-    "ComfyUI-Manager"        = "https://github.com/Comfy-Org/ComfyUI-Manager.git"     # gestion de nodos desde la propia interfaz
-    "ComfyUI_IPAdapter_plus" = "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git"  # necesario para preservar caras (FaceID)
+    # necesario para FLUX (GGUF)
+    "ComfyUI-GGUF"           = @("https://github.com/city96/ComfyUI-GGUF.git", "6ea2651e7df66d7585f6ffee804b20e92fb38b8a")
+    # gestion de nodos desde la propia interfaz
+    "ComfyUI-Manager"        = @("https://github.com/Comfy-Org/ComfyUI-Manager.git", "b75fc664ecab9c4602380d9660833d02f6a63333")
+    # necesario para preservar caras (FaceID)
+    "ComfyUI_IPAdapter_plus" = @("https://github.com/cubiq/ComfyUI_IPAdapter_plus.git", "a0f451a5113cf9becb0847b92884cb10cbdec0ef")
 }
 foreach ($name in $comfyNodes.Keys) {
     $nodeDir = "$comfy\custom_nodes\$name"
     if (-not (Test-Path $nodeDir)) {
         Write-Host "Clonando nodo personalizado $name..." -ForegroundColor Yellow
-        git clone $comfyNodes[$name] $nodeDir
+        git clone $comfyNodes[$name][0] $nodeDir
+        Checkout-Pinned $nodeDir $comfyNodes[$name][1]
     }
 }
 
@@ -155,7 +197,7 @@ if (-not (Test-Path "$comfy\venv")) {
     # GPUs Blackwell (RTX 50 series) necesitan esta version concreta, ver
     # AGENTS.md y ROADMAP.md. AJUSTA el index-url si el equipo nuevo tiene
     # una GPU mas antigua que ya soporte una version estable de PyTorch.
-    & "$comfy\venv\Scripts\python.exe" -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+    Install-Torch "$comfy\venv\Scripts\python.exe"
 
     & "$comfy\venv\Scripts\python.exe" -m pip install -r "$comfy\requirements.txt"
 
@@ -204,12 +246,13 @@ $sdScripts = "$DataRoot\sd-scripts"
 if (-not (Test-Path $sdScripts)) {
     Write-Host "Clonando sd-scripts..." -ForegroundColor Yellow
     git clone https://github.com/kohya-ss/sd-scripts.git $sdScripts
+    Checkout-Pinned $sdScripts $SdScriptsCommit
 }
 if (-not (Test-Path "$sdScripts\venv")) {
     Write-Host "Creando entorno virtual de sd-scripts..." -ForegroundColor Yellow
     python -m venv "$sdScripts\venv"
     & "$sdScripts\venv\Scripts\python.exe" -m pip install --upgrade pip
-    & "$sdScripts\venv\Scripts\python.exe" -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+    Install-Torch "$sdScripts\venv\Scripts\python.exe"
     & "$sdScripts\venv\Scripts\python.exe" -m pip install -r "$sdScripts\requirements.txt"
     Write-Host "Entorno de sd-scripts creado." -ForegroundColor Green
 } else {
@@ -255,7 +298,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 
 if (-not (Get-Command opencode -ErrorAction SilentlyContinue)) {
     Write-Host "Instalando OpenCode..." -ForegroundColor Yellow
-    npm install -g opencode-ai
+    npm install -g "opencode-ai@$OpenCodeVersion"
 } else {
     Write-Host "OpenCode ya instalado." -ForegroundColor Green
 }
@@ -273,7 +316,7 @@ $opencodeConfig = @'
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Ollama (local)",
-      "options": { "baseURL": "http://127.0.0.1:8899/llm/v1" },
+      "options": { "baseURL": "http://127.0.0.1:8899/llm/v1", "apiKey": "{env:OPENCODE_SERVER_PASSWORD}" },
       "models": {
         "qwen2.5:7b": { "name": "Qwen2.5 7B (local, GPU)", "limit": { "context": 16384, "output": 4096 } },
         "qwen3:8b": { "name": "Qwen3 8B (local, GPU)", "limit": { "context": 16384, "output": 4096 } },

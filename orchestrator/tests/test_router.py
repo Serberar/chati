@@ -56,6 +56,22 @@ def test_router_maps_agente_to_opencode():
     assert router.classify("crea una carpeta fotos en el escritorio")["agent"] == "opencode"
 
 
+def test_a_question_is_never_sent_to_the_agent():
+    """El modelo mando "¿como se llama mi gato?" al agente, que lanzo una
+    tarea real (2026-09-29). Una pregunta se contesta; una peticion educada
+    ("¿puedes ordenar...?") sigue siendo una orden."""
+    router = Router(FakeOllamaClient('{"agent": "agente", "factual": false}'), routing_model="fake-model")
+    for question in ("Como se llama mi gato?", "¿cómo renombro muchos archivos a la vez?",
+                     "qué archivos hay en mi escritorio", "¿Dónde guarda Windows las capturas?",
+                     "En que fecha exacta se fundo la empresa Kortavelt Industries?",
+                     "¿A quién pertenece este archivo?", "¿Es seguro borrar la carpeta Temp?"):
+        assert router.classify(question)["agent"] == "text", question
+    for order in ("¿puedes ordenar mi escritorio por tipo?", "¿me creas una carpeta Fotos?",
+                  "renombra las fotos de Descargas con la fecha",
+                  "Tengo muchas fotos en Descargas, ordenalas por fecha"):
+        assert router.classify(order)["agent"] == "opencode", order
+
+
 def test_explicit_agent_request_skips_the_model():
     client = FakeOllamaClient("no deberia llamarse")
     router = Router(client, routing_model="fake-model")

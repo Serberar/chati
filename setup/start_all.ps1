@@ -65,7 +65,21 @@ if (-not (Test-Url "http://127.0.0.1:8899/health")) {
 }
 
 Write-Host "=== Arrancando el agente de codigo (OpenCode) ===" -ForegroundColor Cyan
-if (-not (Test-Url "http://127.0.0.1:8901/")) {
+# con contraseña (la misma que usa el orquestador, ver watchdog.ps1)
+$ocFile = "$DataRoot\data\opencode_password.txt"
+if (-not ((Test-Path $ocFile) -and (Get-Content $ocFile -Raw).Trim())) {
+    $bytes = New-Object byte[] 24
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    New-Item -ItemType Directory -Force -Path (Split-Path $ocFile) | Out-Null
+    Set-Content -Path $ocFile -Encoding ascii -NoNewline `
+        -Value ([Convert]::ToBase64String($bytes).Replace("+", "-").Replace("/", "_").TrimEnd("="))
+}
+$ocPassword = (Get-Content $ocFile -Raw).Trim()
+$ocAuth = @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("opencode:$ocPassword")) }
+$ocUp = $false
+try { $ocUp = (Invoke-WebRequest -Uri "http://127.0.0.1:8901/" -Headers $ocAuth -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch {}
+if (-not $ocUp) {
+    $env:OPENCODE_SERVER_PASSWORD = $ocPassword
     Start-Process -FilePath "$env:APPDATA\npm\opencode.cmd" -ArgumentList "web", "--port", "8901", "--hostname", "127.0.0.1" `
         -WorkingDirectory $AiRoot -WindowStyle Hidden
     Write-Host "Agente de codigo arrancando..." -ForegroundColor Yellow
