@@ -118,3 +118,13 @@ def test_raises_plain_status_error_when_body_has_no_json():
     with patch("agents.ollama_client.requests.post", return_value=fake_resp):
         with pytest.raises(requests.HTTPError):
             client.chat("qwen2.5:7b", [{"role": "user", "content": "hola"}])
+
+
+def test_models_in_the_no_think_list_never_think_unless_asked(monkeypatch):
+    """qwen3:8b hace de chat, router y verificador: sin pensar en voz alta en
+    ninguna de esas llamadas (con razonamiento tardaba ~10 veces mas)."""
+    from agents import ollama_client
+    monkeypatch.setattr(ollama_client, "NO_THINK_MODELS", {"qwen3:8b"})
+    assert ollama_client._think("qwen3:8b", None) is False
+    assert ollama_client._think("qwen3:8b", True) is True  # quien llama manda
+    assert ollama_client._think("qwen2.5:7b", None) is None

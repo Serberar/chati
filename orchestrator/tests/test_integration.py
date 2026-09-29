@@ -968,15 +968,16 @@ def _run_before_task(agent, loaded):
 
 def test_powerful_agent_task_frees_ram_and_comfyui():
     with patch.object(main.opencode_client, "busy_session_ids", return_value=[]):
-        unloaded, frees = _run_before_task("chati-potente", ["qwen2.5:7b", "qwen2.5vl:7b-cpu", "qwen3-coder:30b-cpu"])
+        unloaded, frees = _run_before_task("chati-potente", ["qwen3:8b", "qwen2.5vl:7b-cpu", "qwen3-coder:30b-cpu"])
     assert unloaded == ["qwen2.5vl:7b-cpu"] and frees == 1
 
 
 def test_fast_agent_task_makes_room_on_the_gpu():
-    """qwen3:8b con su contexto (~7,6GB) no cabe junto al modelo del chat."""
+    """El agente rapido usa el mismo modelo que el chat (qwen3:8b, desde el
+    2026-09-29): se queda cargado; fuera lo demas (vision) para que quepa."""
     with patch.object(main.opencode_client, "busy_session_ids", return_value=[]):
-        unloaded, frees = _run_before_task("chati", ["qwen2.5:7b", "qwen3:8b", "nomic-embed-text:latest"])
-    assert unloaded == ["qwen2.5:7b"] and frees == 1
+        unloaded, frees = _run_before_task("chati", ["qwen3:8b", "qwen2.5vl:7b-gpu", "nomic-embed-text:latest"])
+    assert unloaded == ["qwen2.5vl:7b-gpu"] and frees == 1
 
 
 def test_agent_tasks_use_the_fast_agent_unless_potente_is_asked():
@@ -1003,7 +1004,7 @@ def test_chat_stream_warns_when_the_model_has_to_be_loaded():
 def test_chat_stream_says_nothing_when_the_model_is_already_loaded():
     def fake_stream(*args, **kwargs):
         yield "hola"
-    with patch.object(main.ollama, "running_models", return_value=["qwen2.5:7b"]), \
+    with patch.object(main.ollama, "running_models", return_value=["qwen3:8b"]), \
          patch.object(main, "_ensure_active_model"), \
          patch.object(main.text_agent, "respond_with_tools_stream", side_effect=fake_stream):
         with client.stream("POST", "/chat/stream", json={"message": "hola", "model_profile": "rapido", "verify": False}) as resp:
@@ -1036,8 +1037,8 @@ def test_prepare_chat_mode_loads_the_default_profile_model_and_frees_comfyui():
         assert resp.json()["state"] == "preparing"
         st = _wait_prepare_done()
     assert st["state"] == "ready"
-    assert "qwen2.5:7b" in st["label"]  # perfil por defecto (rapido), no el 30B
-    mock_preload.assert_called_once_with("qwen2.5:7b")
+    assert "qwen3:8b" in st["label"]  # perfil por defecto (rapido), no el 30B
+    mock_preload.assert_called_once_with("qwen3:8b")
     mock_free.assert_called_once()
 
 
@@ -1087,13 +1088,13 @@ def _prepare_and_collect_unloads(body, loaded, busy=()):
 def test_switching_to_chat_unloads_the_agent_and_vision_models():
     unloaded, _ = _prepare_and_collect_unloads(
         {"mode": "texto"},
-        ["qwen2.5:7b", "qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu", "nomic-embed-text:latest"])
+        ["qwen3:8b", "qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu", "nomic-embed-text:latest"])
     assert unloaded == ["qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu"]
 
 
 def test_switching_modes_keeps_the_agent_model_while_a_task_runs():
     unloaded, _ = _prepare_and_collect_unloads(
-        {"mode": "chat"}, ["qwen2.5:7b", "qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu"], busy=["ses_1"])
+        {"mode": "chat"}, ["qwen3:8b", "qwen3-coder:30b-cpu", "qwen2.5vl:7b-cpu"], busy=["ses_1"])
     assert unloaded == ["qwen2.5vl:7b-cpu"]
 
 
@@ -1161,7 +1162,7 @@ def test_changing_mode_never_frees_comfyui_in_the_middle_of_a_generation():
 
 
 def test_automatic_mode_with_the_quality_profile_swaps_the_models_at_once():
-    with patch.object(main.ollama, "running_models", return_value=["qwen2.5:7b", "qwen2.5vl:7b-cpu"]), \
+    with patch.object(main.ollama, "running_models", return_value=["qwen3:8b", "qwen2.5vl:7b-cpu"]), \
          patch.object(main.ollama, "unload") as mock_unload, \
          patch.object(main.ollama, "preload") as mock_preload, \
          patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
@@ -1170,7 +1171,7 @@ def test_automatic_mode_with_the_quality_profile_swaps_the_models_at_once():
         st = _wait_prepare_done()
     assert st["state"] == "ready" and "qwen3-coder:30b-cpu" in st["label"]
     assert [c.args[0] for c in mock_unload.call_args_list] == ["qwen2.5vl:7b-cpu"]
-    assert [c.args[0] for c in mock_preload.call_args_list] == ["qwen2.5:7b", "qwen3-coder:30b-cpu"]
+    assert [c.args[0] for c in mock_preload.call_args_list] == ["qwen3:8b", "qwen3-coder:30b-cpu"]
 
 
 

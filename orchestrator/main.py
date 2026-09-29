@@ -32,6 +32,7 @@ import paths
 import persona_trainer
 import users
 
+from agents import ollama_client as ollama_client_module
 from agents.ollama_client import OllamaClient
 from agents.llm_agent import LLMAgent
 from agents.image_agent import ImageAgent
@@ -63,6 +64,8 @@ with open("config.yaml", "r", encoding="utf-8") as f:
 users.get_or_create_registration_key()
 
 ollama = OllamaClient(CONFIG["ollama"]["base_url"])
+# sin "pensar en voz alta" tambien en el chat, el router y el verificador, no solo en el agente
+ollama_client_module.NO_THINK_MODELS.update(CONFIG["opencode"].get("no_think_models", []))
 
 text_agent = LLMAgent("text", CONFIG["agents"]["text"]["model"], ollama)
 code_agent = LLMAgent("code", CONFIG["agents"]["code"]["model"], ollama)

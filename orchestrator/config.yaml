@@ -51,7 +51,13 @@ agents:
     # perfil concreto.
     profiles:
       rapido:
-        model: "qwen2.5:7b"
+        # qwen3:8b sin razonamiento previo: banco de pruebas del chat del
+        # 2026-09-29 (14 preguntas x2: calculos, fecha, logica, formato,
+        # honestidad, idioma, traducir, codigo...) 26/28 frente a 21/28 de
+        # qwen2.5:7b, que ademas se paso al chino en 1 de 2 respuestas de una
+        # pregunta. ~2,8s por respuesta (qwen2.5: 2,0s). Es el mismo modelo que
+        # el agente rapido, el router y el verificador: uno solo cargado.
+        model: "qwen3:8b"
         label: "Rapido"
       bueno:
         model: "qwen3-coder:30b-cpu"
@@ -97,11 +103,13 @@ router:
   # factual) - es una tarea de un JSON corto, no necesita el modelo grande de
   # texto/codigo. Antes usaba el mismo modelo que el agente de texto, lo que
   # significaba pagar 20-40s de clasificacion ANTES de generar la respuesta.
-  model: "qwen2.5:7b"
+  # qwen3:8b (2026-09-29, 25 peticiones): modo acertado 23/25 y "factual"
+  # 20/20, frente a 22/25 y 19/20 de qwen2.5:7b; 0,8s por mensaje (0,3s).
+  model: "qwen3:8b"
 
 verifier:
   enabled: true
-  model: "qwen2.5:7b"
+  model: "qwen3:8b"
   # modo estricto: si el verificador no confia en la respuesta factual, la BLOQUEA
   # en vez de solo avisar. Sin RAG/busqueda todavia conectada, esto es lo mas
   # honesto (Fase 1 no tiene fuentes reales que consultar todavia).

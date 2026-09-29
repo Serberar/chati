@@ -35,6 +35,18 @@ def _raise_with_body(resp: requests.Response) -> None:
         raise
 
 
+# Modelos que nunca deben "pensar" en voz alta antes de responder (lo fija
+# main.py con opencode.no_think_models): con el razonamiento previo, qwen3
+# tardaba ~10 veces mas en cada respuesta sin acertar mas en tareas cortas.
+# Se aplica a TODAS las llamadas (chat, router, verificador, apps) salvo que
+# quien llama pida otra cosa explicitamente.
+NO_THINK_MODELS: set[str] = set()
+
+
+def _think(model: str, think: bool | None) -> bool | None:
+    return False if think is None and model in NO_THINK_MODELS else think
+
+
 class OllamaClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
@@ -49,6 +61,7 @@ class OllamaClient:
             "options": {"temperature": temperature, **({"num_ctx": num_ctx} if num_ctx else {})},
             "keep_alive": keep_alive,
         }
+        think = _think(model, think)
         if think is not None:
             payload["think"] = think
         resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=180)
@@ -65,6 +78,7 @@ class OllamaClient:
             "options": {"temperature": temperature},
             "keep_alive": keep_alive,
         }
+        think = _think(model, think)
         if think is not None:
             payload["think"] = think
         resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=180, stream=True)
@@ -93,6 +107,7 @@ class OllamaClient:
             "options": {"temperature": temperature},
             "keep_alive": keep_alive,
         }
+        think = _think(model, think)
         if think is not None:
             payload["think"] = think
         resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=180)
@@ -133,6 +148,7 @@ class OllamaClient:
             "options": {"temperature": temperature},
             "keep_alive": keep_alive,
         }
+        think = _think(model, think)
         if think is not None:
             payload["think"] = think
         resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=180, stream=True)

@@ -164,7 +164,9 @@ def test_replies_hit_the_right_endpoints(mock_post):
     opencode_client.reply_permission(BASE, "per_1", "once")
     opencode_client.abort(BASE, "ses_1")
 
-    calls = [(c.args[0], c.kwargs["json"]) for c in mock_post.call_args_list]
+    # solo las de OpenCode: el parche de requests.post es global y en la bateria
+    # completa algun hilo de otro test (p.ej. descargar un modelo de Ollama) se cuela
+    calls = [(c.args[0], c.kwargs["json"]) for c in mock_post.call_args_list if c.args[0].startswith(BASE)]
     assert calls == [
         (f"{BASE}/question/que_1/reply", {"answers": [["Si"]]}),
         (f"{BASE}/permission/per_1/reply", {"reply": "once"}),

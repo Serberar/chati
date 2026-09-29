@@ -102,7 +102,7 @@ def test_download_selected_routes_text_entries_to_ollama(tmp_path, monkeypatch):
          patch.object(installer_download_models, "_download_file") as mock_download:
         installer_download_models.download_selected(["texto-rapido"])
 
-    mock_pull.assert_called_once_with("qwen2.5:7b")
+    mock_pull.assert_called_once_with("qwen3:8b")  # el chat usa el modelo del agente rapido
     mock_download.assert_not_called()
 
 

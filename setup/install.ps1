@@ -282,7 +282,7 @@ $opencodeConfig = @'
     }
   },
   "model": "ollama/qwen3-coder:30b-cpu",
-  "small_model": "ollama/qwen2.5:7b",
+  "small_model": "ollama/qwen3:8b",
   "shell": "powershell",
   "instructions": ["AGENTS.md"],
   "permission": {

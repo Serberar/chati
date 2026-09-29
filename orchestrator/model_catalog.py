@@ -36,7 +36,7 @@ _BASE_CATALOG: list[CatalogEntry] = [
     CatalogEntry(
         id="texto-rapido", modality="texto", label="Chat rapido",
         description="Respuestas breves, conversacion general - el modelo por defecto del router.",
-        ollama_model="qwen2.5:7b",
+        ollama_model="qwen3:8b",  # el mismo que el agente rapido: uno solo para todo
     ),
     CatalogEntry(
         id="texto-calidad", modality="texto", label="Chat de mejor calidad",
