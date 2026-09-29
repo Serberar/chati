@@ -53,12 +53,17 @@ class OllamaClient:
 
     def chat(self, model: str, messages: list[dict], temperature: float = 0.7,
               keep_alive: str = DEFAULT_KEEP_ALIVE, think: bool | None = None,
-              num_ctx: int | None = None) -> str:
+              num_ctx: int | None = None, num_predict: int | None = None) -> str:
+        options = {"temperature": temperature}
+        if num_ctx:
+            options["num_ctx"] = num_ctx
+        if num_predict:
+            options["num_predict"] = num_predict  # tope de lo que puede escribir
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": temperature, **({"num_ctx": num_ctx} if num_ctx else {})},
+            "options": options,
             "keep_alive": keep_alive,
         }
         think = _think(model, think)

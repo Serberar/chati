@@ -3381,6 +3381,8 @@ function showDeepResult(id) {
   u.innerHTML = '<div class="lbl">Lo que he entendido</div>';
   u.appendChild(document.createTextNode(h.entendido));
   if (h.criterios.length) u.appendChild(deepChips("Criterios", h.criterios));
+  if (h.que_es && h.que_es.si.length) u.appendChild(deepChips("Solo si es", h.que_es.si));
+  if (h.que_es && h.que_es.no.length) u.appendChild(deepChips("Descarto si es", h.que_es.no));
   if (h.webs.length) u.appendChild(deepChips("Dónde he buscado, además de todo internet", h.webs));
   const meta = document.createElement("div");
   meta.className = "lbl";

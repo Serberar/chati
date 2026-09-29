@@ -48,11 +48,11 @@ PLAN_PROMPT = """Hoy es {today}. El usuario vive en España y pide:
 Prepara una busqueda en internet para resolverlo. Responde SOLO con JSON:
 {{"entendido": "una o dos frases: que busca y con que condiciones, como se lo explicarias al usuario",
   "tipo": "listado" si hay que encontrar cosas concretas (viviendas, coches, productos, cursos, ofertas...); "informe" si es una pregunta que se responde con informacion,
-  "criterios": ["condiciones que debe cumplir cada resultado, incluidas las que se deducen (p.ej. si dice 'o cerca', los barrios vecinos)"],
-  "campos": ["hasta 5 datos que importan de cada resultado, p.ej. precio, m2, habitaciones, barrio (solo para listado)"],
+  "criterios": ["condiciones que debe cumplir cada resultado: primero QUE es exactamente (el tipo que nombra el usuario), y luego las demas, incluidas las que se deducen (p.ej. si dice 'o cerca', los barrios vecinos)"],
+  "campos": ["hasta 5 datos cortos que importan de cada resultado, p.ej. precio, m2, habitaciones, barrio (solo para listado; nada de descripciones largas)"],
   "limites": [{{"campo": "uno de los campos", "min": numero o null, "max": numero o null}}] (SOLO los que el usuario dice con un numero, p.ej. "menos de 12000 euros" -> precio max 12000; nunca inventes limites; vacio si no dice ninguno),
   "webs": ["hasta 4 webs especializadas que existan de verdad y conozcas bien (p.ej. idealista.com); si dudas, ninguna"],
-  "busquedas": ["3 busquedas distintas para un buscador, en español"]}}"""
+  "busquedas": ["3 busquedas distintas para un buscador, en español, cortas y como las escribiria una persona: que + donde (p.ej. 'casas en venta La Victoria Valladolid'), sin precios ni otros numeros"]}}"""
 
 
 def _numbers_in(text: str) -> set[float]:
@@ -71,13 +71,154 @@ def _clean_limits(raw, campos: list[str], request: str) -> list[dict]:
     said = _numbers_in(request)
     out = []
     for lim in raw if isinstance(raw, list) else []:
-        if not isinstance(lim, dict) or lim.get("campo") not in campos:
+        campo = _match_field(lim.get("campo"), campos) if isinstance(lim, dict) else None
+        if not campo:
             continue
         lo, hi = parse_number(lim.get("min")), parse_number(lim.get("max"))
         lo, hi = (lo if lo in said else None), (hi if hi in said else None)
         if lo is not None or hi is not None:
-            out.append({"campo": lim["campo"], "min": lo, "max": hi})
+            out.append({"campo": campo, "min": lo, "max": hi})
     return out
+
+
+def _plain(text) -> str:
+    """Minusculas y sin tildes, para comparar palabras."""
+    table = str.maketrans("áéíóúüñ", "aeiouun")
+    return str(text or "").lower().translate(table)
+
+
+def _match_field(name, campos: list[str]) -> str | None:
+    """El campo al que se refiere un limite aunque el modelo lo llame un poco
+    distinto: "habitaciones minimas" -> "habitaciones" (asi se perdia el
+    limite de 3 habitaciones, 2026-09-29)."""
+    n = re.sub(r"[^a-z0-9]", "", _plain(name))
+    if not n:
+        return None
+    for c in campos:
+        cn = re.sub(r"[^a-z0-9]", "", _plain(c))
+        if cn and (cn == n or cn in n or n in cn or cn[:5] == n[:5]):
+            return c
+    return None
+
+
+# palabras que no distinguen nada: "vivienda" incluye pisos y casas
+_GENERIC_KIND = {"vivienda", "viviendas", "inmueble", "inmuebles", "propiedad", "propiedades", "producto",
+                 "productos", "articulo", "articulos", "resultado", "resultados", "oferta", "ofertas", "anuncio",
+                 "anuncios", "cosa", "cosas", "opcion", "opciones"}
+
+KIND_PROMPT = """El usuario pide: "{request}"
+
+¿Pide un TIPO concreto de cosa? Responde SOLO con JSON: {{"si": [...], "no": [...]}}
+- "si": palabras con las que se anuncia exactamente lo que pide, con sus sinonimos.
+- "no": cosas parecidas que NO pide y que suelen salir mezcladas en los resultados.
+Ejemplos:
+- "casas en venta": {{"si": ["casa", "chalet", "adosado", "pareado", "unifamiliar", "villa"], "no": ["piso", "apartamento", "atico", "estudio", "duplex", "local", "garaje"]}}
+- "pisos de alquiler": {{"si": ["piso", "apartamento", "atico", "estudio"], "no": ["casa", "chalet", "adosado", "local", "habitacion"]}}
+- "un coche familiar": {{"si": ["coche", "turismo", "familiar", "monovolumen", "suv"], "no": ["moto", "furgoneta", "camion"]}}
+- "cursos de ingles": {{"si": ["curso", "clases"], "no": []}}
+- "que ayudas hay para jovenes": {{"si": [], "no": []}}
+Nunca uses palabras generales como vivienda, inmueble, propiedad o producto."""
+
+
+def plan_kind(chat: ChatFn, request: str) -> dict:
+    """El tipo exacto que se pide, en una pregunta aparte: dentro del plan
+    completo, qwen3:8b ponia "casas, viviendas, inmuebles" y ningun "no", y
+    salian pisos (2026-09-29)."""
+    return _clean_kind(json_from(chat(KIND_PROMPT.format(request=request))))
+
+
+def _clean_kind(raw) -> dict:
+    def words(key):
+        if not isinstance(raw, dict):
+            return []
+        out = []
+        for w in raw.get(key, []):
+            w = _plain(w).strip()
+            if w and w not in _GENERIC_KIND and w not in out:
+                out.append(w)
+        return out[:12]
+    si, no = words("si"), words("no")
+    return {"si": si, "no": [w for w in no if w not in si]}
+
+
+# ---------- limites escritos por el usuario, sacados por el codigo ----------
+_NUM = r"(\d{1,3}(?:[.\s]\d{3})+|\d+(?:[.,]\d+)?)\s*(mil\b|k\b)?"
+_UNIT = r"\s*(?:de\s+)?([a-zA-Z€²áéíóúñ/]+)"
+_MIN_WORDS = r"(?:al menos|como m[ií]nimo|m[ií]nimo(?: de)?|m[aá]s de|desde|a partir de|no menos de)"
+_MAX_WORDS = r"(?:como m[aá]ximo|m[aá]ximo(?: de)?|menos de|hasta|no m[aá]s de|por debajo de|que no pase de)"
+# unidades -> que dato es (para encontrar el campo que lo guarda)
+_UNIT_FIELDS = [
+    (re.compile(r"^(€|eur|euros?|precio)$"), ("precio", "coste", "presupuesto", "importe")),
+    (re.compile(r"^(hab|habs|habitacion(es)?|dormitorios?|cuartos?)$"), ("habitacion", "dormitorio", "cuarto")),
+    (re.compile(r"^(km|kms|kilometros?|kilometraje)$"), ("km", "kilomet")),
+    (re.compile(r"^(m2|m²|metros?|mts)$"), ("m2", "metro", "superficie", "tamano")),
+    (re.compile(r"^(banos?|aseos?)$"), ("bano", "aseo")),
+    (re.compile(r"^(anos?|antiguedad)$"), ("ano", "antiguedad")),
+]
+
+
+def _value(num: str, mult) -> float:
+    n = re.sub(r"[.\s](?=\d{3}\b)", "", num).replace(",", ".")
+    return float(n) * (1000 if mult else 1)
+
+
+def _field_for_unit(unit: str, campos: list[str]) -> str | None:
+    u = _plain(unit)
+    for pattern, hints in _UNIT_FIELDS:
+        if pattern.match(u):
+            for c in campos:
+                if any(h in _plain(c) for h in hints):
+                    return c
+            return None
+    return _match_field(unit, campos)
+
+
+def _limits_from_text(request: str, campos: list[str]) -> list[dict]:
+    """"al menos 3 habitaciones", "maximo 260.000 euros", "menos de 150000 km",
+    "entre 100 y 200 m2"... - reglas del español, sin depender del modelo (se
+    le escapaba "al menos 3 habitaciones", 2026-09-29)."""
+    text = _plain(request)
+    found: dict[str, dict] = {}
+
+    def add(field, lo=None, hi=None):
+        if not field:
+            return
+        cur = found.setdefault(field, {"campo": field, "min": None, "max": None})
+        cur["min"] = lo if lo is not None else cur["min"]
+        cur["max"] = hi if hi is not None else cur["max"]
+
+    for m in re.finditer(r"entre\s+" + _NUM + r"\s+y\s+" + _NUM + _UNIT, text):
+        add(_field_for_unit(m.group(5), campos), _value(m.group(1), m.group(2)), _value(m.group(3), m.group(4)))
+    for m in re.finditer(_MIN_WORDS + r"\s+" + _NUM + _UNIT, text):
+        add(_field_for_unit(m.group(3), campos), lo=_value(m.group(1), m.group(2)))
+    for m in re.finditer(_MAX_WORDS + r"\s+" + _NUM + _UNIT, text):
+        add(_field_for_unit(m.group(3), campos), hi=_value(m.group(1), m.group(2)))
+    return list(found.values())
+
+
+def _merge_limits(from_text: list[dict], from_model: list[dict]) -> list[dict]:
+    """Manda lo que saca el codigo del texto; el modelo solo añade campos nuevos."""
+    have = {l["campo"] for l in from_text}
+    return from_text + [l for l in from_model if l["campo"] not in have]
+
+
+def matches_kind(item: dict, kind: dict) -> bool:
+    """Es del tipo pedido: fuera lo que en el titulo se anuncia como otra cosa
+    ("Piso en..." cuando se piden casas, 2026-09-29), salvo que tambien diga
+    lo pedido ("casa o piso"). Si el titulo no dice nada, se deja."""
+    words = re.sub(r"[^a-z0-9]+", " ", _plain(item["titulo"] + " " + item["datos"].get("tipo", ""))).split()
+
+    def has(text_words, w):
+        return any(t in (w, w + "s", w + "es") for t in text_words)
+
+    # manda como EMPIEZA: los anuncios empiezan por el tipo ("Piso en ...").
+    # Si no, "Piso en ..., Giron - Villa del Prado" pasaba por "villa".
+    head = words[:3]
+    if any(has(head, w) for w in kind.get("no", [])) and not any(has(head, w) for w in kind.get("si", [])):
+        return False
+    if any(has(words, w) for w in kind.get("si", [])):
+        return True
+    return not any(has(words, w) for w in kind.get("no", []))
 
 
 def parse_number(value) -> float | None:
@@ -102,6 +243,10 @@ def within_limits(item: dict, limits: list[dict]) -> bool:
         n = parse_number(item["datos"].get(lim["campo"]))
         if n is None:
             continue
+        # "18.2" por 18.200 EUR o "237 km" por 237.000: el modelo corta los
+        # miles (coches, 2026-09-29). Cien veces por debajo del maximo es mal leido.
+        if lim["max"] is not None and lim["max"] >= 1000 and n < lim["max"] / 100:
+            return False
         if (lim["min"] is not None and n < lim["min"]) or (lim["max"] is not None and n > lim["max"]):
             return False
     return True
@@ -117,7 +262,8 @@ def plan_search(chat: ChatFn, request: str) -> dict:
         "tipo": "informe" if str(data.get("tipo", "")).strip().lower() == "informe" else "listado",
         "criterios": clean("criterios", 8, 150),
         "campos": clean("campos", 5, 30),
-        "limites": _clean_limits(data.get("limites"), clean("campos", 5, 30), request),
+        "limites": _merge_limits(_limits_from_text(request, clean("campos", 5, 30)),
+                                 _clean_limits(data.get("limites"), clean("campos", 5, 30), request)),
         "webs": [w for w in webs if "." in w and " " not in w],
         "busquedas": clean("busquedas", 3) or [request[:120]],
     }
@@ -295,6 +441,19 @@ class Cancelled(Exception):
     pass
 
 
+def _number_key(item: dict) -> tuple:
+    """Los numeros de sus datos (precio, m2, habitaciones...): el mismo anuncio
+    en otro portal los tiene iguales aunque los escriba distinto ("260.000 €",
+    "260000") - con el texto completo salia hasta 4 veces la misma casa."""
+    nums = []
+    for v in item["datos"].values():
+        if len(str(v)) <= 40:  # las descripciones largas no cuentan
+            n = parse_number(v)
+            if n is not None:
+                nums.append(int(n))
+    return tuple(sorted(nums))
+
+
 def _dedupe(items: list[dict]) -> list[dict]:
     """Fuera los repetidos: el mismo enlace y titulo (sale en varias
     busquedas), o los mismos datos en otro portal (el mismo piso en idealista
@@ -305,7 +464,7 @@ def _dedupe(items: list[dict]) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        values = tuple(sorted(_norm(v) for v in it["datos"].values()))
+        values = _number_key(it)
         if len(values) >= 2 and values in by_data:
             first = by_data[values]
             if it["fuente"] != first["fuente"] and it["fuente"] not in first.setdefault("tambien_en", []):
@@ -325,21 +484,33 @@ def run_search(chat: ChatFn, browser, request: str, progress: Callable[[str, int
 
     progress("Entendiendo lo que buscas…", 0, 0)
     plan = plan_search(chat, request)
+    plan["que_es"] = plan_kind(chat, request) if plan["tipo"] == "listado" else {"si": [], "no": []}
     warnings: list[str] = []
 
-    queries = [(q, None) for q in plan["busquedas"]]
-    queries += [(f"site:{w} {plan['busquedas'][0]}", w) for w in plan["webs"]]
     candidates: list[str] = []
-    for i, (query, _web) in enumerate(queries):
-        check()
-        progress(f"Buscando «{query}»…", i, len(queries))
+
+    def search(query: str, n: int) -> None:
         try:
-            found = browser.bing(query, 4 if _web else 6)
+            found = browser.bing(query, n)
         except Exception:
             found = []
         for url in found:
             if url not in candidates and not any(bad in url for bad in _NOT_USEFUL):
                 candidates.append(url)
+
+    total = len(plan["busquedas"]) + len(plan["webs"])
+    for i, query in enumerate(plan["busquedas"]):
+        check()
+        progress(f"Buscando «{query}»…", i, total)
+        search(query, 6)
+    # dentro de las webs que propone el modelo, solo si han salido en Bing: a
+    # veces se inventaba algunas ("inmobiliaria.com", "anuncios.com")
+    seen_sites = {site_label(u) for u in candidates}
+    plan["webs"] = [w for w in plan["webs"] if any(s == w or s.endswith("." + w) for s in seen_sites)]
+    for i, web in enumerate(plan["webs"]):
+        check()
+        progress(f"Buscando en {web}…", len(plan["busquedas"]) + i, total)
+        search(f"site:{web} {plan['busquedas'][0]}", 4)
     if not candidates:
         warnings.append("Bing no devolvio resultados; prueba a pedirlo de otra forma.")
 
@@ -370,7 +541,7 @@ def run_search(chat: ChatFn, browser, request: str, progress: Callable[[str, int
     check()
     progress("Juntándolo todo…", 0, 0)
     result = {"entendido": plan["entendido"], "tipo": plan["tipo"], "criterios": plan["criterios"],
-              "limites": plan["limites"],
+              "limites": plan["limites"], "que_es": plan["que_es"],
               "campos": plan["campos"], "webs": plan["webs"], "busquedas": plan["busquedas"],
               "paginas": len(pages), "avisos": warnings}
     if plan["tipo"] == "informe":
@@ -380,10 +551,20 @@ def run_search(chat: ChatFn, browser, request: str, progress: Callable[[str, int
             warnings.append("No se encontro informacion util en las paginas revisadas.")
         return result
     unique = _dedupe(items)
-    kept = [it for it in unique if it["encaje"] >= MIN_MATCH and within_limits(it, plan["limites"])]
-    kept.sort(key=lambda it: -it["encaje"])
+    other_kind = [it for it in unique if not matches_kind(it, plan["que_es"])]
+    limit_fields = {l["campo"] for l in plan["limites"]}
+    # sin ninguno de los datos que se piden con numero, no se puede saber si cumple
+    empty = [it for it in unique if limit_fields and not limit_fields & set(it["datos"])]
+    kept = [it for it in unique if it["encaje"] >= MIN_MATCH and within_limits(it, plan["limites"])
+            and it not in other_kind and it not in empty]
+    kept.sort(key=lambda it: (-it["encaje"], -len(it["datos"])))
     if items and not kept:
         warnings.append("Se encontraron resultados, pero ninguno cumple bien lo pedido.")
+    if other_kind:
+        warnings.append(f"{len(other_kind)} descartados por ser de otro tipo "
+                        f"({', '.join(plan['que_es']['no'][:4])}…).")
+    if empty:
+        warnings.append(f"{len(empty)} descartados por no indicar {', '.join(sorted(limit_fields))}.")
     out_of_limits = sum(1 for it in unique if not within_limits(it, plan["limites"]))
     if out_of_limits:
         warnings.append(f"{out_of_limits} descartados por no cumplir " + ", ".join(

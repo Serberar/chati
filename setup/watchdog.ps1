@@ -90,6 +90,15 @@ function Ensure-Ollama {
             Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
         }
         Start-Sleep -Seconds 1
+        # Los procesos de modelo (llama-server) sobreviven a su Ollama y siguen
+        # ocupando la GPU: el 2026-09-29 uno huerfano la tuvo llena desde la
+        # manana y el modelo nuevo iba 3 veces mas lento. Fuera los huerfanos.
+        foreach ($p in Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" -ErrorAction SilentlyContinue) {
+            if (-not (Get-Process -Id $p.ParentProcessId -ErrorAction SilentlyContinue)) {
+                Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+                Write-Log "Proceso de modelo huerfano cerrado ($($p.ProcessId))."
+            }
+        }
         # Bug conocido de Ollama con GPUs Blackwell (RTX 50, esta laptop incluida):
         # flash attention se activa sola y hace crashear el modelo al cargar en GPU
         # (ollama/ollama#18276, #18232). Desactivarla es el fix documentado.

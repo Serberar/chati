@@ -64,6 +64,8 @@ def test_listing_search_filters_dedupes_and_summarizes():
     def chat(prompt):
         if "Prepara una busqueda" in prompt:
             return json.dumps({**PLAN, "webs": ["b.es"]})
+        if "TIPO concreto" in prompt:
+            return json.dumps({"si": ["piso", "vivienda"], "no": ["alquiler"]})
         if "LISTADO A" in prompt:
             return json.dumps({"pagina": "listado", "r": [
                 {"t": "Piso 1", "v": ["100"], "e": None, "p": 7},
@@ -153,6 +155,15 @@ def test_numeric_limits_are_checked_by_code_not_by_the_model():
     assert not deep_search.within_limits(too_expensive, limits)
 
 
+def test_values_with_the_thousands_cut_off_are_not_trusted():
+    limits = [{"campo": "precio", "min": None, "max": 12000}, {"campo": "km", "min": None, "max": 150000}]
+    assert not deep_search.within_limits({"datos": {"precio": "18.2", "km": "90.000"}}, limits)
+    assert not deep_search.within_limits({"datos": {"precio": "2.200 €", "km": "237 kms"}}, limits)
+    assert deep_search.within_limits({"datos": {"precio": "2.200 €", "km": "108.000 kms"}}, limits)
+    # limites pequeños (habitaciones) no se tocan
+    assert deep_search.within_limits({"datos": {"hab": "2"}}, [{"campo": "hab", "min": None, "max": 4}])
+
+
 def test_a_link_that_does_not_match_the_title_is_not_trusted():
     links = [("Mi cuenta", "https://a.es/account"), ("Kia Sportage 1.6 T-GDi 2022 Drive", "https://a.es/kia")]
     assert deep_search._pick_link(links, 0, "Kia Sportage 1.6 T-GDi MHEV") == "https://a.es/kia"
@@ -168,3 +179,64 @@ def test_limits_the_user_did_not_write_are_ignored():
         {"campo": "precio", "min": None, "max": 200000.0}, {"campo": "habitaciones", "min": 3.0, "max": None}]
     assert deep_search._clean_limits([{"campo": "precio", "max": 200000}], campos, "hasta 200 mil") == [
         {"campo": "precio", "min": None, "max": 200000.0}]
+
+
+def _item(titulo, **datos):
+    return {"titulo": titulo, "datos": datos, "url": "u-" + titulo, "fuente": "f.es", "encaje": 10, "nota": ""}
+
+
+def test_results_of_another_kind_are_dropped():
+    """Pidio casas y salian pisos (2026-09-29)."""
+    kind = {"si": ["casa", "chalet", "adosado", "villa"], "no": ["piso", "apartamento", "atico"]}
+    assert deep_search.matches_kind(_item("Casa adosada con 2 baños en Girón"), kind)
+    assert deep_search.matches_kind(_item("Villa en Girón"), kind)
+    assert deep_search.matches_kind(_item("Obra nueva en Girón"), kind)  # no dice nada: se deja
+    assert not deep_search.matches_kind(_item("Piso en Calle Dársena, 34, La Victoria"), kind)
+    assert not deep_search.matches_kind(_item("Ático con terraza"), kind)
+    assert deep_search.matches_kind(_item("Casa o piso en La Victoria"), kind)
+    assert deep_search.matches_kind(_item("Piso en Girón"), {"si": [], "no": []})
+
+
+def test_the_same_listing_written_differently_is_shown_once():
+    a = _item("Casa adosada con 2 baños", precio="260.000 €", habitaciones="3", m2="169", barrio="Girón")
+    b = {**_item("Villa en Girón", precio="260000", habitaciones="3 habs", m2="169 m²",
+                 barrio="Valladolid Capital, Zona de Girón", descripcion="TECNOCASA Agencia Inmobiliaria"),
+         "fuente": "trovit.es"}
+    c = _item("Otra casa", precio="199.900", habitaciones="3", m2="120")
+    out = deep_search._dedupe([a, b, c])
+    assert [it["titulo"] for it in out] == ["Casa adosada con 2 baños", "Otra casa"]
+    assert out[0]["tambien_en"] == ["trovit.es"]
+
+
+def test_a_limit_named_a_bit_differently_still_applies():
+    campos = ["precio", "habitaciones", "barrio"]
+    limits = deep_search._clean_limits([{"campo": "habitaciones mínimas", "min": 3}], campos, "al menos 3 habitaciones")
+    assert limits == [{"campo": "habitaciones", "min": 3.0, "max": None}]
+
+
+def test_numeric_limits_are_read_from_what_the_user_wrote():
+    campos = ["precio", "habitaciones", "barrio", "m2", "kilometros"]
+    lim = lambda text: {l["campo"]: (l["min"], l["max"]) for l in deep_search._limits_from_text(text, campos)}
+    assert lim("casas con un precio máximo de 260.000 euros y al menos 3 habitaciones") == {
+        "precio": (None, 260000), "habitaciones": (3, None)}
+    assert lim("coche de menos de 12000 euros y menos de 150000 km") == {"precio": (None, 12000), "kilometros": (None, 150000)}
+    assert lim("pisos entre 80 y 120 m2 hasta 200 mil euros") == {"m2": (80, 120), "precio": (None, 200000)}
+    assert lim("casas baratas en Girón") == {}
+
+
+def test_what_the_user_wrote_wins_over_what_the_model_proposes():
+    merged = deep_search._merge_limits([{"campo": "precio", "min": None, "max": 260000.0}],
+                                       [{"campo": "precio", "min": 50000.0, "max": 200000.0},
+                                        {"campo": "m2", "min": 90.0, "max": None}])
+    assert merged == [{"campo": "precio", "min": None, "max": 260000.0}, {"campo": "m2", "min": 90.0, "max": None}]
+
+
+def test_generic_words_do_not_count_as_the_kind():
+    assert deep_search._clean_kind({"si": ["Casas", "viviendas", "inmuebles"], "no": ["piso", "casas"]}) == {
+        "si": ["casas"], "no": ["piso"]}
+
+
+def test_the_kind_is_decided_by_how_the_title_starts():
+    kind = {"si": ["casa", "chalet", "villa"], "no": ["piso", "apartamento"]}
+    assert not deep_search.matches_kind(_item("Piso en Calle del Quejigo, Girón - Villa del Prado, Valladolid"), kind)
+    assert deep_search.matches_kind(_item("Casa adosada en Girón, cerca de pisos nuevos"), kind)

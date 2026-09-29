@@ -853,12 +853,16 @@ class JobPrefsRequest(BaseModel):
 # 8GB de VRAM (75% en GPU, 27 tok/s); con 8K, 92% y 47 tok/s (medido el
 # 2026-09-29).
 APPS_NUM_CTX = 8192
+# Tope de lo que escribe en cada llamada de las apps: a veces se enrollaba en una
+# pagina hasta llenar el contexto (~3 min en vez de 20s, 2026-09-29). Sobra para
+# 15 resultados, una carta o un informe.
+APPS_NUM_PREDICT = 2000
 
 
 def _job_chat(prompt: str) -> str:
     # el mismo modelo que el agente rapido (qwen3:8b), sin razonamiento previo
     return ollama.chat(CONFIG["opencode"]["model"], [{"role": "user", "content": prompt}],
-                       temperature=0.2, think=False, num_ctx=APPS_NUM_CTX)
+                       temperature=0.2, think=False, num_ctx=APPS_NUM_CTX, num_predict=APPS_NUM_PREDICT)
 
 
 @app.get("/jobs")

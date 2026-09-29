@@ -217,7 +217,8 @@ def test_send_prompt_async_picks_the_agent_only_when_given(mock_post):
     mock_post.return_value = _ok_response({})
     opencode_client.send_prompt_async(BASE, "ses_1", "x", "chati")
     opencode_client.send_prompt_async(BASE, "ses_1", "x")
-    bodies = [c.kwargs["json"] for c in mock_post.call_args_list]
+    # solo las de OpenCode (hilos de otros tests pueden colarse en el parche global)
+    bodies = [c.kwargs["json"] for c in mock_post.call_args_list if c.args[0].startswith(BASE)]
     assert bodies[0]["agent"] == "chati"
     assert "agent" not in bodies[1]
 

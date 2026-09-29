@@ -33,7 +33,10 @@ este formato JSON, sin nada mas alrededor:
   - agente: HACER algo real en el ordenador del usuario - crear, modificar,
     mover, renombrar, borrar u ordenar archivos o carpetas, ejecutar
     programas o comandos, cambiar el codigo de un proyecto que tiene en disco.
-    Solo si pide que se haga de verdad, no si pregunta como hacerlo.
+    Solo si pide que se haga de verdad (una orden: "renombra", "ordena",
+    "crea"...). Si PREGUNTA como se hace ("¿como renombro...?", "¿como puedo
+    ordenar...?"), es text: quiere la explicacion, no que se haga.
+  - code tambien si pregunta que hace un fragmento de codigo o por que falla.
 - factual: true si responder correctamente requiere datos verificables
   (fechas, cifras, nombres propios, eventos concretos que podrian ser
   incorrectos). false si es conversacion, opinion, creatividad o codigo.
