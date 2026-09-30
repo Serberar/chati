@@ -37,13 +37,15 @@ def test_chunk_text_overlap_repeats_trailing_sentence():
     assert first_words & second_words, "deberia haber solape entre chunks consecutivos"
 
 
-def test_chunk_text_single_oversized_sentence_stays_whole():
-    # una sola "frase" (sin puntuacion) mas larga que el tamano de chunk:
-    # se deja entera en vez de cortarla a media palabra
+def test_chunk_text_oversized_sentence_is_split_without_cutting_words():
+    # una sola "frase" (sin puntuacion) mas larga que el tamaño de chunk: antes
+    # quedaba entera, y un texto sin puntos era un unico trozo gigante
+    # (auditoria 2026-09-30). Ahora se parte, pero nunca a media palabra.
     text = "palabra " * 500
     chunks = _chunk_text(text, size=200, overlap=50)
-    assert len(chunks) == 1
-    assert chunks[0].startswith("palabra")
+    assert len(chunks) > 1
+    assert max(len(c) for c in chunks) <= 200 + 200 // 3 + 10
+    assert all(w == "palabra" for c in chunks for w in c.split())
 
 
 def test_chunk_text_normalizes_whitespace():

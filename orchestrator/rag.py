@@ -41,15 +41,66 @@ def _sanitize_filename(filename: str) -> str:
     return name
 
 
+# Topes al leer documentos (auditoria 2026-09-30): un .docx de 0,4 MB que por
+# dentro eran 150 MB de texto se descomprimia entero (334 MB de memoria); con el
+# limite de subida de 100 MB podia pedir decenas de GB y tumbar el orquestador.
+MAX_TEXT_CHARS = 2_000_000          # ~un libro de 1.000 paginas
+MAX_DOCX_UNCOMPRESSED = 50 * 1024 * 1024
+MAX_PDF_PAGES = 2000
+
+
+def _check_docx(path: Path) -> None:
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            total = sum(i.file_size for i in z.infolist())
+    except zipfile.BadZipFile as exc:
+        raise ValueError("El archivo .docx esta dañado o no es un documento de Word.") from exc
+    if total > MAX_DOCX_UNCOMPRESSED:
+        raise ValueError("El documento es demasiado grande por dentro (mas de 50 MB descomprimido).")
+
+
 def _extract_text(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         reader = pypdf.PdfReader(str(path))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+        parts, size = [], 0
+        for page in reader.pages[:MAX_PDF_PAGES]:
+            text = page.extract_text() or ""
+            parts.append(text)
+            size += len(text)
+            if size >= MAX_TEXT_CHARS:
+                break
+        return "\n".join(parts)[:MAX_TEXT_CHARS]
     if suffix == ".docx":
+        _check_docx(path)
         doc = DocxDocument(str(path))
-        return "\n".join(p.text for p in doc.paragraphs)
-    return path.read_text(encoding="utf-8", errors="ignore")
+        return "\n".join(p.text for p in doc.paragraphs)[:MAX_TEXT_CHARS]
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        return f.read(MAX_TEXT_CHARS)
+
+
+def _split_long(sentence: str, limit: int) -> list[str]:
+    """Una frase mas larga que `limit`, en pedazos por espacios (sin cortar
+    palabras); solo una "palabra" enorme por si sola se corta a lo bruto."""
+    if len(sentence) <= limit:
+        return [sentence]
+    pieces, current = [], ""
+    for word in sentence.split(" "):
+        while len(word) > limit:
+            if current:
+                pieces.append(current)
+                current = ""
+            pieces.append(word[:limit])
+            word = word[limit:]
+        if current and len(current) + 1 + len(word) > limit:
+            pieces.append(current)
+            current = word
+        else:
+            current = f"{current} {word}" if current else word
+    if current:
+        pieces.append(current)
+    return pieces
 
 
 def _chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -60,7 +111,11 @@ def _chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP)
     text = " ".join(text.split())  # normaliza espacios/saltos de linea
     if not text:
         return []
-    sentences = [s for s in _SENTENCE_SPLIT.split(text) if s]
+    # una "frase" sin puntos (tablas, texto pegado) salia como un solo trozo
+    # gigante: se parte en pedazos (de un tercio del trozo, para que el solape
+    # entre trozos siga siendo pequeño)
+    piece_len = max(overlap, size // 3)
+    sentences = [piece for s in _SENTENCE_SPLIT.split(text) if s for piece in _split_long(s, piece_len)]
     if not sentences:
         return []
 
