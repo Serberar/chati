@@ -76,14 +76,15 @@ function Update-Path {
 # Programas de fuera: con winget si lo hay; si no (Windows Sandbox, algunos
 # Windows 10/LTSC), el instalador oficial de una version fija, y SOLO si su
 # firma digital es valida y de quien debe ser (auditoria 2026-09-30).
-function Install-Tool($name, $wingetId, $url, $signer, $installerArgs, [switch]$Msi, [int[]]$OkCodes = @(0)) {
+function Install-Tool($name, $wingetId, $url, $signer, $installerArgs, [switch]$Msi, [int[]]$OkCodes = @(0),
+                      [string]$FileName = "") {
     Write-Host "Instalando $name..." -ForegroundColor Yellow
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         winget install --id $wingetId -e --silent --accept-source-agreements --accept-package-agreements
         if ($LASTEXITCODE -eq 0) { Update-Path; return }
         Write-Host "winget no pudo instalar ${name}; se usa el instalador oficial." -ForegroundColor Yellow
     }
-    $file = Join-Path $env:TEMP (Split-Path $url -Leaf)
+    $file = Join-Path $env:TEMP $(if ($FileName) { $FileName } else { Split-Path $url -Leaf })
     Write-Host "  Descargando $url ..." -ForegroundColor DarkGray
     Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
     $sig = Get-AuthenticodeSignature $file
@@ -117,6 +118,20 @@ if (-not ($vcRuntime -and $vcRuntime.Installed -eq 1)) {
         -OkCodes 0, 3010, 1638
 } else {
     Write-Host "Librerias de Visual C++ ya instaladas." -ForegroundColor Green
+}
+
+# 0b. Motor de Edge (WebView2) para la ventana de Chati. Windows 11 lo trae;
+# algun Windows 10 no. Si aun asi no funciona, la ventana abre Chati en el
+# navegador (desktop_app.py).
+$wv2 = @("HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+         "HKCU:\Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}") |
+    ForEach-Object { (Get-ItemProperty $_ -ErrorAction SilentlyContinue).pv } |
+    Where-Object { $_ -and $_ -ne "0.0.0.0" }
+if (-not $wv2) {
+    Install-Tool "Motor de Edge (WebView2)" "Microsoft.EdgeWebView2Runtime" "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
+        "Microsoft Corporation" "/silent /install" -FileName "MicrosoftEdgeWebview2Setup.exe"
+} else {
+    Write-Host "Motor de Edge (WebView2) ya instalado." -ForegroundColor Green
 }
 
 # 1. Ollama (nucleo de texto y codigo)

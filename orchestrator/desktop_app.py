@@ -9,6 +9,7 @@ mientras tanto arranca Ollama/ComfyUI/el orquestador (setup/start_all.ps1)
 en segundo plano, tambien sin ventana. Antes el acceso directo lanzaba
 PowerShell y se veia una terminal negra durante todo el arranque."""
 
+import logging
 import subprocess
 import threading
 import time
@@ -66,7 +67,33 @@ def _start_services() -> None:
         )
 
 
+class _WebViewFailure(logging.Handler):
+    """pywebview solo lo anota en su registro cuando el motor de Edge (WebView2)
+    no arranca, y la ventana se queda en negro para siempre (visto en Windows
+    Sandbox el 2026-09-30: "Couldn't find a compatible Webview2 Runtime"). Si
+    pasa, Chati se abre en el navegador normal."""
+
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.failed = threading.Event()
+
+    def emit(self, record):
+        if "WebView2 initialization failed" in record.getMessage():
+            self.failed.set()
+
+
+_webview_failure = _WebViewFailure()
+logging.getLogger("pywebview").addHandler(_webview_failure)
+
+
+def _fallback_to_browser(window) -> None:
+    if _webview_failure.failed.wait(timeout=BACKEND_TIMEOUT + 30):
+        webbrowser.open(URL)
+        window.destroy()
+
+
 def _boot(window) -> None:
+    threading.Thread(target=_fallback_to_browser, args=(window,), daemon=True).start()
     if not _backend_up():
         try:
             _start_services()
