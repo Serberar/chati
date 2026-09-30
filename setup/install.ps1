@@ -66,35 +66,75 @@ if (-not ([IO.Path]::GetFullPath($DataRoot).StartsWith([IO.Path]::GetFullPath($e
     Write-Host "Carpeta de datos restringida a $env:USERNAME (fuera del perfil de usuario)." -ForegroundColor Green
 }
 
+function Update-Path {
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+}
+
+# Programas de fuera: con winget si lo hay; si no (Windows Sandbox, algunos
+# Windows 10/LTSC), el instalador oficial de una version fija, y SOLO si su
+# firma digital es valida y de quien debe ser (auditoria 2026-09-30).
+function Install-Tool($name, $wingetId, $url, $signer, $installerArgs, [switch]$Msi) {
+    Write-Host "Instalando $name..." -ForegroundColor Yellow
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id $wingetId -e --silent --accept-source-agreements --accept-package-agreements
+        if ($LASTEXITCODE -eq 0) { Update-Path; return }
+        Write-Host "winget no pudo instalar ${name}; se usa el instalador oficial." -ForegroundColor Yellow
+    }
+    $file = Join-Path $env:TEMP (Split-Path $url -Leaf)
+    Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
+    $sig = Get-AuthenticodeSignature $file
+    if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notlike "CN=$signer*") {
+        Remove-Item $file -Force
+        throw "El instalador de $name no tiene la firma esperada ($signer). No se ejecuta."
+    }
+    if ($Msi) {
+        $p = Start-Process msiexec.exe -ArgumentList "/i `"$file`" /qn /norestart" -Wait -PassThru
+    } else {
+        $p = Start-Process $file -ArgumentList $installerArgs -Wait -PassThru
+    }
+    Remove-Item $file -Force -ErrorAction SilentlyContinue
+    if ($p.ExitCode -ne 0) { throw "El instalador de $name fallo (codigo $($p.ExitCode))." }
+    Update-Path
+}
+
 # 1. Ollama (nucleo de texto y codigo)
 if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-    Write-Host "Instalando Ollama..." -ForegroundColor Yellow
-    winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    Install-Tool "Ollama" "Ollama.Ollama" "https://github.com/ollama/ollama/releases/download/v0.34.4/OllamaSetup.exe" `
+        "Ollama Inc" "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"
 } else {
     Write-Host "Ollama ya instalado." -ForegroundColor Green
 }
 
-# 1a. Python (para los entornos de ComfyUI, sd-scripts y el orquestador). En
-# un Windows recien instalado "python" existe pero es el acceso directo que
-# abre la Microsoft Store: Get-Command no basta, hay que ver que responda.
-$pythonOk = $false
-try { $pythonOk = ((& python --version 2>&1) -join " ") -match "Python 3\.(1[0-9])" } catch { }
-if (-not $pythonOk) {
-    Write-Host "Instalando Python 3.12..." -ForegroundColor Yellow
-    winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-} else {
-    Write-Host "Python ya instalado." -ForegroundColor Green
+# 1a. Python 3.12 (entornos de ComfyUI, sd-scripts y el orquestador: el
+# lockfile y PyTorch estan probados con 3.12). En un Windows recien instalado
+# "python" suele ser el acceso directo que abre la Microsoft Store: se busca
+# la ruta REAL del python.exe y se usa esa en todo el script.
+function Find-Python312 {
+    $candidates = @()
+    try { $candidates += (& py -3.12 -c "import sys; print(sys.executable)" 2>$null) } catch { }
+    $candidates += "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", "$env:ProgramFiles\Python312\python.exe"
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c) -and ($c -notlike "*\WindowsApps\*")) {
+            if (((& $c --version 2>&1) -join " ") -match "Python 3\.12\.") { return $c }
+        }
+    }
+    return $null
 }
+$PythonExe = Find-Python312
+if (-not $PythonExe) {
+    Install-Tool "Python 3.12" "Python.Python.3.12" "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" `
+        "Python Software Foundation" "/quiet InstallAllUsers=1 PrependPath=1 Include_launcher=1 Include_test=0"
+    $PythonExe = Find-Python312
+    if (-not $PythonExe) { throw "No se encuentra Python 3.12 despues de instalarlo." }
+}
+Write-Host "Python: $PythonExe" -ForegroundColor Green
 
 # 1b. Git: para clonar ComfyUI y sd-scripts, y para que el agente pueda
 # registrar y deshacer sus cambios (su carpeta de trabajo es un repositorio
 # git, ver opencode_client.WORKDIR). Sin git no hay "Ver cambios / Deshacer".
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Write-Host "Instalando Git..." -ForegroundColor Yellow
-    winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    Install-Tool "Git" "Git.Git" "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.4/Git-2.55.0.4-64-bit.exe" `
+        "Johannes Schindelin" "/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES"
 } else {
     Write-Host "Git ya instalado." -ForegroundColor Green
 }
@@ -206,7 +246,7 @@ foreach ($name in $comfyNodes.Keys) {
 
 if (-not (Test-Path "$comfy\venv")) {
     Write-Host "Creando entorno virtual de ComfyUI..." -ForegroundColor Yellow
-    python -m venv "$comfy\venv"
+    & $PythonExe -m venv "$comfy\venv"
     & "$comfy\venv\Scripts\python.exe" -m pip install --upgrade pip
 
     # Mismo PyTorch nightly que el resto del sistema (cu128, no cu121) - las
@@ -266,7 +306,7 @@ if (-not (Test-Path $sdScripts)) {
 }
 if (-not (Test-Path "$sdScripts\venv")) {
     Write-Host "Creando entorno virtual de sd-scripts..." -ForegroundColor Yellow
-    python -m venv "$sdScripts\venv"
+    & $PythonExe -m venv "$sdScripts\venv"
     & "$sdScripts\venv\Scripts\python.exe" -m pip install --upgrade pip
     Install-Torch "$sdScripts\venv\Scripts\python.exe"
     & "$sdScripts\venv\Scripts\python.exe" -m pip install -r "$sdScripts\requirements.txt"
@@ -282,7 +322,7 @@ $orch = "$AiRoot\orchestrator"
 if (Test-Path $orch) {
     if (-not (Test-Path "$orch\venv")) {
         Write-Host "Creando entorno virtual del orquestador..." -ForegroundColor Yellow
-        python -m venv "$orch\venv"
+        & $PythonExe -m venv "$orch\venv"
         & "$orch\venv\Scripts\python.exe" -m pip install --upgrade pip
 
         $lockFile = "$orch\requirements.lock.txt"
@@ -305,9 +345,8 @@ if (Test-Path $orch) {
 
 # 4. Node.js + OpenCode (agente de codigo local, ver AGENTS.md)
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    Write-Host "Instalando Node.js..." -ForegroundColor Yellow
-    winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    Install-Tool "Node.js" "OpenJS.NodeJS.LTS" "https://nodejs.org/dist/v24.19.0/node-v24.19.0-x64.msi" `
+        "OpenJS Foundation" "" -Msi
 } else {
     Write-Host "Node.js ya instalado." -ForegroundColor Green
 }
