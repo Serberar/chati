@@ -10,6 +10,7 @@ modelo del texto de la pagina; los datos de producto (schema.org) que ponen
 las tiendas son solo una pista: medido el 2026-09-29, PcComponentes decia
 1,21 EUR en ellos (la cuota de financiacion) para unos auriculares de 199."""
 
+import logging
 import statistics
 import threading
 import time
@@ -386,6 +387,7 @@ def start(user_id: str, dek: bytes, key_generation: int, req: dict, chat: ChatFn
         except Cancelled:
             state.update(error="Busqueda cancelada.")
         except Exception as exc:
+            logging.getLogger("chati").exception("Busqueda de compras fallida")
             state.update(error=f"La busqueda fallo: {exc}")
         finally:
             state.update(running=False)

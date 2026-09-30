@@ -1481,3 +1481,36 @@ def test_my_apps_routes_after_moving_them_out_of_main():
     assert mock_start.call_args.args[3] == "casas en Valladolid"
     guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
     assert guest.get("/deep").status_code == 403
+
+
+def test_a_late_chat_load_is_unloaded_when_already_in_image_mode():
+    """Automatico al abrir + Imagen enseguida: la carga del chat acababa
+    despues y dejaba qwen3 en la GPU a mitad de la imagen (2026-09-29)."""
+    release = threading.Event()
+
+    def slow_preload(model, *a, **k):
+        release.wait(5)
+
+    with patch.object(main.ollama, "preload", side_effect=slow_preload),          patch.object(main.ollama, "running_models", return_value=["qwen3:8b"]),          patch.object(main.ollama, "unload") as mock_unload,          patch.object(main.opencode_client, "busy_session_ids", return_value=[]),          patch.object(main.comfyui_client, "free_memory"),          patch.object(main.comfyui_client, "user_queue", return_value=(0, 0)),          patch.object(main.image_agent, "generate", return_value=b"png"):
+        client.post("/models/prepare", json={"mode": "chat"})   # se queda cargando...
+        client.post("/models/prepare", json={"mode": "image"})  # ...y se pasa a Imagen
+        _wait_prepare_done()
+        mock_unload.reset_mock()
+        release.set()  # la carga del chat termina tarde
+        for _ in range(50):
+            if mock_unload.called:
+                break
+            time.sleep(0.05)
+    assert mock_unload.called, "lo que cargo el chat tarde tiene que salir de la GPU"
+    assert client.get("/models/prepare").json()["mode"] == "image"
+
+
+def test_password_recovery_does_not_reveal_which_users_exist():
+    anon = TestClient(app)
+    q1 = anon.get("/auth/security-question/no_existe_nadie_asi").json()["security_question"]
+    assert q1 == anon.get("/auth/security-question/No_Existe_Nadie_Asi").json()["security_question"]  # estable
+    resp = anon.post("/auth/reset-password", json={"username": "no_existe_nadie_asi",
+                                                   "security_answer": "x", "new_password": "otra-larga-1"})
+    assert resp.status_code == 400 and resp.json()["detail"] == "Respuesta incorrecta."
+    import rate_limit
+    rate_limit.password_reset.succeed("no_existe_nadie_asi")

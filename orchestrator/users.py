@@ -278,11 +278,14 @@ def reset_via_security_question(username: str, security_answer: str, new_passwor
     if len(new_password) < 8:
         raise UserError("La contraseña debe tener al menos 8 caracteres.")
     user = get_user(username)
-    if not user or not user["security_answer_hash"]:
-        raise UserError("No hay pregunta de seguridad configurada para ese usuario.")
+    # mismo mensaje y mismo tiempo exista o no: si no, se sabria que usuarios hay
+    target_hash = user["security_answer_hash"] if user and user["security_answer_hash"] else _DUMMY_HASH
     try:
-        _password_hasher.verify(user["security_answer_hash"], security_answer.strip().lower())
+        _password_hasher.verify(target_hash, security_answer.strip().lower())
+        if target_hash is _DUMMY_HASH:
+            raise VerifyMismatchError()
     except VerifyMismatchError:
+        log_security_event("password_reset_failed", username)
         raise UserError("Respuesta incorrecta.")
 
     salt = os.urandom(16)

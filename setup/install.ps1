@@ -50,6 +50,17 @@ Write-Host "Datos y modelos: $DataRoot" -ForegroundColor Cyan
 setx CHATI_DATA_ROOT "$DataRoot" | Out-Null
 $env:CHATI_DATA_ROOT = $DataRoot
 
+# Fuera del perfil del usuario (p.ej. C:\Chati en modo "todo junto"), una
+# carpeta hereda de C:\ "Modificar" para cualquier cuenta de Windows: otra
+# cuenta del equipo podria leer las claves de data\ o cambiar lo que se
+# ejecuta (auditoria 2026-09-29). Se deja solo para este usuario, SYSTEM y
+# los administradores. En %LOCALAPPDATA% ya es privada.
+New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
+if (-not ([IO.Path]::GetFullPath($DataRoot).StartsWith([IO.Path]::GetFullPath($env:USERPROFILE), "OrdinalIgnoreCase"))) {
+    icacls $DataRoot /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C /Q | Out-Null
+    Write-Host "Carpeta de datos restringida a $env:USERNAME (fuera del perfil de usuario)." -ForegroundColor Green
+}
+
 # 1. Ollama (nucleo de texto y codigo)
 if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     Write-Host "Instalando Ollama..." -ForegroundColor Yellow

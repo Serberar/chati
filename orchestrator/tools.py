@@ -5,6 +5,7 @@ mensaje como, mas importante, que el modelo invente una fecha o un dato que
 podria haber consultado."""
 
 import datetime
+import os
 import subprocess
 import sys
 import tempfile
@@ -169,7 +170,9 @@ TOOL_DEFS = [
                 "memoria. Usala siempre que la respuesta dependa de un calculo numerico "
                 "concreto (sumas, multiplicaciones, porcentajes, estadisticas, "
                 "conversiones de unidades) para no arriesgarte a un error de calculo. "
-                "El codigo debe usar print() para mostrar el resultado, si no no se ve nada."
+                "El codigo debe usar print() para mostrar el resultado, si no no se ve nada. "
+                "Solo biblioteca estandar (math, statistics, fractions, decimal, datetime, "
+                "json, re...): sin numpy, sin red y sin archivos del ordenador."
             ),
             "parameters": {
                 "type": "object",
@@ -188,24 +191,31 @@ def fecha_actual() -> str:
     return f"Hoy es {DIAS[now.weekday()]}, {now.day} de {MESES[now.month - 1]} de {now.year}. Hora: {now.strftime('%H:%M')}."
 
 
+SANDBOX = Path(__file__).with_name("python_sandbox.py")
+
+
 def ejecutar_python(codigo: str) -> str:
-    """Ejecuta codigo Python en un proceso aparte con timeout y directorio de
-    trabajo temporal, para que un bucle infinito o un fallo del codigo
-    generado no puedan tumbar el orquestador ni escribir sobre archivos
-    reales por accidente. OJO: esto NO es un sandbox de seguridad contra
-    codigo deliberadamente malicioso (no hay aislamiento de red ni de
-    sistema de archivos mas alla del directorio de trabajo) - es proteccion
-    contra accidentes, adecuada para un modelo local de confianza en un
-    sistema de un solo usuario, no para ejecutar entrada no confiable."""
+    """Ejecuta codigo Python en un proceso aparte con timeout, en una carpeta
+    temporal y dentro de la jaula de python_sandbox.py: sin red, sin lanzar
+    programas y sin tocar archivos fuera de esa carpeta. El modelo la llama sin
+    pedir confirmacion y lee textos de fuera (documentos, memoria), asi que
+    una instruccion escondida en un documento no puede usarla para hacer
+    nada en el ordenador (auditoria 2026-09-29)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         script_path = Path(tmpdir) / "snippet.py"
         script_path.write_text(codigo, encoding="utf-8")
+        # -I: sin variables de entorno ni site del usuario; -B: sin escribir .pyc fuera
+        env = {k: v for k, v in os.environ.items() if k.upper() in ("SYSTEMROOT", "WINDIR", "PATH")}
+        env.update(TEMP=tmpdir, TMP=tmpdir, PYTHONIOENCODING="utf-8")
         try:
             result = subprocess.run(
-                [sys.executable, str(script_path)],
+                [sys.executable, "-I", "-B", str(SANDBOX), tmpdir],
                 cwd=tmpdir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
                 timeout=PYTHON_EXEC_TIMEOUT,
             )
         except subprocess.TimeoutExpired:

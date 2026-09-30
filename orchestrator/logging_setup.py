@@ -38,4 +38,12 @@ def setup() -> logging.Logger:
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     for noisy in ("httpx", "httpx2", "urllib3", "chromadb", "PIL"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    logging.getLogger("asyncio").addFilter(_skip_client_disconnects)
     return logging.getLogger("chati")
+
+
+def _skip_client_disconnects(record: logging.LogRecord) -> bool:
+    """En Windows, asyncio anota como ERROR cada vez que el navegador corta una
+    conexion (cerrar la pestaña, recargar): WinError 10054. No es un fallo."""
+    exc = record.exc_info[1] if record.exc_info else None
+    return not isinstance(exc, (ConnectionResetError, ConnectionAbortedError))

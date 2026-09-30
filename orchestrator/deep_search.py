@@ -14,6 +14,7 @@ de un portal trae decenas de anuncios: se sacan de ahi directamente (con su
 enlace) en vez de abrir cada uno."""
 
 import datetime
+import logging
 import re
 import threading
 import time
@@ -638,6 +639,7 @@ def start(user_id: str, dek: bytes, key_generation: int, consulta: str, chat: Ch
         except Cancelled:
             state.update(error="Busqueda cancelada.")
         except Exception as exc:
+            logging.getLogger("chati").exception("Busqueda profunda fallida")
             state.update(error=f"La busqueda fallo: {exc}")
         finally:
             state.update(running=False)

@@ -5,6 +5,8 @@ sesion lleva la clave (DEK) del usuario solo en memoria.
 Lo que hay que borrar al eliminar un usuario vive en otros modulos: main.py
 lo pasa con configure()."""
 
+import hashlib
+import hmac
 import secrets
 from typing import Callable
 
@@ -196,11 +198,21 @@ def auth_change_password(req: ChangePasswordRequest, request: Request):
     return _with_session_cookie({"token": new_token}, new_token)
 
 
+# Para un usuario que no existe (o sin pregunta) se contesta con una de estas,
+# siempre la misma para cada nombre: antes el 404 decia que usuarios hay.
+_DECOY_QUESTIONS = [
+    "¿Cómo se llamaba tu primera mascota?", "¿En qué ciudad naciste?", "¿Cuál es tu comida favorita?",
+    "¿Cómo se llamaba tu colegio?", "¿Cuál fue tu primer coche?", "¿Cuál es el segundo nombre de tu madre?",
+]
+
+
 @router.get("/auth/security-question/{username}")
 def auth_security_question(username: str):
     user = users.get_user(username)
     if not user or not user["security_question"]:
-        return JSONResponse({"detail": "No hay pregunta de seguridad configurada para ese usuario."}, status_code=404)
+        digest = hmac.new(users.get_or_create_registration_key().encode(), username.strip().lower().encode(),
+                          hashlib.sha256).digest()
+        return {"security_question": _DECOY_QUESTIONS[digest[0] % len(_DECOY_QUESTIONS)]}
     return {"security_question": user["security_question"]}
 
 

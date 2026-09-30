@@ -6,11 +6,17 @@ faster-whisper
 piper-tts
 python-multipart
 playwright
-browser-use
 chromadb
 argon2-cffi
 cryptography
 opencv-python-headless
+pillow
 pillow-heif
+numpy
+# lectura de documentos (PDF y Word) en rag.py; antes llegaban de rebote con
+# browser-use, que no se usa y arrastraba ~35 paquetes (auditoria 2026-09-29)
+pypdf
+python-docx
 pytest
+httpx2  # cliente de pruebas de Starlette (TestClient)
 pywebview

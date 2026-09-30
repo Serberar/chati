@@ -231,6 +231,22 @@ async function initSessionUI() {
   currentMe = me;
   loadAvatar();
   if (me.role === "admin") document.getElementById("adminBtn").style.display = "block";
+  if (me.role === "admin") {
+    // OpenCode tiene contraseña (auditoria 2026-09-29): se copia al pulsar el enlace
+    const link = document.getElementById("optCodeAgentLink");
+    link.style.display = "";
+    link.addEventListener("click", async () => {
+      try {
+        const r = await fetch("/agent/web-login");
+        if (!r.ok) return;
+        const cred = await r.json();
+        await navigator.clipboard.writeText(cred.password);
+        alert(`OpenCode pide usuario y contraseña.
+Usuario: ${cred.user}
+La contraseña ya está copiada: pégala con Ctrl+V.`);
+      } catch (e) {}
+    });
+  }
   if (!me.pc_access) {
     // sin permiso para usar el ordenador: fuera los modos que lo tocan
     for (const value of ["agente", "codigo"]) {

@@ -97,6 +97,26 @@ def new_tmp_path(ext: str) -> Path:
     return tmp_dir() / (uuid.uuid4().hex + (ext if ext.startswith(".") else "." + ext))
 
 
+MEDIA_MAX_AGE_DAYS = 30
+
+
+def cleanup_old_media(max_age_days: float = MEDIA_MAX_AGE_DAYS) -> int:
+    """El historial guarda el texto de la respuesta, no la imagen: al recargar,
+    una imagen generada ya no se puede volver a abrir desde la interfaz (se
+    descarga con el boton al momento). Y las de invitado no las puede
+    descifrar nadie. Sin esto se acumulaban para siempre."""
+    removed = 0
+    limit = time.time() - max_age_days * 86400
+    for p in media_dir().glob("*.enc"):
+        try:
+            if p.stat().st_mtime < limit:
+                p.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def cleanup_tmp(max_age: float = TMP_MAX_AGE_SECONDS) -> int:
     """Borra temporales huerfanos. Devuelve cuantos."""
     removed = 0

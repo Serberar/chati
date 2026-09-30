@@ -12,6 +12,7 @@ qwen3:8b manejando el navegador el mismo a lo largo de muchas paginas se
 perdia. Navegador: Edge invisible (viene con Windows) via Playwright.
 Google bloquea a los navegadores automatizados (comprobado); Bing no."""
 
+import logging
 import re
 import tempfile
 import threading
@@ -398,6 +399,7 @@ def start(user_id: str, dek: bytes, key_generation: int, chat: ChatFn,
         except Cancelled:
             state.update(error="Busqueda cancelada.")
         except Exception as exc:
+            logging.getLogger("chati").exception("Busqueda de empleo fallida")
             state.update(error=f"La busqueda fallo: {exc}")
         finally:
             state.update(running=False)

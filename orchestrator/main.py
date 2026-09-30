@@ -240,6 +240,10 @@ async def _lifespan(_app):
     removed = media_store.cleanup_tmp()
     if removed:
         log.info("Temporales huerfanos borrados: %d", removed)
+    old_media = media_store.cleanup_old_media()
+    if old_media:
+        log.info("Imagenes/videos generados de hace mas de %d dias borrados: %d",
+                 media_store.MEDIA_MAX_AGE_DAYS, old_media)
     purged = memory.purge_guest_messages(older_than_hours=24)
     if purged:
         log.info("Mensajes de invitado antiguos borrados: %d", purged)
@@ -576,6 +580,15 @@ def _opencode_call(fn, *args):
         return JSONResponse(
             {"detail": f"No se pudo contactar con el agente de codigo (¿esta arrancado?): {exc}"},
             status_code=502)
+
+
+@app.get("/agent/web-login")
+def agent_web_login(request: Request):
+    """Usuario y contraseña de la vista avanzada de OpenCode (Opciones), solo
+    para el administrador: OpenCode tiene contraseña desde la auditoria."""
+    if request.state.session["role"] != "admin":
+        return JSONResponse({"detail": "Solo el administrador."}, status_code=403)
+    return {"user": opencode_client.AUTH[0], "password": opencode_client.AUTH[1]}
 
 
 @app.get("/agent/tasks")
@@ -1650,6 +1663,7 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
             full_text += chunk
             yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
     except Exception as exc:
+        log.exception("Fallo generando la respuesta del chat")
         metrics.log_event(agent_name, (time.perf_counter() - stream_start) * 1000, False, error=str(exc))
         yield json.dumps({"type": "done", "response": f"Fallo generando la respuesta: {exc}",
                            "verifier_gated": False, "session_id": session_id}) + "\n"
@@ -1941,10 +1955,20 @@ def _run_prepare(req: PrepareRequest, ticket: int) -> None:
         _prepare_work(req)
         state, detail = "ready", None
     except Exception as exc:
+        log.warning("No se pudo preparar el modo %s: %s", req.mode, exc)
         state, detail = "error", str(exc)
     with _prepare_lock:
-        if _prepare_state["ticket"] == ticket:
+        stale = _prepare_state["ticket"] != ticket
+        now_generating = _prepare_state["mode"] in ("image", "video")
+        if not stale:
             _prepare_state.update(state=state, detail=detail)
+    # Al abrir la pagina (Automatico carga el chat) y pasar enseguida a Imagen,
+    # la carga del chat terminaba DESPUES y volvia a meter qwen3:8b en la GPU a
+    # mitad de la imagen de FLUX, que pasaba de segundos a minutos (auditoria
+    # 2026-09-29, GPU al 95%). Si ya se esta en Imagen/Video, lo que acaba de
+    # cargar un modo anterior se descarga.
+    if stale and now_generating and req.mode not in ("image", "video"):
+        _keep_only_ollama(set(), heavy=None)
 
 
 @app.get("/work/pending")
