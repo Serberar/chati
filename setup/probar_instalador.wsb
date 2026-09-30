@@ -1,0 +1,20 @@
+<!--
+  Windows Sandbox para probar el instalador en un Windows limpio (se borra
+  todo al cerrar la ventana). Doble clic en este archivo.
+  Dentro: el instalador aparece en el Escritorio, en la carpeta "Instalador".
+  Requisito (una vez, como administrador y reiniciando):
+    Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM -All
+-->
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\AI\setup\Output</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\Instalador</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <Networking>Enable</Networking>
+  <vGPU>Enable</vGPU>
+  <MemoryInMB>16384</MemoryInMB>
+  <ClipboardRedirection>Enable</ClipboardRedirection>
+</Configuration>

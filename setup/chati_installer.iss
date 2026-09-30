@@ -40,7 +40,7 @@ spanish.WelcomeCredit=Creada por Sergio Bernabé.
 Source: "..\orchestrator\*"; DestDir: "{app}\orchestrator"; Flags: recursesubdirs ignoreversion; \
     Excludes: "venv\*,__pycache__\*,.pytest_cache\*,outputs\*,_persona_upload_*,test_*.png,test_*.mp4,test_*.wav,test_*.webm,i2v_*.png,server.log"
 Source: "..\setup\*"; DestDir: "{app}\setup"; Flags: recursesubdirs ignoreversion; \
-    Excludes: "watchdog.log,last_backup.txt,chati_installer.iss,Output\*"
+    Excludes: "watchdog.log,watchdog.log.old,last_backup.txt,chati_installer.iss,probar_instalador.wsb,Output\*"
 Source: "..\AGENTS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\MANUAL_DE_USO.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\icono.ico"; DestDir: "{app}"; Flags: ignoreversion
