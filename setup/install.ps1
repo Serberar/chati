@@ -38,6 +38,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# En Windows PowerShell 5.1 la barra de progreso de Invoke-WebRequest ralentiza
+# muchisimo las descargas (visto en Windows Sandbox con el instalador de Ollama)
+$ProgressPreference = "SilentlyContinue"
 
 Write-Host "=== Instalando Chati IA ===" -ForegroundColor Cyan
 Write-Host "Codigo: $AiRoot" -ForegroundColor Cyan
@@ -81,17 +84,23 @@ function Install-Tool($name, $wingetId, $url, $signer, $installerArgs, [switch]$
         Write-Host "winget no pudo instalar ${name}; se usa el instalador oficial." -ForegroundColor Yellow
     }
     $file = Join-Path $env:TEMP (Split-Path $url -Leaf)
+    Write-Host "  Descargando $url ..." -ForegroundColor DarkGray
     Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
     $sig = Get-AuthenticodeSignature $file
     if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notlike "CN=$signer*") {
         Remove-Item $file -Force
         throw "El instalador de $name no tiene la firma esperada ($signer). No se ejecuta."
     }
+    Write-Host "  Firma correcta ($signer). Instalando..." -ForegroundColor DarkGray
+    # WaitForExit y no "Start-Process -Wait": -Wait espera tambien a todo lo que
+    # lance el instalador, y el de Ollama deja su aplicacion abierta para siempre
+    # (se quedo 2 h "Instalando Ollama" en Windows Sandbox, 2026-09-30)
     if ($Msi) {
-        $p = Start-Process msiexec.exe -ArgumentList "/i `"$file`" /qn /norestart" -Wait -PassThru
+        $p = Start-Process msiexec.exe -ArgumentList "/i `"$file`" /qn /norestart" -PassThru
     } else {
-        $p = Start-Process $file -ArgumentList $installerArgs -Wait -PassThru
+        $p = Start-Process $file -ArgumentList $installerArgs -PassThru
     }
+    $p.WaitForExit()
     Remove-Item $file -Force -ErrorAction SilentlyContinue
     if ($p.ExitCode -ne 0) { throw "El instalador de $name fallo (codigo $($p.ExitCode))." }
     Update-Path

@@ -29,6 +29,9 @@ WizardStyle=modern
 ; nuevo desde la propia app despues nunca pedira permisos.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
+; sin esto {autopf} es "Program Files (x86)" aunque todo sea de 64 bits
+; (visto en Windows Sandbox, 2026-09-30)
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
