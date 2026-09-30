@@ -19,6 +19,20 @@ def log_event(agent: str, latency_ms: float, verifier_gated: bool = False,
     }
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(event) + "\n")
+    _trim()
+
+
+MAX_BYTES = 5 * 1024 * 1024  # ~40.000 eventos; antes crecia sin fin y se leia entero
+
+
+def _trim() -> None:
+    try:
+        if LOG_PATH.stat().st_size <= MAX_BYTES:
+            return
+        lines = LOG_PATH.read_text(encoding="utf-8").splitlines()
+        LOG_PATH.write_text("\n".join(lines[len(lines) // 2:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 @contextmanager

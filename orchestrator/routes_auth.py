@@ -12,7 +12,9 @@ from typing import Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, Field
 
 import access
 import auth_sessions
@@ -31,38 +33,45 @@ def configure(on_login: Callable[[dict], None], delete_user_data: Callable[[str]
     _on_login, _delete_user_data = on_login, delete_user_data
 
 
+# tope a lo que se le pasa a Argon2: una "contraseña" de varios MB lo tenia
+# trabajando segundos por intento
+Password = Annotated[str, Field(max_length=256)]
+Name = Annotated[str, Field(max_length=64)]
+ShortText = Annotated[str, Field(max_length=500)]
+
+
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: Name
+    password: Password
 
 
 class RegisterRequest(BaseModel):
-    username: str
-    password: str
-    registration_key: str
-    security_question: str | None = None
-    security_answer: str | None = None
+    username: Name
+    password: Password
+    registration_key: ShortText
+    security_question: ShortText | None = None
+    security_answer: Password | None = None
 
 
 class ChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str
+    old_password: Password
+    new_password: Password
 
 
 class ResetPasswordRequest(BaseModel):
-    username: str
-    security_answer: str
-    new_password: str
+    username: Name
+    security_answer: Password
+    new_password: Password
 
 
 class ProfileUpdateRequest(BaseModel):
-    display_name: str
+    display_name: Name
 
 
 class SecurityQuestionRequest(BaseModel):
-    password: str
-    question: str
-    answer: str
+    password: Password
+    question: ShortText
+    answer: Password
 
 
 class PcAccessRequest(BaseModel):
@@ -177,9 +186,14 @@ def auth_set_security_question(req: SecurityQuestionRequest, request: Request):
     session = _registered(request)
     if not session:
         return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
+    key = session["username"].lower()
+    wait = rate_limit.login.retry_after(key)
+    if wait:
+        return _too_many(wait)
     try:
         users.set_security_question(session["username"], req.password, req.question, req.answer)
     except users.UserError as exc:
+        rate_limit.login.fail(key)
         return JSONResponse({"detail": str(exc)}, status_code=400)
     return {"ok": True}
 
@@ -189,9 +203,15 @@ def auth_change_password(req: ChangePasswordRequest, request: Request):
     session = _registered(request)
     if not session:
         return JSONResponse({"detail": "No hay sesion activa."}, status_code=401)
+    # con una sesion robada se podia ir probando la contraseña actual sin fin
+    key = session["username"].lower()
+    wait = rate_limit.login.retry_after(key)
+    if wait:
+        return _too_many(wait)
     try:
         users.change_password(session["username"], req.old_password, req.new_password)
     except users.UserError as exc:
+        rate_limit.login.fail(key)
         return JSONResponse({"detail": str(exc)}, status_code=400)
     auth_sessions.destroy_all_sessions_for_user(session["username"])
     new_token = _new_session(users.login(session["username"], req.new_password))

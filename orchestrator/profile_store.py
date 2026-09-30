@@ -7,6 +7,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 import crypto_utils
 from paths import DATA_DIR
+import atomic
 
 PROFILE_DIR = DATA_DIR / "profile"
 PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -150,7 +151,7 @@ def save_agent_shortcuts(shortcuts: list[dict], user_id: str, dek: bytes, key_ge
             raise ValueError("Cada atajo necesita un nombre y la tarea a hacer.")
         clean.append({"name": name, "task": task, "potente": bool(s.get("potente", False))})
     d = _user_dir(user_id)
-    (d / "agent_shortcuts.json.enc").write_bytes(
+    atomic.write_bytes(d / "agent_shortcuts.json.enc",
         crypto_utils.encrypt_bytes(dek, json.dumps(clean, ensure_ascii=False).encode("utf-8")))
     (d / "agent_shortcuts_meta.json").write_text(json.dumps({"key_generation": key_generation}), encoding="utf-8")
     return clean

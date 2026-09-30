@@ -16,6 +16,9 @@ function clearLoggedIn() {
   try {
     localStorage.removeItem("ia_logged_in");
     localStorage.removeItem("ia_session_role");
+    // lo del usuario anterior no se queda en el navegador para el siguiente
+    localStorage.removeItem("ia_session_id");
+    localStorage.removeItem("ia_code_project");
   } catch (e) {}
 }
 function getSessionRole() {
@@ -28,6 +31,13 @@ function getSessionRole() {
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Enlaces e imagenes que vienen de webs ajenas (apps): solo http(s). Un
+// "javascript:..." en un resultado seria codigo al pulsarlo (auditoria 2026-09-30).
+function webUrl(value) {
+  const url = String(value || "").trim();
+  return /^https?:\/\//i.test(url) ? url : "#";
 }
 
 const _originalFetch = window.fetch;
@@ -231,6 +241,8 @@ async function initSessionUI() {
   currentMe = me;
   loadAvatar();
   if (me.role === "admin") document.getElementById("adminBtn").style.display = "block";
+  // las metricas son de todo el sistema: solo el administrador
+  if (me.role !== "admin") document.getElementById("optMetricsBtn").style.display = "none";
   if (me.role === "admin") {
     // OpenCode tiene contraseña (auditoria 2026-09-29): se copia al pulsar el enlace
     const link = document.getElementById("optCodeAgentLink");
@@ -1785,7 +1797,7 @@ document.getElementById("optCreditsBtn").addEventListener("click", () => {
   for (const [name, url, what] of CREDITS) {
     const row = document.createElement("div");
     const a = document.createElement("a");
-    a.href = url;
+    a.href = webUrl(url);
     a.target = "_blank";
     a.rel = "noopener";
     a.textContent = name;
@@ -1891,7 +1903,7 @@ function deepItemRow(it, why) {
   t.className = "t";
   t.textContent = it.titulo;
   const a = document.createElement("a");
-  a.href = it.url;
+  a.href = webUrl(it.url);
   a.target = "_blank";
   a.rel = "noopener";
   a.textContent = `Ver en ${it.fuente} ↗`;
@@ -1950,7 +1962,7 @@ function showDeepResult(id) {
       src.className = "deep-sources";
       h.fuentes.forEach((f, i) => {
         const a = document.createElement("a");
-        a.href = f.url;
+        a.href = webUrl(f.url);
         a.target = "_blank";
         a.rel = "noopener";
         a.textContent = `[${i + 1}] ${f.titulo} — ${f.fuente}`;
@@ -2104,7 +2116,7 @@ function shopOfferRow(o, cls) {
   row.className = cls;
   if (o.imagen) {
     const img = document.createElement("img");
-    img.src = o.imagen;
+    img.src = webUrl(o.imagen);
     img.loading = "lazy";
     img.onerror = () => img.remove();
     row.appendChild(img);
@@ -2128,7 +2140,7 @@ function shopOfferRow(o, cls) {
   price.className = "shop-price";
   price.textContent = shopMoney(o.precio, o.moneda);
   const link = document.createElement("a");
-  link.href = o.url;
+  link.href = webUrl(o.url);
   link.target = "_blank";
   link.rel = "noopener";
   link.textContent = "Ver en la tienda ↗";
@@ -2364,7 +2376,7 @@ function jobCard(o) {
   const actions = document.createElement("div");
   actions.className = "job-actions";
   const link = document.createElement("a");
-  link.href = o.url;
+  link.href = webUrl(o.url);
   link.target = "_blank";
   link.rel = "noopener";
   link.textContent = "Ver oferta e inscribirme ↗";

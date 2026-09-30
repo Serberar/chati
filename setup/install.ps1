@@ -57,7 +57,12 @@ $env:CHATI_DATA_ROOT = $DataRoot
 # los administradores. En %LOCALAPPDATA% ya es privada.
 New-Item -ItemType Directory -Force -Path $DataRoot | Out-Null
 if (-not ([IO.Path]::GetFullPath($DataRoot).StartsWith([IO.Path]::GetFullPath($env:USERPROFILE), "OrdinalIgnoreCase"))) {
-    icacls $DataRoot /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C /Q | Out-Null
+    # Solo en la carpeta (sin /T) y luego todo lo de dentro vuelve a heredar:
+    # con /T, (OI)(CI) no vale en archivos y se quedaban SIN ningun permiso
+    # (paso de verdad el 2026-09-30: users.db inaccesible hasta repararlo)
+    $me = "${env:USERDOMAIN}\${env:USERNAME}"
+    icacls $DataRoot /inheritance:r /grant:r "${me}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /Q | Out-Null
+    if (Get-ChildItem -LiteralPath $DataRoot -Force) { icacls "$DataRoot\*" /reset /T /C /Q | Out-Null }
     Write-Host "Carpeta de datos restringida a $env:USERNAME (fuera del perfil de usuario)." -ForegroundColor Green
 }
 

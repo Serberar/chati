@@ -443,6 +443,21 @@ def _post_to_owner(base_url: str, path: str, body: dict) -> None:
         resp.raise_for_status()
 
 
+def request_session(base_url: str, kind: str, request_id: str) -> str | None:
+    """De que tarea es una pregunta ("question") o un permiso ("permission")
+    pendiente: llegan solo con su id, y hay que saber de quien es la tarea
+    antes de contestar por ella."""
+    for directory in known_dirs():
+        try:
+            items = requests.get(f"{base_url}/{kind}", **_params(directory), auth=AUTH, timeout=3).json()
+        except (requests.RequestException, ValueError):
+            continue
+        for item in items if isinstance(items, list) else []:
+            if item.get("id") == request_id:
+                return item.get("sessionID")
+    return None
+
+
 def reply_question(base_url: str, request_id: str, answers: list[list[str]]) -> None:
     _post_to_owner(base_url, f"/question/{request_id}/reply", {"answers": answers})
 

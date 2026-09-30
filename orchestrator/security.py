@@ -14,6 +14,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+# ninguna peticion legitima pasa de esto (10 adjuntos del agente de 20 MB);
+# sin tope, un cuerpo de varios GB se leia entero en memoria
+MAX_BODY_BYTES = 250 * 1024 * 1024
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 # Todo el JS y el CSS se sirven desde /static (sin scripts en linea); las
@@ -69,6 +72,9 @@ class LocalOnlyMiddleware(BaseHTTPMiddleware):
             return JSONResponse({"detail": "Solo se aceptan conexiones a localhost."}, status_code=400)
         if request.method not in SAFE_METHODS and not origin_allowed(request.headers.get("origin"), host):
             return JSONResponse({"detail": "Origen no permitido."}, status_code=403)
+        length = request.headers.get("content-length")
+        if length and (not length.isdigit() or int(length) > MAX_BODY_BYTES):
+            return JSONResponse({"detail": "Peticion demasiado grande."}, status_code=413)
         response = await call_next(request)
         for name, value in SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)

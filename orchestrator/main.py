@@ -16,7 +16,7 @@ import yaml
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -60,6 +60,7 @@ import model_updates
 import opencode_client
 import plans
 import session_docs
+import task_owners
 import tools
 from rag import EMBED_MODEL, KnowledgeBase
 
@@ -315,6 +316,7 @@ def _delete_user_data(user_id: str) -> None:
     knowledge_base.delete_all_for_user(user_id)
     session_docs.delete_all_for_user(user_id)
     persona_trainer.delete_all_for_user(user_id)
+    task_owners.forget_user(user_id)
 
 
 routes_auth.configure(on_login=_on_login, delete_user_data=_delete_user_data)
@@ -322,11 +324,12 @@ app.include_router(routes_auth.router)
 
 
 class ChatRequest(BaseModel):
-    message: str
+    # topes: mas que cualquier mensaje real, y la foto como mucho ~25 MB
+    message: str = Field(max_length=100_000)
     agent: str | None = None  # si se omite, el router decide
     session_id: str | None = None  # si se omite, se crea una sesion nueva
     model_profile: str | None = None  # rapido/bueno/seguridad, ver ROADMAP.md punto 5c
-    image_base64: str | None = None  # si se manda, se comenta con el modelo de vision (no se genera nada)
+    image_base64: str | None = Field(None, max_length=35_000_000)  # se comenta con el modelo de vision (no se genera nada)
     verify: bool = True  # False salta el verificador anti-alucinacion para este mensaje - eleccion explicita del usuario, ver ROADMAP.md
     image_model: str | None = None  # id de model_registry.py (p.ej. "flux:flux1-schnell-Q4_K_S"), None = automatico
     video_model: str | None = None  # id de model_registry.py (p.ej. "ltxv:ltxv-2b-0.9.8-distilled-fp8"), None = automatico
@@ -454,12 +457,19 @@ async def llm_proxy_route(path: str, request: Request):
 
 
 @app.get("/metrics/summary")
-def metrics_summary(last_n: int = 2000):
-    return metrics.summary(last_n=last_n)
+def metrics_summary(request: Request, last_n: int = 2000):
+    """Uso de todo el sistema (todos los usuarios): solo el administrador."""
+    if request.state.session["role"] != "admin":
+        return JSONResponse({"detail": "Solo un administrador puede ver esto."}, status_code=403)
+    return metrics.summary(last_n=min(max(last_n, 1), 20000))
 
 
 @app.get("/plan/{session_id}")
-def get_plan(session_id: str):
+def get_plan(session_id: str, request: Request):
+    # el plan dice que se esta haciendo: solo para quien lleva esa conversacion
+    auth_session = request.state.session
+    if not (_owns_session(request, session_id) or session_id in auth_session.get("chat_sessions", set())):
+        return {"pasos": []}
     return {"pasos": plans.get_plan(session_id)}
 
 
@@ -582,6 +592,27 @@ def _opencode_call(fn, *args):
             status_code=502)
 
 
+def _owns_task(request: Request, session_id: str) -> bool:
+    s = request.state.session
+    return task_owners.may_use(session_id, s.get("user_id"), s.get("role") == "admin")
+
+
+def _owns_request(request: Request, kind: str, request_id: str) -> bool:
+    session_id = opencode_client.request_session(CONFIG["opencode"]["base_url"], kind, request_id)
+    return bool(session_id) and _owns_task(request, session_id)
+
+
+def _not_your_task() -> JSONResponse:
+    return JSONResponse({"detail": "Tarea no encontrada."}, status_code=404)
+
+
+def _own_tasks(request: Request, tasks):
+    """Solo las tareas de quien pregunta (antes se veian las de todos)."""
+    if isinstance(tasks, JSONResponse):
+        return tasks
+    return [t for t in tasks if _owns_task(request, t["session_id"])]
+
+
 @app.get("/agent/web-login")
 def agent_web_login(request: Request):
     """Usuario y contraseña de la vista avanzada de OpenCode (Opciones), solo
@@ -595,7 +626,7 @@ def agent_web_login(request: Request):
 def agent_list_tasks(request: Request):
     if request.state.session["role"] == "guest":
         return _guest_blocked()
-    return _opencode_call(opencode_client.list_tasks)
+    return _own_tasks(request, _opencode_call(opencode_client.list_tasks))
 
 
 @app.post("/agent/tasks")
@@ -612,7 +643,10 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         agent = CONFIG["opencode"]["agent_code_plan" if req.plan else "agent_code"]
         model = CONFIG["opencode"]["model"] if req.rapido else None
         result = _opencode_call(opencode_client.start_task, task, agent, str(project), model)
-        return result if isinstance(result, JSONResponse) else {"session_id": result}
+        if isinstance(result, JSONResponse):
+            return result
+        task_owners.record(result, request.state.session["user_id"])
+        return {"session_id": result}
     if not req.potente and not req.confirmed:
         choice = _assess_for_fast_agent(task)
         if choice:
@@ -620,13 +654,18 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
     agent = CONFIG["opencode"]["agent_potente" if req.potente else "agent"]
     note = agent_attachments.task_note(req.attachments)
     result = _opencode_call(opencode_client.start_task, f"{task}\n\n{note}" if note else task, agent)
-    return result if isinstance(result, JSONResponse) else {"session_id": result}
+    if isinstance(result, JSONResponse):
+        return result
+    task_owners.record(result, request.state.session["user_id"])
+    return {"session_id": result}
 
 
 @app.get("/agent/tasks/{session_id}")
 def agent_task_view(request: Request, session_id: str):
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
     return _opencode_call(_task_view, session_id)
 
 
@@ -651,6 +690,8 @@ def agent_task_live(request: Request, session_id: str):
     con un evento "end" y la interfaz vuelve a preguntar por su cuenta."""
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
     base = CONFIG["opencode"]["base_url"]
     marker = session_id.encode()
 
@@ -715,6 +756,8 @@ def agent_task_changes(request: Request, session_id: str):
     """Ver cambios: que archivos cambio la tarea en la carpeta de trabajo."""
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
     return _opencode_call(opencode_client.get_changes, session_id)
 
 
@@ -723,6 +766,8 @@ def agent_task_revert(request: Request, session_id: str):
     """Deshacer lo que la tarea cambio en la carpeta de trabajo."""
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
     if not opencode_client.workdir_undoable():
         return JSONResponse({"detail": "No se puede deshacer: falta git en este equipo."}, status_code=400)
     result = _opencode_call(opencode_client.revert_task, session_id)
@@ -734,6 +779,8 @@ def agent_task_unrevert(request: Request, session_id: str):
     """Rehacer: vuelve a poner lo que se deshizo."""
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
     result = _opencode_call(opencode_client.unrevert_task, session_id)
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
@@ -742,6 +789,8 @@ def agent_task_unrevert(request: Request, session_id: str):
 def agent_abort(request: Request, session_id: str):
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
     result = _opencode_call(opencode_client.abort, session_id)
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
@@ -896,7 +945,7 @@ def code_tasks(request: Request, path: str):
     """Conversaciones anteriores en este proyecto."""
     if request.state.session["role"] == "guest":
         return _guest_blocked()
-    return _opencode_call(opencode_client.list_tasks, 20, path)
+    return _own_tasks(request, _opencode_call(opencode_client.list_tasks, 20, path))
 
 
 class AgentFollowUp(BaseModel):
@@ -910,6 +959,8 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
     """Seguir la misma tarea ("corregir o continuar"), sin empezar de cero."""
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
     if not req.text.strip():
         return JSONResponse({"detail": "Escribe que quieres que haga."}, status_code=400)
     agent = None
@@ -923,6 +974,8 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
 def agent_reply_question(request: Request, request_id: str, req: AgentQuestionReply):
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_request(request, "question", request_id):
+        return _not_your_task()
     result = _opencode_call(opencode_client.reply_question, request_id, req.answers)
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
@@ -931,6 +984,8 @@ def agent_reply_question(request: Request, request_id: str, req: AgentQuestionRe
 def agent_reject_question(request: Request, request_id: str):
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_request(request, "question", request_id):
+        return _not_your_task()
     result = _opencode_call(opencode_client.reject_question, request_id)
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
@@ -941,6 +996,8 @@ def agent_reply_permission(request: Request, request_id: str, req: AgentPermissi
         return _guest_blocked()
     if req.reply not in ("once", "always", "reject"):
         return JSONResponse({"detail": "Respuesta invalida."}, status_code=400)
+    if not _owns_request(request, "permission", request_id):
+        return _not_your_task()
     result = _opencode_call(opencode_client.reply_permission, request_id, req.reply)
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
@@ -1321,6 +1378,7 @@ def _execute_tool(name: str, arguments: dict, session_id: str, user_id: str | No
             return "Falta describir la tarea.", None
         text, task_id = opencode_client.delegate(CONFIG["opencode"]["base_url"], tarea,
                                                  CONFIG["opencode"]["agent"])
+        task_owners.record(task_id, user_id)
         return text, [{"source": "sistema:delegar_a_agente_de_codigo", "text": text, "agent_task_id": task_id}]
 
     return f"Herramienta desconocida: {name}", None
@@ -1462,6 +1520,7 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
             else:
                 text, task_id = opencode_client.delegate(CONFIG["opencode"]["base_url"], message,
                                                          CONFIG["opencode"]["agent"])
+                task_owners.record(task_id, auth_session.get("user_id"))
         resp = ChatResponse(agent_used="opencode", response=text, verifier_gated=False,
                             session_id=session_id, agent_task_id=task_id,
                             agent_choice=choice)
@@ -1972,7 +2031,7 @@ def _run_prepare(req: PrepareRequest, ticket: int) -> None:
 
 
 @app.get("/work/pending")
-def pending_work():
+def pending_work(request: Request):
     """Lo que esta en marcha: lo usan el aviso al cambiar de modo (finalizar,
     esperar o segundo plano) y el panel "tareas en segundo plano" de la barra
     lateral, desde el que se puede cerrar cualquier cosa atascada.
@@ -1986,10 +2045,13 @@ def pending_work():
         except requests.RequestException:
             return ""
 
+    # solo las tareas propias (antes cualquiera, invitados incluidos, veia los
+    # titulos de las tareas del agente de todos)
     agent_tasks = [{"session_id": sid, "title": summary(sid)}
-                   for sid in opencode_client.busy_session_ids(base)]
+                   for sid in opencode_client.busy_session_ids(base) if _owns_task(request, sid)]
     waiting_tasks = [{"session_id": sid, "title": summary(sid), "reason": reason}
-                     for sid, reason in opencode_client.waiting_sessions(base).items()]
+                     for sid, reason in opencode_client.waiting_sessions(base).items()
+                     if _owns_task(request, sid)]
     generations = comfyui_client.user_jobs(CONFIG["comfyui"]["base_url"])
     running = sum(g["state"] == "running" for g in generations)
     queued = sum(g["state"] == "queued" for g in generations)
@@ -2002,6 +2064,8 @@ def pending_work():
 def stop_agent_task(session_id: str, request: Request):
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
     result = _opencode_call(opencode_client.stop_task, session_id)
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
@@ -2023,6 +2087,8 @@ def stop_work(request: Request):
         return _guest_blocked()
     base = CONFIG["opencode"]["base_url"]
     for sid in opencode_client.busy_session_ids(base):
+        if not _owns_task(request, sid):
+            continue  # las tareas de otros no se paran desde aqui
         try:
             opencode_client.abort(base, sid)
         except requests.RequestException:

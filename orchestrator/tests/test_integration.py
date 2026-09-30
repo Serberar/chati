@@ -134,11 +134,17 @@ def test_get_plan_endpoint_returns_empty_for_unknown_session():
     assert resp.json() == {"pasos": []}
 
 
-def test_get_plan_endpoint_returns_stored_plan():
-    plans.set_plan("sesion-de-prueba-endpoint", [{"texto": "paso 1", "estado": "hecho"}])
-    resp = client.get("/plan/sesion-de-prueba-endpoint")
+def test_get_plan_endpoint_returns_stored_plan_only_to_its_owner():
+    owner_id = users_module.get_user(_TEST_USERNAME)["id"]
+    sid = main.memory.new_session_id()
+    main.memory.add_message(sid, "user", "hola", user_id=owner_id)
+    plans.set_plan(sid, [{"texto": "paso 1", "estado": "hecho"}])
+    resp = client.get(f"/plan/{sid}")
     assert resp.status_code == 200
     assert resp.json() == {"pasos": [{"texto": "paso 1", "estado": "hecho"}]}
+    # el plan dice que se esta haciendo: otro (aqui un invitado) no lo ve
+    guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+    assert guest.get(f"/plan/{sid}").json() == {"pasos": []}
 
 
 def test_chat_requires_session():
@@ -1514,3 +1520,28 @@ def test_password_recovery_does_not_reveal_which_users_exist():
     assert resp.status_code == 400 and resp.json()["detail"] == "Respuesta incorrecta."
     import rate_limit
     rate_limit.password_reset.succeed("no_existe_nadie_asi")
+
+
+def test_agent_tasks_belong_to_whoever_started_them():
+    """Auditoria 2026-09-30: cualquier usuario con permiso para usar el
+    ordenador veia, seguia, aprobaba o deshacia las tareas de los demas."""
+    uname, other = _other_user_client()
+    try:
+        client.put(f"/auth/users/{uname}/pc_access", json={"allowed": True})
+        with patch.object(main.opencode_client, "start_task", return_value="ses_mia_123"):
+            assert client.post("/agent/tasks", json={"task": "x", "confirmed": True}).json()["session_id"] == "ses_mia_123"
+        tasks = [{"session_id": "ses_mia_123", "title": "mia", "updated": 1, "status": "idle"}]
+        with patch.object(main.opencode_client, "list_tasks", return_value=tasks), \
+             patch.object(main.opencode_client, "get_task_view", return_value={"status": "idle"}), \
+             patch.object(main.opencode_client, "continue_task") as mock_continue, \
+             patch.object(main.opencode_client, "request_session", return_value="ses_mia_123"), \
+             patch.object(main.opencode_client, "reply_permission") as mock_perm:
+            assert [t["session_id"] for t in client.get("/agent/tasks").json()] == ["ses_mia_123"]
+            assert other.get("/agent/tasks").json() == []
+            assert other.get("/agent/tasks/ses_mia_123").status_code == 404
+            assert other.post("/agent/tasks/ses_mia_123/message", json={"text": "borra todo"}).status_code == 404
+            assert other.post("/agent/permissions/per_1", json={"reply": "always"}).status_code == 404
+            assert not mock_continue.called and not mock_perm.called
+            assert client.post("/agent/permissions/per_1", json={"reply": "once"}).status_code == 200
+    finally:
+        users_module.delete_user(uname)

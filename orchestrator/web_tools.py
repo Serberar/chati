@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 
 import crypto_utils
 import profile_store
+import atomic
 
 BING = "https://www.bing.com/search?setlang=es&cc=es&q={q}"
 
@@ -86,7 +87,10 @@ class EncryptedStore:
         path, meta = d / f"{name}.json.enc", d / self.meta_name
         if not path.exists() or not meta.exists():
             return default
-        if json.loads(meta.read_text(encoding="utf-8")).get("key_generation") != key_generation:
+        try:
+            if json.loads(meta.read_text(encoding="utf-8")).get("key_generation") != key_generation:
+                return default
+        except ValueError:
             return default
         raw = crypto_utils.decrypt_bytes(dek, path.read_bytes())
         return json.loads(raw.decode("utf-8")) if raw else default
@@ -94,9 +98,9 @@ class EncryptedStore:
     def save(self, name: str, data, user_id: str, dek: bytes, key_generation: int) -> None:
         d = profile_store._user_dir(user_id)
         d.mkdir(parents=True, exist_ok=True)
-        (d / f"{name}.json.enc").write_bytes(
-            crypto_utils.encrypt_bytes(dek, json.dumps(data, ensure_ascii=False).encode("utf-8")))
-        (d / self.meta_name).write_text(json.dumps({"key_generation": key_generation}), encoding="utf-8")
+        atomic.write_bytes(d / f"{name}.json.enc",
+                           crypto_utils.encrypt_bytes(dek, json.dumps(data, ensure_ascii=False).encode("utf-8")))
+        atomic.write_text(d / self.meta_name, json.dumps({"key_generation": key_generation}))
 
 
 # ---------- el navegador ----------

@@ -68,7 +68,11 @@ if (-not (Test-Path $Destino)) {
 }
 
 $zipPath = Join-Path $Destino $nombreZip
-Compress-Archive -Path "$origen\*" -DestinationPath $zipPath -Force
+# Fuera de la copia (va a OneDrive): claves que se regeneran solas al arrancar
+# y registros sin valor para restaurar (auditoria 2026-09-30)
+$noCopiar = @("opencode_password.txt", "registration_key.txt", "api_key.txt", "logs", "metrics.jsonl", "arranque.log")
+$items = Get-ChildItem -LiteralPath $origen -Force | Where-Object { $noCopiar -notcontains $_.Name }
+Compress-Archive -LiteralPath $items.FullName -DestinationPath $zipPath -Force
 Write-Host "Backup creado: $zipPath" -ForegroundColor Green
 
 if ($wasRunning) {

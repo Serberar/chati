@@ -82,7 +82,12 @@ function Get-OpenCodePassword {
     # La misma que usa el orquestador (opencode_client.PASSWORD_FILE): sin
     # contraseña, cualquier web podia mandar comandos al agente (auditoria 2026-09-29)
     $file = "$DataRoot\data\opencode_password.txt"
-    if ((Test-Path $file) -and (Get-Content $file -Raw).Trim()) { return (Get-Content $file -Raw).Trim() }
+    if (Test-Path $file) {
+        # existe pero no se puede leer (permisos): NO inventar otra - OpenCode
+        # arrancaria con una contraseña que nadie conoce (paso el 2026-09-30)
+        $current = (Get-Content $file -Raw -ErrorAction Stop).Trim()
+        if ($current) { return $current }
+    }
     $bytes = New-Object byte[] 24
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
     $password = [Convert]::ToBase64String($bytes).Replace("+", "-").Replace("/", "_").TrimEnd("=")
@@ -210,10 +215,10 @@ function Ensure-DailyBackup {
 Write-Log "Watchdog iniciado."
 
 while ($true) {
-    Ensure-Ollama
-    Ensure-ComfyUI
-    Ensure-Orchestrator
-    Ensure-OpenCode
-    Ensure-DailyBackup
+    # un fallo en una comprobacion (p.ej. no poder leer la contraseña de
+    # OpenCode) se anota y se sigue: el vigilante no debe morir nunca
+    foreach ($check in "Ensure-Ollama", "Ensure-ComfyUI", "Ensure-Orchestrator", "Ensure-OpenCode", "Ensure-DailyBackup") {
+        try { & $check } catch { Write-Log "Fallo en ${check}: $_" }
+    }
     Start-Sleep -Seconds $CheckIntervalSeconds
 }

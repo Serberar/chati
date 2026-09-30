@@ -103,6 +103,11 @@ class DesktopApi:
 
 def main() -> None:
     _set_taskbar_identity()
+    # sin esto el boton "Descargar" de las imagenes no hacia nada en la app (en
+    # el navegador si); y Chati nunca abre archivos locales por file://
+    webview.settings["ALLOW_DOWNLOADS"] = True
+    webview.settings["ALLOW_FILE_URLS"] = False
+    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
     # text_select: pywebview desactiva la seleccion de texto por defecto - sin
     # esto no se podia seleccionar ni copiar nada de la conversacion
     window = webview.create_window("Chati IA", html=LOADING_HTML, width=1280, height=800,

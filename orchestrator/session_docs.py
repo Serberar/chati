@@ -18,6 +18,7 @@ from pathlib import Path
 import crypto_utils
 from paths import DATA_DIR
 from rag import _chunk_text, _extract_text, _sanitize_filename
+import atomic
 
 SESSION_DOCS_DIR = DATA_DIR / "session_docs"
 ALLOWED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
@@ -39,11 +40,14 @@ def _meta_path(user_id: str, session_id: str) -> Path:
 
 def _read_meta(user_id: str, session_id: str) -> dict:
     path = _meta_path(user_id, session_id)
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except ValueError:
+        return {}  # roto: sin adjuntos antes que romper cada mensaje de la conversacion
 
 
 def _write_meta(user_id: str, session_id: str, meta: dict) -> None:
-    _meta_path(user_id, session_id).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    atomic.write_text(_meta_path(user_id, session_id), json.dumps(meta, ensure_ascii=False))
 
 
 def save(user_id: str, session_id: str, filename: str, content: bytes,
