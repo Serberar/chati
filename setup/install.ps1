@@ -76,7 +76,7 @@ function Update-Path {
 # Programas de fuera: con winget si lo hay; si no (Windows Sandbox, algunos
 # Windows 10/LTSC), el instalador oficial de una version fija, y SOLO si su
 # firma digital es valida y de quien debe ser (auditoria 2026-09-30).
-function Install-Tool($name, $wingetId, $url, $signer, $installerArgs, [switch]$Msi) {
+function Install-Tool($name, $wingetId, $url, $signer, $installerArgs, [switch]$Msi, [int[]]$OkCodes = @(0)) {
     Write-Host "Instalando $name..." -ForegroundColor Yellow
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         winget install --id $wingetId -e --silent --accept-source-agreements --accept-package-agreements
@@ -102,8 +102,21 @@ function Install-Tool($name, $wingetId, $url, $signer, $installerArgs, [switch]$
     }
     $p.WaitForExit()
     Remove-Item $file -Force -ErrorAction SilentlyContinue
-    if ($p.ExitCode -ne 0) { throw "El instalador de $name fallo (codigo $($p.ExitCode))." }
+    if ($OkCodes -notcontains $p.ExitCode) { throw "El instalador de $name fallo (codigo $($p.ExitCode))." }
     Update-Path
+}
+
+# 0. Librerias de Visual C++: un Windows recien instalado no las trae, y sin
+# ellas no cargan PyTorch (ComfyUI) ni la voz (faster_whisper) - visto en
+# Windows Sandbox el 2026-09-30: ComfyUI y el orquestador se caian al arrancar.
+$vcRuntime = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" -ErrorAction SilentlyContinue
+if (-not ($vcRuntime -and $vcRuntime.Installed -eq 1)) {
+    # 3010 = instalado, pide reiniciar; 1638 = ya habia una version mas nueva
+    Install-Tool "Visual C++ (librerias de Microsoft)" "Microsoft.VCRedist.2015+.x64" `
+        "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Microsoft Corporation" "/install /quiet /norestart" `
+        -OkCodes 0, 3010, 1638
+} else {
+    Write-Host "Librerias de Visual C++ ya instaladas." -ForegroundColor Green
 }
 
 # 1. Ollama (nucleo de texto y codigo)

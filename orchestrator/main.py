@@ -2368,8 +2368,11 @@ def voice_chat(request: Request, audio: UploadFile = File(...), session_id: str 
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=413)
     # lo que dijo el usuario: en claro solo mientras Whisper lo lee
-    with media_store.plain_copy(audio_bytes, ".wav") as audio_path:
-        transcript = voice_agent.transcribe(str(audio_path))
+    try:
+        with media_store.plain_copy(audio_bytes, ".wav") as audio_path:
+            transcript = voice_agent.transcribe(str(audio_path))
+    except RuntimeError as exc:  # la voz no puede cargar en este equipo
+        return JSONResponse({"detail": str(exc)}, status_code=503)
     if not transcript:
         return {"transcript": "", "agent_used": None, "response": "No se entendio ningun audio.",
                 "verifier_gated": False, "file_url": None, "session_id": session_id}
@@ -2377,8 +2380,12 @@ def voice_chat(request: Request, audio: UploadFile = File(...), session_id: str 
     result = _run_chat(transcript, None, session_id, request.state.session)
 
     speech_path = media_store.new_tmp_path(".wav")
-    voice_agent.speak(result.response, str(speech_path))
-    speech_name = media_store.save_file(speech_path, request.state.session["dek"])
+    try:
+        voice_agent.speak(result.response, str(speech_path))
+        speech_name = media_store.save_file(speech_path, request.state.session["dek"])
+    except RuntimeError:
+        speech_path.unlink(missing_ok=True)
+        speech_name = None  # se contesta por escrito aunque no se pueda hablar
 
     return {
         "transcript": transcript,
@@ -2386,7 +2393,7 @@ def voice_chat(request: Request, audio: UploadFile = File(...), session_id: str 
         "response": result.response,
         "verifier_gated": result.verifier_gated,
         "verifier_reason": result.verifier_reason,
-        "file_url": media_store.url_for(speech_name),
+        "file_url": media_store.url_for(speech_name) if speech_name else None,
         "session_id": result.session_id,
     }
 
@@ -2394,7 +2401,11 @@ def voice_chat(request: Request, audio: UploadFile = File(...), session_id: str 
 @app.post("/speak")
 def speak(request: Request, text: str = Form(...)):
     out_path = media_store.new_tmp_path(".wav")
-    voice_agent.speak(text, str(out_path))
+    try:
+        voice_agent.speak(text, str(out_path))
+    except RuntimeError as exc:
+        out_path.unlink(missing_ok=True)
+        return JSONResponse({"detail": str(exc)}, status_code=503)
     return {"file_url": media_store.url_for(media_store.save_file(out_path, request.state.session["dek"]))}
 
 

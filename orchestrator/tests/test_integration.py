@@ -1545,3 +1545,13 @@ def test_agent_tasks_belong_to_whoever_started_them():
             assert client.post("/agent/permissions/per_1", json={"reply": "once"}).status_code == 200
     finally:
         users_module.delete_user(uname)
+
+
+def test_without_voice_libraries_the_rest_of_chati_still_works():
+    """Windows recien instalado sin Visual C++ (Sandbox, 2026-09-30): la voz no
+    carga. Antes se caia el orquestador entero; ahora solo avisa la voz."""
+    with patch.object(main.voice_agent, "transcribe", side_effect=RuntimeError("La voz no esta disponible")):
+        resp = client.post("/voice_chat", files={"audio": ("a.wav", b"RIFF", "audio/wav")})
+    assert resp.status_code == 503 and "voz" in resp.json()["detail"]
+    with patch.object(main.voice_agent, "speak", side_effect=RuntimeError("La voz no esta disponible")):
+        assert client.post("/speak", data={"text": "hola"}).status_code == 503
