@@ -9,6 +9,39 @@ import installer_download_models
 import model_registry
 
 
+@pytest.fixture(autouse=True)
+def _ollama_found_and_running(monkeypatch, tmp_path):
+    """Por defecto: Ollama encontrado y ya arrancado (los tests de abajo que lo
+    necesitan lo cambian). El registro va a una carpeta temporal."""
+    monkeypatch.setattr(installer_download_models, "_ollama_exe", lambda: "ollama")
+    monkeypatch.setattr(installer_download_models, "_ensure_ollama_server", lambda: None)
+    monkeypatch.setattr(installer_download_models, "LOG_FILE", tmp_path / "instalacion_modelos.log")
+
+
+def test_ollama_is_found_even_if_it_is_not_in_the_path(tmp_path, monkeypatch):
+    """El instalador lanza el script con el PATH de antes de instalar Ollama
+    (Windows Sandbox, 2026-09-30: la descarga fallaba en silencio)."""
+    monkeypatch.undo()
+    exe = tmp_path / "Programs" / "Ollama" / "ollama.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(installer_download_models.shutil, "which", lambda name: None)
+    assert installer_download_models._ollama_exe() == str(exe)
+
+
+def test_one_failed_model_does_not_stop_the_others_and_is_reported(tmp_path):
+    def fake_run(cmd, check):
+        if "qwen3:8b" in cmd:
+            raise installer_download_models.subprocess.CalledProcessError(1, cmd)
+
+    with patch.object(installer_download_models.subprocess, "run", side_effect=fake_run):
+        failed = installer_download_models.download_selected(["texto-rapido", "texto-calidad"])
+    assert failed == ["Chat rapido"]
+    log = (tmp_path / "instalacion_modelos.log").read_text(encoding="utf-8")
+    assert "FALLO: Chat rapido" in log and "hecho: Chat de mejor calidad" in log
+
+
 def test_destination_for_image_entry(tmp_path, monkeypatch):
     img = tmp_path / "img"
     monkeypatch.setattr(model_registry, "IMG_DIR", img)

@@ -11,16 +11,22 @@ Imprime una linea por paso a stdout - el instalador (o quien lo llame) puede
 mostrar eso tal cual como progreso, no hace falta parsear nada mas fino."""
 
 import argparse
+import os
+import shutil
 import subprocess
 import tempfile
 import sys
+import time
 from pathlib import Path
 
 import requests
 
 import model_catalog
 import model_registry
-from paths import MODELS_DIR
+from paths import DATA_DIR, MODELS_DIR
+
+OLLAMA_URL = "http://127.0.0.1:11434"
+LOG_FILE = DATA_DIR / "logs" / "instalacion_modelos.log"
 
 
 def _destination_for(entry: model_catalog.CatalogEntry) -> Path:
@@ -67,12 +73,49 @@ _EXTRA_PARAMS = {"qwen3-coder:30b-cpu": ["num_ctx 32768"], "qwen2.5:7b": ["num_c
                  "qwen2.5vl:7b-gpu": ["num_ctx 4096"]}
 
 
+def _ollama_exe() -> str:
+    """El instalador lanza este script con el PATH de ANTES de instalar Ollama:
+    "ollama" a secas no se encontraba y la descarga fallaba en silencio (Windows
+    Sandbox, 2026-09-30: el chat decia "model 'qwen3:8b' not found")."""
+    found = shutil.which("ollama")
+    if found:
+        return found
+    candidates = [Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe",
+                  Path(os.environ.get("ProgramFiles", "")) / "Ollama" / "ollama.exe"]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    raise RuntimeError("No se encuentra Ollama instalado.")
+
+
+def _ensure_ollama_server() -> None:
+    """Que haya un servidor de Ollama escuchando, y guardando en la carpeta de
+    modelos de Chati (si no, "ollama pull" no tiene a quien pedirselo)."""
+    try:
+        requests.get(f"{OLLAMA_URL}/api/tags", timeout=3).raise_for_status()
+        return
+    except requests.RequestException:
+        pass
+    env = {**os.environ, "OLLAMA_MODELS": str(MODELS_DIR / "text"), "OLLAMA_FLASH_ATTENTION": "0"}
+    subprocess.Popen([_ollama_exe(), "serve"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    for _ in range(30):
+        time.sleep(1)
+        try:
+            requests.get(f"{OLLAMA_URL}/api/tags", timeout=3).raise_for_status()
+            return
+        except requests.RequestException:
+            continue
+    raise RuntimeError("Ollama no arranca: no se pueden descargar los modelos de texto.")
+
+
 def _pull_ollama_model(model: str) -> None:
     # las variantes "-cpu"/"-gpu" (ver AGENTS.md) no existen en el registro de
     # Ollama - se crean en local a partir del modelo base
     base = model.removesuffix(CPU_SUFFIX).removesuffix(GPU_SUFFIX)
+    _ensure_ollama_server()
     print(f"  ollama pull {base}")
-    subprocess.run(["ollama", "pull", base], check=True)
+    subprocess.run([_ollama_exe(), "pull", base], check=True)
     params = ((["num_gpu 0"] if model.endswith(CPU_SUFFIX) else [])
               + (["num_gpu 999"] if model.endswith(GPU_SUFFIX) else []) + _EXTRA_PARAMS.get(model, []))
     if not params:
@@ -82,24 +125,41 @@ def _pull_ollama_model(model: str) -> None:
         path = Path(tmp) / "Modelfile"
         path.write_text(modelfile, encoding="utf-8")
         print(f"  ollama create {model}")
-        subprocess.run(["ollama", "create", model, "-f", str(path)], check=True)
+        subprocess.run([_ollama_exe(), "create", model, "-f", str(path)], check=True)
 
 
-def download_selected(entry_ids: list[str]) -> None:
+def _log(line: str, error: bool = False) -> None:
+    print(line, flush=True, file=sys.stderr if error else sys.stdout)
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+    except OSError:
+        pass
+
+
+def download_selected(entry_ids: list[str]) -> list[str]:
+    """Descarga lo elegido; si uno falla, sigue con los demas (antes el primer
+    fallo cortaba todo y en silencio). Devuelve los que fallaron."""
     all_entries = {e.id: e for tier in ["cpu_only", "minimo", "8gb", "12gb", "16gb_plus"]
                    for e in model_catalog.catalog_for_tier(tier)}
+    failed = []
     for entry_id in entry_ids:
         entry = all_entries.get(entry_id)
         if entry is None:
-            print(f"AVISO: id de catalogo desconocido, se ignora: {entry_id}", file=sys.stderr)
+            _log(f"AVISO: id de catalogo desconocido, se ignora: {entry_id}", error=True)
             continue
-        print(f"[{entry.modality}] {entry.label}")
-        if entry.ollama_model:
-            _pull_ollama_model(entry.ollama_model)
-        elif entry.download_url:
-            dest = _destination_for(entry)
-            _download_file(entry.download_url, dest)
-        print(f"  hecho: {entry.label}")
+        _log(f"[{entry.modality}] {entry.label}")
+        try:
+            if entry.ollama_model:
+                _pull_ollama_model(entry.ollama_model)
+            elif entry.download_url:
+                _download_file(entry.download_url, _destination_for(entry))
+            _log(f"  hecho: {entry.label}")
+        except (OSError, RuntimeError, subprocess.CalledProcessError, requests.RequestException) as exc:
+            _log(f"  FALLO: {entry.label}: {exc}", error=True)
+            failed.append(entry.label)
+    return failed
 
 
 def main() -> None:
@@ -114,7 +174,10 @@ def main() -> None:
     else:
         ids = args.selected
 
-    download_selected(ids)
+    failed = download_selected(ids)
+    if failed:
+        _log(f"No se pudieron descargar: {', '.join(failed)}. Detalles en {LOG_FILE}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

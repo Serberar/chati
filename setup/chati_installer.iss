@@ -278,7 +278,28 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   Lines: TArrayOfString;
   I, Count: Integer;
+  LogFile, DataRoot: String;
 begin
+  // Al terminar: si alguna descarga de modelos fallo, decirlo (antes fallaba
+  // en silencio y el chat decia luego "model not found" - Windows Sandbox,
+  // 2026-09-30). Lo escribe installer_download_models.py.
+  if CurStep = ssDone then
+  begin
+    DataRoot := GetEnv('CHATI_DATA_ROOT');
+    if DataRoot = '' then
+      DataRoot := ExpandConstant('{localappdata}\ChatiIA');
+    LogFile := AddBackslash(DataRoot) + 'data\logs\instalacion_modelos.log';
+    if LoadStringsFromFile(LogFile, Lines) then
+      for I := 0 to GetArrayLength(Lines) - 1 do
+        if Pos('No se pudieron descargar', Lines[I]) > 0 then
+        begin
+          MsgBox('Chati IA se ha instalado, pero algunos modelos no se pudieron descargar.' + #13#10#13#10 +
+                 Copy(Lines[I], Pos('No se pudieron', Lines[I]), Length(Lines[I])) + #13#10#13#10 +
+                 'Comprueba la conexion a internet y vuelve a ejecutar el instalador: lo ya descargado no se repite.',
+                 mbError, MB_OK);
+          Break;
+        end;
+  end;
   if CurStep = ssPostInstall then
   begin
     Count := 0;

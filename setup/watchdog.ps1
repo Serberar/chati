@@ -180,7 +180,7 @@ function Ensure-OpenCode {
         Stop-ByPort 8901
         Start-Sleep -Seconds 1
         $env:OPENCODE_SERVER_PASSWORD = Get-OpenCodePassword
-        Start-Process -FilePath "$env:APPDATA\npm\opencode.cmd" -ArgumentList "web", "--port", "8901", "--hostname", "127.0.0.1" `
+        Start-Process -FilePath "$env:APPDATA\npm\opencode.cmd" -ArgumentList "serve", "--port", "8901", "--hostname", "127.0.0.1" `
             -WorkingDirectory $AiRoot -WindowStyle Hidden
         Write-Log "Agente de codigo reiniciado."
     }

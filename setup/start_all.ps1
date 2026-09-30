@@ -80,7 +80,7 @@ $ocUp = $false
 try { $ocUp = (Invoke-WebRequest -Uri "http://127.0.0.1:8901/" -Headers $ocAuth -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch {}
 if (-not $ocUp) {
     $env:OPENCODE_SERVER_PASSWORD = $ocPassword
-    Start-Process -FilePath "$env:APPDATA\npm\opencode.cmd" -ArgumentList "web", "--port", "8901", "--hostname", "127.0.0.1" `
+    Start-Process -FilePath "$env:APPDATA\npm\opencode.cmd" -ArgumentList "serve", "--port", "8901", "--hostname", "127.0.0.1" `
         -WorkingDirectory $AiRoot -WindowStyle Hidden
     Write-Host "Agente de codigo arrancando..." -ForegroundColor Yellow
 } else {
