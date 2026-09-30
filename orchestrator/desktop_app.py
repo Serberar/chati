@@ -87,9 +87,15 @@ logging.getLogger("pywebview").addHandler(_webview_failure)
 
 
 def _fallback_to_browser(window) -> None:
-    if _webview_failure.failed.wait(timeout=BACKEND_TIMEOUT + 30):
-        webbrowser.open(URL)
-        window.destroy()
+    if not _webview_failure.failed.wait(timeout=BACKEND_TIMEOUT + 30):
+        return
+    # el fallo se nota nada mas crear la ventana, con los servicios aun
+    # arrancando: abrir el navegador ya daba "rechazo la conexion" (Sandbox)
+    deadline = time.time() + BACKEND_TIMEOUT
+    while not _backend_up() and time.time() < deadline:
+        time.sleep(2)
+    webbrowser.open(URL)
+    window.destroy()
 
 
 def _boot(window) -> None:
