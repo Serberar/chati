@@ -26,6 +26,22 @@ class CatalogEntry:
     download_url: str | None = None
     filename: str | None = None
     recommended_by_default: bool = True
+    # Archivos que el modelo necesita ademas del suyo: (url, ruta dentro de
+    # models/img). Sin ellos no funcionaba nada de imagen en un equipo limpio:
+    # el instalador bajaba el unet de FLUX pero no sus codificadores ni su VAE
+    # (2026-10-01). Tamaños comprobados contra los que funcionan en este equipo.
+    extra_files: tuple[tuple[str, str], ...] = ()
+
+
+_CLIP_L = ("https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
+           "text_encoders/clip_l.safetensors")
+_T5XXL = ("https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors",
+          "text_encoders/t5xxl_fp8_e4m3fn.safetensors")
+_FLUX_VAE = ("https://huggingface.co/Kijai/flux-fp8/resolve/main/flux-vae-bf16.safetensors",
+             "vae/flux-vae-bf16.safetensors")
+_MODNET = ("https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx", "matting/modnet.onnx")
+_REALESRGAN = ("https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+               "upscale_models/RealESRGAN_x4plus.pth")
 
 
 # Mismo catalogo para todos los niveles con GPU (minimo/8gb/12gb/16gb_plus) -
@@ -59,6 +75,15 @@ _BASE_CATALOG: list[CatalogEntry] = [
         architecture="flux",
         download_url="https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q4_K_S.gguf",
         filename="flux1-schnell-Q4_K_S.gguf",
+        extra_files=(_CLIP_L, _T5XXL, _FLUX_VAE),
+    ),
+    CatalogEntry(
+        id="imagen-editar", modality="imagen", label="Editar fotos (FLUX Kontext)",
+        description="Edita tus fotos con una frase (otro fondo, otro color de ropa...) sin cambiar las caras.",
+        architecture="flux_kontext",
+        download_url="https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF/resolve/main/flux1-kontext-dev-Q4_K_S.gguf",
+        filename="flux1-kontext-dev-Q4_K_S.gguf",
+        extra_files=(_CLIP_L, _T5XXL, _FLUX_VAE, _MODNET, _REALESRGAN),
     ),
     CatalogEntry(
         id="imagen-sdxl", modality="imagen", label="SDXL base",
@@ -73,6 +98,7 @@ _BASE_CATALOG: list[CatalogEntry] = [
         architecture="ltxv",
         download_url="https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltxv-2b-0.9.8-distilled-fp8.safetensors",
         filename="ltxv-2b-0.9.8-distilled-fp8.safetensors",
+        extra_files=(_T5XXL,),
     ),
     CatalogEntry(
         id="voz-piper", modality="voz", label="Voz en español (Piper)",

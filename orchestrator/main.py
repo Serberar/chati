@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import json
 import re
@@ -35,6 +36,8 @@ import media_store
 import model_registry
 import paths
 import persona_trainer
+import photo_edit
+import prompt_writer
 import routes_apps
 import routes_auth
 import security
@@ -1475,7 +1478,8 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
 
     if agent_name == "image":
         try:
-            img_bytes = image_agent.generate(message, model_id=image_model)
+            prompt, (width, height) = prompt_writer.image_prompt(ollama, CONFIG["router"]["model"], message)
+            img_bytes = image_agent.generate(prompt, width=width, height=height, model_id=image_model)
         except Exception as exc:
             resp = ChatResponse(agent_used="image", response=_generation_error_message("generando la imagen", exc),
                                  verifier_gated=False, session_id=session_id)
@@ -1491,7 +1495,8 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
 
     if agent_name == "video":
         try:
-            vid_bytes = video_agent.generate(message, model_id=video_model)
+            vid_bytes = video_agent.generate(prompt_writer.video_prompt(ollama, CONFIG["router"]["model"], message),
+                                             model_id=video_model)
         except Exception as exc:
             resp = ChatResponse(agent_used="video", response=_generation_error_message("generando el video", exc),
                                  verifier_gated=False, session_id=session_id)
@@ -1578,6 +1583,40 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
     return resp
 
 
+def _wants_photo_edit(message: str) -> bool:
+    return model_registry.get_edit_model() is not None and \
+        photo_edit.wants_edit(ollama, CONFIG["router"]["model"], message)
+
+
+def _photo_edit_reply(message: str, image_base64: str, session_id: str, auth_session: dict,
+                      face_photo: bytes | None = None) -> ChatResponse:
+    """Una foto adjunta en el chat automatico con una peticion de cambio
+    ("ponnos en una playa"): se edita igual que en el modo Imagen. Con
+    face_photo es una correccion de la foto de antes (ver _remember_photo)."""
+    start = time.perf_counter()
+    photo = base64.b64decode(image_base64)
+    if face_photo is None:
+        _remember_upload(auth_session, photo)
+    try:
+        # en una correccion cuenta tambien lo pedido antes: si ya llevaba
+        # sombrero o gafas, "quita a la otra persona" no debe borrarselos
+        earlier = auth_session.get("last_photo", {}).get("requests", "") if face_photo is not None else ""
+        img_bytes, done = _edit_photo(message, photo, face_photo, earlier)
+    except Exception as exc:
+        metrics.log_event("image_edit", (time.perf_counter() - start) * 1000, error=str(exc))
+        resp = ChatResponse(agent_used="image_edit", response=_generation_error_message("editando la foto", exc),
+                            verifier_gated=False, session_id=session_id)
+    else:
+        metrics.log_event("image_edit", (time.perf_counter() - start) * 1000)
+        resp = _with_bytes(ChatResponse(agent_used="image_edit", verifier_gated=False, session_id=session_id,
+                                        response=done),
+                           img_bytes, ".jpg", auth_session)
+        _remember_photo(auth_session, None, resp.file_path, message)
+    memory.add_message(session_id, "assistant", resp.response, agent="image_edit", dek=auth_session["dek"],
+                        key_generation=auth_session["key_generation"], user_id=auth_session["user_id"])
+    return resp
+
+
 def _run_vision_chat(message: str, image_base64: str, session_id: str | None, auth_session: dict) -> ChatResponse:
     """Comenta una imagen subida - bypasea el router normal (ningun otro
     modelo sabe procesar imagenes), sin herramientas ni bucle. Ver
@@ -1590,6 +1629,9 @@ def _run_vision_chat(message: str, image_base64: str, session_id: str | None, au
     dek, key_generation, user_id = auth_session["dek"], auth_session["key_generation"], auth_session["user_id"]
     memory.add_message(session_id, "user", message or "[imagen adjunta]",
                         dek=dek, key_generation=key_generation, user_id=user_id)
+    if _wants_photo_edit(message):
+        return _photo_edit_reply(message, image_base64, session_id, auth_session)
+    _remember_upload(auth_session, base64.b64decode(image_base64))  # por si luego pide cambiarla
     _ensure_active_model(vision_agent.model)
     start = time.perf_counter()
     try:
@@ -1615,6 +1657,12 @@ def _stream_vision_chat(message: str, image_base64: str, session_id: str | None,
     dek, key_generation, user_id = auth_session["dek"], auth_session["key_generation"], auth_session["user_id"]
     memory.add_message(session_id, "user", message or "[imagen adjunta]",
                         dek=dek, key_generation=key_generation, user_id=user_id)
+    if _wants_photo_edit(message):
+        yield json.dumps({"type": "start", "agent_used": "image_edit", "session_id": session_id}) + "\n"
+        resp = _photo_edit_reply(message, image_base64, session_id, auth_session)
+        yield json.dumps({"type": "done", **resp.model_dump()}) + "\n"
+        return
+    _remember_upload(auth_session, base64.b64decode(image_base64))  # por si luego pide cambiarla
     yield json.dumps({"type": "start", "agent_used": "vision", "session_id": session_id}) + "\n"
     _ensure_active_model(vision_agent.model)
     start = time.perf_counter()
@@ -1643,6 +1691,8 @@ def _run_chat(message: str, agent_override: str | None, session_id: str | None, 
     session_id = _own_session_id(session_id, auth_session)
     memory.add_message(session_id, "user", message, dek=auth_session["dek"],
                         key_generation=auth_session["key_generation"], user_id=auth_session["user_id"])
+    if _wants_followup_edit(auth_session, message, agent_override):
+        return _followup_edit_reply(message, session_id, auth_session)
     agent_name, is_factual = _resolve_agent(message, agent_override)
     start = time.perf_counter()
     resp = _generate_response(message, agent_name, is_factual, session_id, auth_session, model_profile,
@@ -1674,6 +1724,12 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
 
     session_id = _own_session_id(session_id, auth_session)
     memory.add_message(session_id, "user", message, dek=dek, key_generation=key_generation, user_id=user_id)
+
+    if _wants_followup_edit(auth_session, message, agent_override):
+        yield json.dumps({"type": "start", "agent_used": "image_edit", "session_id": session_id}) + "\n"
+        resp = _followup_edit_reply(message, session_id, auth_session)
+        yield json.dumps({"type": "done", **resp.model_dump()}) + "\n"
+        return
 
     # si hay que cargar un modelo, la primera respuesta tarda bastante mas
     # (medido: 17s solo en cargar qwen2.5:7b con la RAM llena) - se avisa
@@ -2423,20 +2479,148 @@ def _resolve_reference_bytes(image: UploadFile | None, person_name: str | None, 
     raise ValueError("Hay que subir una foto o indicar el nombre de una persona guardada")
 
 
+_PHOTO_EDITED = "Foto editada."
+
+
+def _edit_summary(steps) -> str:
+    """Lo que se ha hecho, dicho por el planificador: el texto fijo de antes
+    ("Lo que no pediste cambiar se ha dejado igual") no decia nada y, si se
+    saltaba media peticion, no habia forma de saber que parte (Sergio,
+    2026-10-05)."""
+    done = [s.summary for s in steps if s.summary]
+    return f"He hecho esto: {'; '.join(done)}." if done else _PHOTO_EDITED
+
+
+_PHOTO_MEMORY_SECONDS = 2 * 60 * 60
+_RECENT_EDIT_SECONDS = 15 * 60
+# Correcciones sobre la foto de antes ("corrige...", "que no salga...")
+_FOLLOWUP_FIX = re.compile(
+    r"\b(corrig\w*|arregl\w*|que no (salga|haya|lleve|tenga|aparezca)|sin (la|el|los|las|esa|ese|esos|esas) |"
+    r"otra vez|vuelve a|sobra\w*|deja(me|la|lo)? (solo|igual)|mantén|manten|igual que antes)", re.IGNORECASE)
+_NOT_PHOTO = re.compile(r"\b(texto|codigo|código|programa|script|otra (imagen|foto)|imagen nueva|foto nueva|"
+                        r"desde cero|hazme una (imagen|foto)|genera(me)? una)\b", re.IGNORECASE)
+
+
+def _remember_photo(session: dict, original_name: str | None, last_name: str, request: str = "") -> None:
+    """La ultima foto de esta sesion de login (la subida y la ultima editada),
+    para que "corrige esto" o "ahora ponme un sombrero" sigan editando ESA
+    foto. Antes el siguiente mensaje sin foto adjunta iba al chat normal, que
+    no sabia nada de ella y generaba otra imagen desde cero (Sergio,
+    2026-10-05: "ha perdido el contexto y ha empezado a imaginar"). Va en la
+    sesion: se pierde al cerrar sesion, y las imagenes estan cifradas."""
+    mem = dict(session.get("last_photo") or {})
+    if original_name is not None:  # foto nueva: lo pedido sobre la anterior ya no cuenta
+        mem.update(original=original_name, requests="")
+    mem.update(last=last_name, time=time.time(), requests="\n".join(filter(None, [mem.get("requests"), request])))
+    session["last_photo"] = mem
+
+
+def _remember_upload(session: dict, photo: bytes) -> None:
+    """Una foto recien subida: es la original y, de momento, tambien la ultima."""
+    try:
+        name = media_store.save(photo_edit.to_jpeg(photo_edit.load_rgb(photo)), ".jpg", session["dek"])
+    except Exception:
+        log.warning("No se pudo guardar la foto subida para seguir editandola", exc_info=True)
+        return
+    _remember_photo(session, name, name)
+
+
+def _remembered_photo(session: dict) -> tuple[bytes, bytes] | None:
+    """(ultima foto, foto original subida) si hay una reciente."""
+    mem = session.get("last_photo")
+    if not mem or time.time() - mem["time"] > _PHOTO_MEMORY_SECONDS:
+        return None
+    last = media_store.load(mem["last"], session["dek"])
+    original = media_store.load(mem.get("original", mem["last"]), session["dek"])
+    return (last, original or last) if last else None
+
+
+def _wants_followup_edit(session: dict, message: str, agent_override: str | None) -> bool:
+    """Mensaje sin foto que en realidad es un cambio sobre la foto de antes."""
+    if agent_override not in (None, "image") or model_registry.get_edit_model() is None:
+        return False
+    mem = session.get("last_photo")
+    if not mem or time.time() - mem["time"] > _PHOTO_MEMORY_SECONDS or _NOT_PHOTO.search(message):
+        return False
+    if _FOLLOWUP_FIX.search(message):  # antes que las preguntas: "que no salga..."
+        return True
+    if photo_edit._QUESTION_WORDS.match(message):
+        return False
+    if photo_edit._EDIT_WORDS.search(message):
+        return True
+    # justo despues de una edicion casi todo es una correccion ("la de al
+    # lado sobra", "mas moreno"): ahi decide el modelo, como con foto adjunta
+    return time.time() - mem["time"] < _RECENT_EDIT_SECONDS and \
+        photo_edit.wants_edit(ollama, CONFIG["router"]["model"], message)
+
+
+def _followup_edit_reply(message: str, session_id: str, auth_session: dict) -> ChatResponse:
+    photos = _remembered_photo(auth_session)
+    if photos is None:
+        auth_session.pop("last_photo", None)
+        return ChatResponse(agent_used="image_edit", verifier_gated=False, session_id=session_id,
+                            response="Ya no tengo la foto de antes. Vuelve a adjuntarla y dime el cambio.")
+    last, original = photos
+    return _photo_edit_reply(message, base64.b64encode(last).decode(), session_id, auth_session,
+                             face_photo=original)
+
+
+def _edit_photo(request_text: str, photo: bytes, face_photo: bytes | None = None,
+                earlier: str = "") -> tuple[bytes, str]:
+    """Edicion de una foto real (ver photo_edit.py): el modelo del router pasa
+    la peticion a instrucciones en ingles (uno o dos pasos), Kontext edita y
+    luego se vuelve a poner la original en todo lo que no se pidio cambiar.
+    Devuelve un JPEG a la resolucion de la foto original y que se ha hecho. face_photo: de donde
+    sacar la cara exacta (en una correccion, la foto que subio el usuario, no
+    la ya editada)."""
+    scene = photo_edit.describe_photo(ollama, vision_agent.model, photo)
+    ollama.unload(vision_agent.model)  # fuera de la GPU antes del traductor y de Kontext
+    steps = photo_edit.merge_steps(photo_edit.plan_edit(ollama, CONFIG["router"]["model"], request_text,
+                                                        face_detect.face_positions(photo), scene))
+    current = photo_edit.load_rgb(photo)
+    for step in steps:
+        edited_png = image_agent.edit_with_kontext(step.instruction, photo_edit.prepare_for_kontext(current))
+        edited = photo_edit.load_rgb(edited_png)
+        if photo_edit.needs_upscale(current, edited):
+            edited = photo_edit.load_rgb(image_agent.upscale_bytes(edited_png))
+        current = photo_edit.finish(current, edited, step.mode)
+    asked = f"{earlier} {request_text}"
+    if photo_edit.wants_face_kept(asked):
+        # la cara exacta de la foto original, no la redibujada por Kontext
+        current = photo_edit.restore_faces(photo_edit.load_rgb(face_photo or photo), current,
+                                           keep_hair=photo_edit.wants_hair_kept(asked))
+    return photo_edit.to_jpeg(current), _edit_summary(steps)
+
+
+def _image_from_photo(prompt: str, ref_bytes: bytes, model_id: str | None) -> tuple[str, str, str, str, object]:
+    """Que hacer con una foto adjunta: (agent_used, texto de respuesta, contexto
+    de error, extension, funcion que genera)."""
+    if model_registry.get_edit_model() is not None:
+        return ("image_edit", _PHOTO_EDITED,
+                "editando la foto", ".jpg", lambda: _edit_photo(prompt, ref_bytes))
+    if face_detect.has_face(ref_bytes):
+        return ("image_faceid", "Imagen generada preservando la cara de referencia.",
+                "generando la imagen con cara real", ".png",
+                lambda: image_agent.generate_with_face(prompt, ref_bytes, model_id=model_id))
+    return ("image_controlnet", "Imagen generada a partir de la composicion de la foto.",
+            "generando la imagen a partir de la foto", ".png",
+            lambda: image_agent.generate_with_controlnet(prompt, ref_bytes))
+
+
 @app.post("/image_with_face", response_model=ChatResponse)
 def image_with_face(request: Request, prompt: str = Form(...), image: UploadFile | None = File(None),
                      person_name: str | None = Form(None), model_id: str | None = Form(None)):
-    """Genera una imagen a partir de una foto adjunta - decide sola que
-    tecnica usar segun si la foto tiene una cara humana o no (bug real
-    encontrado en vivo, 2026-09-25: pedir "una mariposa similar con los
-    colores invertidos" generaba una cara alucinada, porque antes se
-    aplicaba FaceID siempre sin comprobar nada):
+    """Imagen a partir de una foto adjunta. Con el modelo de edicion (FLUX
+    Kontext) instalado, la foto se EDITA siguiendo la peticion y lo demas
+    queda como en el original - antes se generaba una imagen nueva desde cero
+    con la cara de una sola persona y no se parecia (Sergio, 2026-10-01: "no
+    nos pareciamos en nada y no hacia lo que le pedia"). Sin el, como antes:
     - Con cara: preserva esa cara (IPAdapter FaceID). Ver aviso de uso
       responsable en verifier.py/manual.md: solo para fotos propias o con
       consentimiento.
     - Sin cara (mariposa, paisaje, objeto...): sigue la composicion/forma
-      de la foto (ControlNet) y deja que el texto controle el color y el
-      contenido - lo que de verdad se pedia en ese caso.
+      de la foto (ControlNet) - aplicar FaceID siempre generaba caras
+      alucinadas (2026-09-25).
     model_id: checkpoint SDXL concreto (de model_registry.py), solo se usa
     en el camino de FaceID; None = el primero instalado."""
     start = time.perf_counter()
@@ -2448,17 +2632,12 @@ def image_with_face(request: Request, prompt: str = Form(...), image: UploadFile
         metrics.log_event("image_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_faceid", response=str(exc), verifier_gated=False)
 
-    if face_detect.has_face(ref_bytes):
-        agent_used, response_text = "image_faceid", "Imagen generada preservando la cara de referencia."
-        generate = lambda: image_agent.generate_with_face(prompt, ref_bytes, model_id=model_id)
-        error_context = "generando la imagen con cara real"
-    else:
-        agent_used, response_text = "image_controlnet", "Imagen generada a partir de la composicion de la foto."
-        generate = lambda: image_agent.generate_with_controlnet(prompt, ref_bytes)
-        error_context = "generando la imagen a partir de la foto"
+    agent_used, response_text, error_context, ext, generate = _image_from_photo(prompt, ref_bytes, model_id)
 
     try:
         img_bytes = generate()
+        if isinstance(img_bytes, tuple):  # edicion: (foto, que se ha hecho)
+            img_bytes, response_text = img_bytes
     except Exception as exc:
         metrics.log_event(agent_used, (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(
@@ -2468,10 +2647,14 @@ def image_with_face(request: Request, prompt: str = Form(...), image: UploadFile
         )
 
     metrics.log_event(agent_used, (time.perf_counter() - start) * 1000)
-    return _with_bytes(
+    resp = _with_bytes(
         ChatResponse(agent_used=agent_used, response=response_text, verifier_gated=False),
-        img_bytes, ".png", session,
+        img_bytes, ext, session,
     )
+    if agent_used == "image_edit":  # las correcciones siguientes editan esta
+        _remember_upload(session, ref_bytes)
+        _remember_photo(session, None, resp.file_path, prompt)
+    return resp
 
 
 @app.post("/image_with_persona", response_model=ChatResponse)
@@ -2487,7 +2670,9 @@ def image_with_persona(request: Request, prompt: str = Form(...), persona: str =
         return ChatResponse(agent_used="image_persona", verifier_gated=False,
                             response=f'La persona "{persona}" todavia no esta lista (sigue entrenando o fallo).')
     try:
-        img_bytes = image_agent.generate_with_lora(prompt, lora[0], lora[1], model_id=model_id)
+        described, (width, height) = prompt_writer.image_prompt(ollama, CONFIG["router"]["model"], prompt)
+        img_bytes = image_agent.generate_with_lora(described, lora[0], lora[1], model_id=model_id,
+                                                   width=width, height=height)
     except Exception as exc:
         metrics.log_event("image_persona", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_persona", verifier_gated=False,
@@ -2551,10 +2736,7 @@ def video_with_face(request: Request, prompt: str = Form(...), image: UploadFile
         return ChatResponse(agent_used="video_faceid", response=str(exc), verifier_gated=False)
 
     try:
-        if face_detect.has_face(ref_bytes):
-            img_bytes = image_agent.generate_with_face(prompt, ref_bytes, model_id=model_id)
-        else:
-            img_bytes = image_agent.generate_with_controlnet(prompt, ref_bytes)
+        img_bytes = _image_from_photo(prompt, ref_bytes, model_id)[4]()
     except Exception as exc:
         metrics.log_event("video_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(
@@ -2565,7 +2747,8 @@ def video_with_face(request: Request, prompt: str = Form(...), image: UploadFile
 
     try:
         with media_store.plain_copy(img_bytes, ".png") as frame_path:
-            vid_bytes = video_agent.generate_from_image(prompt, str(frame_path))
+            motion = prompt_writer.video_prompt(ollama, CONFIG["router"]["model"], prompt, from_image=True)
+            vid_bytes = video_agent.generate_from_image(motion, str(frame_path))
     except Exception as exc:
         metrics.log_event("video_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
         return _with_bytes(

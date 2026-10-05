@@ -29,23 +29,34 @@ def _get_detector():
     return _detector
 
 
-def has_face(image_bytes: bytes, confidence_threshold: float = 0.7) -> bool:
-    """True si se detecta al menos una cara con confianza razonable. Nunca
-    lanza por una imagen rara/corrupta - en ese caso se asume que no hay
-    cara (mejor caer al camino de ControlNet, que funciona con cualquier
-    imagen, que fallar aqui)."""
+def face_positions(image_bytes: bytes, confidence_threshold: float = 0.7) -> list[str]:
+    """Donde esta cada cara, de izquierda a derecha ("izquierda", "centro",
+    "derecha") - para que el editor de fotos sepa a quien se refiere "ella"
+    o "el de la derecha". Nunca lanza por una imagen rara/corrupta - en ese
+    caso ninguna cara (mejor caer al camino de ControlNet, que funciona con
+    cualquier imagen, que fallar aqui)."""
     try:
         img = np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))[:, :, ::-1]  # RGB -> BGR
     except Exception:
-        return False
+        return []
 
     height, width = img.shape[:2]
     if height == 0 or width == 0:
-        return False
+        return []
 
     detector = _get_detector()
     detector.setInputSize((width, height))
     _, faces = detector.detect(img)
     if faces is None:
-        return False
-    return any(face[14] >= confidence_threshold for face in faces)  # face[14] = score de confianza
+        return []
+    centers = sorted((face[0] + face[2] / 2) / width for face in faces
+                     if face[14] >= confidence_threshold)  # face[14] = score de confianza
+    return ["izquierda" if c < 0.4 else "derecha" if c > 0.6 else "centro" for c in centers]
+
+
+def count_faces(image_bytes: bytes, confidence_threshold: float = 0.7) -> int:
+    return len(face_positions(image_bytes, confidence_threshold))
+
+
+def has_face(image_bytes: bytes, confidence_threshold: float = 0.7) -> bool:
+    return count_faces(image_bytes, confidence_threshold) > 0

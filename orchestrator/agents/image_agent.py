@@ -17,6 +17,7 @@ FACEID_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "faceid_imag
 UPSCALE_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "upscale_image.json"
 INPAINT_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "inpaint_image.json"
 CONTROLNET_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "controlnet_image.json"
+KONTEXT_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "kontext_edit.json"
 
 # Que placeholder de checkpoint usa la plantilla de cada arquitectura - FLUX
 # separa el unet en un archivo aparte (UnetLoaderGGUF), el resto son
@@ -58,6 +59,7 @@ class ImageAgent:
         self.upscale_template = json.loads(UPSCALE_WORKFLOW_PATH.read_text(encoding="utf-8"))
         self.inpaint_template = json.loads(INPAINT_WORKFLOW_PATH.read_text(encoding="utf-8"))
         self.controlnet_template = json.loads(CONTROLNET_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        self.kontext_template = json.loads(KONTEXT_WORKFLOW_PATH.read_text(encoding="utf-8"))
 
     def _sdxl_checkpoint_path(self, model_id: str | None = None) -> str:
         """El checkpoint SDXL que usan FaceID/Inpaint/ControlNet - esas tres
@@ -125,7 +127,10 @@ class ImageAgent:
 
     def upscale(self, image_path: str, timeout: int = 120) -> bytes:
         """Escala x4 una imagen ya existente (RealESRGAN), sin volver a generarla."""
-        uploaded_filename = self.upload_image(image_path)
+        return self.upscale_bytes(Path(image_path).read_bytes(), timeout)
+
+    def upscale_bytes(self, image_bytes: bytes, timeout: int = 120) -> bytes:
+        uploaded_filename = self.upload_image_bytes(image_bytes, "upscale_src.png")
         raw = json.dumps(self.upscale_template)
         raw = raw.replace('"__IMAGE_FILENAME__"', json.dumps(uploaded_filename))
         workflow = json.loads(raw)
@@ -228,4 +233,25 @@ class ImageAgent:
         raw = raw.replace('"__SEED__"', str(seed))
         raw = raw.replace('"__IMAGE_FILENAME__"', json.dumps(uploaded_filename))
         workflow = json.loads(raw)
+        return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]
+
+    def edit_with_kontext(self, instruction: str, image_png: bytes, steps: int = 20,
+                          timeout: int = 900) -> bytes:
+        """Edita la foto siguiendo una instruccion en ingles (FLUX Kontext).
+        image_png ya a su tamano (photo_edit.prepare_for_kontext). Devuelve lo
+        que genera Kontext tal cual; photo_edit.finish() es quien vuelve a
+        poner la original en lo que no se pidio cambiar."""
+        entry = model_registry.get_edit_model()
+        if entry is None:
+            raise NoModelInstalledError(
+                "No esta instalado el modelo para editar fotos (FLUX Kontext). "
+                "Añadelo en Opciones > Modelos > Imagen."
+            )
+        uploaded_filename = self.upload_image_bytes(image_png, "edit_source.png")
+        workflow = json.loads(json.dumps(self.kontext_template))
+        workflow["unet_loader"]["inputs"]["unet_name"] = entry.comfy_path
+        workflow["load_image"]["inputs"]["image"] = uploaded_filename
+        workflow["positive_encode"]["inputs"]["text"] = instruction
+        workflow["sampler"]["inputs"]["seed"] = int(time.time() * 1000) % (2**32)
+        workflow["sampler"]["inputs"]["steps"] = steps
         return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]

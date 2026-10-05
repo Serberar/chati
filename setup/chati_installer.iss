@@ -124,6 +124,10 @@ begin
     'El generador de imagen recomendado por defecto.', True);
   AddCatalogItem('imagen-sdxl', 'Imagen', 'SDXL base',
     'Necesario para preservar caras, ControlNet e inpaint.', True);
+  // sin GPU, editar una foto tardaria horas
+  if IncludeVideo then
+    AddCatalogItem('imagen-editar', 'Imagen', 'Editar fotos (FLUX Kontext)',
+      'Edita tus fotos con una frase (otro fondo, otra ropa) sin cambiar las caras.', True);
   if IncludeVideo then
     AddCatalogItem('video-ltxv', 'Video', 'LTX-Video (2B, destilado)',
       'El generador de video recomendado por defecto.', True);
@@ -300,7 +304,10 @@ begin
           Break;
         end;
   end;
-  if CurStep = ssPostInstall then
+  // ssInstall y no ssPostInstall: las entradas de [Run] se ejecutan ANTES de
+  // ssPostInstall (comprobado con un instalador de prueba), asi que el
+  // descargador arrancaba sin este archivo y no bajaba nada (2026-10-01).
+  if CurStep = ssInstall then
   begin
     Count := 0;
     SetArrayLength(Lines, GetArrayLength(Catalog));

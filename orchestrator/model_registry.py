@@ -35,6 +35,10 @@ IMAGE_ARCHITECTURES = {
     "sdxl": {"comfy_dir": "checkpoints", "label": "SDXL", "extensions": (".safetensors",)},
     "sd15": {"comfy_dir": "checkpoints", "label": "SD 1.5", "extensions": (".safetensors",)},
     "flux": {"comfy_dir": "diffusion_models", "label": "FLUX", "extensions": (".safetensors", ".gguf")},
+    # solo edita una foto que se le da (ver photo_edit.py), no genera desde
+    # texto: no sale en la lista de generadores
+    "flux_kontext": {"comfy_dir": "diffusion_models", "label": "FLUX Kontext (editar fotos)",
+                     "extensions": (".safetensors", ".gguf"), "edit_only": True},
 }
 
 # Solo LTX-Video por ahora - deliberadamente abierto a añadir mas
@@ -75,7 +79,13 @@ def _scan(base_dir: Path, architectures: dict) -> list[ModelEntry]:
 
 
 def list_image_models() -> list[ModelEntry]:
-    return _scan(IMG_DIR, IMAGE_ARCHITECTURES)
+    return [m for m in _scan(IMG_DIR, IMAGE_ARCHITECTURES)
+            if not IMAGE_ARCHITECTURES[m.architecture].get("edit_only")]
+
+
+def get_edit_model() -> ModelEntry | None:
+    edit_archs = {a: meta for a, meta in IMAGE_ARCHITECTURES.items() if meta.get("edit_only")}
+    return next(iter(_scan(IMG_DIR, edit_archs)), None)
 
 
 def list_video_models() -> list[ModelEntry]:
@@ -141,7 +151,7 @@ def list_image_architectures() -> list[dict]:
     tienen algo instalado) - para el "Añadir modelo" de Opciones > Modelos,
     que tiene que enseñar donde soltar un archivo nuevo aunque la carpeta
     todavia este vacia."""
-    installed = list_image_models()
+    installed = _scan(IMG_DIR, IMAGE_ARCHITECTURES)
     return [
         {
             "id": arch,

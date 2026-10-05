@@ -155,6 +155,8 @@ def download_selected(entry_ids: list[str]) -> list[str]:
                 _pull_ollama_model(entry.ollama_model)
             elif entry.download_url:
                 _download_file(entry.download_url, _destination_for(entry))
+            for url, relative in entry.extra_files:
+                _download_file(url, model_registry.IMG_DIR / relative)
             _log(f"  hecho: {entry.label}")
         except (OSError, RuntimeError, subprocess.CalledProcessError, requests.RequestException) as exc:
             _log(f"  FALLO: {entry.label}: {exc}", error=True)

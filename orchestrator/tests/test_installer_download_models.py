@@ -149,7 +149,7 @@ def test_download_selected_routes_image_entries_to_download(tmp_path, monkeypatc
         installer_download_models.download_selected(["imagen-flux"])
 
     mock_pull.assert_not_called()
-    mock_download.assert_called_once()
+    assert mock_download.call_args_list[0].args[1].name == "flux1-schnell-Q4_K_S.gguf"
 
 
 def test_download_selected_ignores_unknown_ids(tmp_path, monkeypatch, capsys):
@@ -160,3 +160,17 @@ def test_download_selected_ignores_unknown_ids(tmp_path, monkeypatch, capsys):
     installer_download_models.download_selected(["no-existe-de-mentira"])
 
     assert "AVISO" in capsys.readouterr().err
+
+
+def test_image_models_bring_the_files_they_need_to_work(tmp_path, monkeypatch):
+    """Sin codificadores ni VAE, FLUX no funcionaba en un equipo limpio aunque
+    el modelo se hubiera descargado (2026-10-01)."""
+    monkeypatch.setattr(model_registry, "IMG_DIR", tmp_path / "img")
+    downloaded = []
+    with patch.object(installer_download_models, "_download_file",
+                      side_effect=lambda url, dest: downloaded.append(dest)):
+        assert installer_download_models.download_selected(["imagen-editar"]) == []
+    relative = {d.relative_to(tmp_path / "img").as_posix() for d in downloaded}
+    assert {"diffusion_models/flux_kontext/flux1-kontext-dev-Q4_K_S.gguf", "text_encoders/clip_l.safetensors",
+            "text_encoders/t5xxl_fp8_e4m3fn.safetensors", "vae/flux-vae-bf16.safetensors",
+            "matting/modnet.onnx", "upscale_models/RealESRGAN_x4plus.pth"} <= relative

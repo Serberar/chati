@@ -8,6 +8,8 @@ from PIL import Image
 
 import face_detect
 
+FIXTURES_DIR = __import__("pathlib").Path(__file__).parent / "fixtures"
+
 
 def _solid_color_png(color=(200, 100, 50), size=(300, 300)) -> bytes:
     buf = io.BytesIO()
@@ -42,3 +44,15 @@ def test_has_face_respects_a_stricter_confidence_threshold():
     # el umbral por defecto (0.7) detecta la cara real; uno imposible (1.1,
     # por encima del maximo teorico de 1.0) nunca deberia superarse
     assert face_detect.has_face(img_bytes, confidence_threshold=1.1) is False
+
+
+def test_count_faces_counts_one_in_a_single_face_photo():
+    assert face_detect.count_faces((FIXTURES_DIR / "sample_face.png").read_bytes()) == 1
+
+
+def test_count_faces_zero_for_corrupt_image_data():
+    assert face_detect.count_faces(b"no es una imagen") == 0
+
+
+def test_face_positions_says_where_each_face_is():
+    assert face_detect.face_positions((FIXTURES_DIR / "sample_face.png").read_bytes()) in (["centro"], ["izquierda"], ["derecha"])

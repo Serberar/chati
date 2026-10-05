@@ -802,7 +802,8 @@ def test_vision_chat_stream_ignores_the_text_model_profile():
 # aplicaba siempre, sin comprobar si la foto tenia una cara de verdad).
 
 def test_image_with_face_uses_faceid_when_a_face_is_detected():
-    with patch.object(main.face_detect, "has_face", return_value=True), \
+    with patch.object(main.model_registry, "get_edit_model", return_value=None), \
+         patch.object(main.face_detect, "has_face", return_value=True), \
          patch.object(main.image_agent, "generate_with_face", return_value=b"fake-png") as mock_faceid, \
          patch.object(main.image_agent, "generate_with_controlnet") as mock_controlnet:
         resp = client.post("/image_with_face", files={"image": ("ref.png", b"x", "image/png")},
@@ -814,7 +815,8 @@ def test_image_with_face_uses_faceid_when_a_face_is_detected():
 
 
 def test_image_with_face_uses_controlnet_when_no_face_is_detected():
-    with patch.object(main.face_detect, "has_face", return_value=False), \
+    with patch.object(main.model_registry, "get_edit_model", return_value=None), \
+         patch.object(main.face_detect, "has_face", return_value=False), \
          patch.object(main.image_agent, "generate_with_face") as mock_faceid, \
          patch.object(main.image_agent, "generate_with_controlnet", return_value=b"fake-png") as mock_controlnet:
         resp = client.post("/image_with_face", files={"image": ("mariposa.png", b"x", "image/png")},
@@ -826,7 +828,8 @@ def test_image_with_face_uses_controlnet_when_no_face_is_detected():
 
 
 def test_video_with_face_uses_controlnet_base_frame_when_no_face_is_detected():
-    with patch.object(main.face_detect, "has_face", return_value=False), \
+    with patch.object(main.model_registry, "get_edit_model", return_value=None), \
+         patch.object(main.face_detect, "has_face", return_value=False), \
          patch.object(main.image_agent, "generate_with_face") as mock_faceid, \
          patch.object(main.image_agent, "generate_with_controlnet", return_value=b"fake-png") as mock_controlnet, \
          patch.object(main.video_agent, "generate_from_image", return_value=b"fake-mp4"):
@@ -837,6 +840,85 @@ def test_video_with_face_uses_controlnet_base_frame_when_no_face_is_detected():
     assert data["file_url"].endswith(".mp4")
     mock_controlnet.assert_called_once()
     mock_faceid.assert_not_called()
+
+
+# --- Con el modelo de edicion (FLUX Kontext) instalado, la foto se edita en
+# vez de generar una nueva con FaceID (Sergio, 2026-10-01: con su mujer "no
+# nos pareciamos en nada y no hacia lo que le pedia").
+
+def test_image_with_face_edits_the_photo_when_the_edit_model_is_installed():
+    with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
+         patch.object(main, "_edit_photo", return_value=(b"fake-jpg", "He hecho esto: os pongo en una playa.")) as mock_edit, \
+         patch.object(main.image_agent, "generate_with_face") as mock_faceid:
+        resp = client.post("/image_with_face", files={"image": ("pareja.jpg", b"x", "image/jpeg")},
+                            data={"prompt": "ponnos en una playa"})
+    data = resp.json()
+    assert data["agent_used"] == "image_edit"
+    assert data["file_url"].endswith(".jpg")
+    assert data["response"] == "He hecho esto: os pongo en una playa."
+    mock_edit.assert_called_once_with("ponnos en una playa", b"x")
+    mock_faceid.assert_not_called()
+
+
+def test_chat_with_a_photo_and_a_change_request_edits_the_photo():
+    """En el chat automatico la foto iba siempre al modelo de vision, que solo
+    sabe comentarla: "ponnos en una playa" no hacia nada."""
+    with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
+         patch.object(main.photo_edit, "wants_edit", return_value=True), \
+         patch.object(main, "_edit_photo", return_value=(b"fake-jpg", "He hecho esto: os pongo en una playa.")) as mock_edit, \
+         patch.object(main.vision_agent, "respond_with_image_stream") as mock_vision:
+        with client.stream("POST", "/chat/stream", json={"message": "ponnos en una playa",
+                                                         "image_base64": "eA=="}) as resp:
+            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    assert lines[0]["agent_used"] == "image_edit"
+    assert lines[-1]["file_url"].endswith(".jpg")
+    assert lines[-1]["response"] == "He hecho esto: os pongo en una playa."
+    mock_edit.assert_called_once_with("ponnos en una playa", b"x", None, "")
+    mock_vision.assert_not_called()
+
+
+def test_chat_with_a_photo_and_a_question_still_comments_it():
+    with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
+         patch.object(main.photo_edit, "wants_edit", return_value=False), \
+         patch.object(main, "_edit_photo") as mock_edit, \
+         patch.object(main, "_ensure_active_model"), \
+         patch.object(main.vision_agent, "respond_with_image_stream", return_value=iter(["Un parque."])):
+        resp = client.post("/chat", json={"message": "que ves?", "image_base64": "eA=="})
+    assert resp.json()["agent_used"] == "vision"
+    mock_edit.assert_not_called()
+
+
+def test_image_from_a_simple_request_goes_through_the_prompt_writer():
+    """Sergio, 2026-10-01: ordenes sencillas, sin prompts. Antes la frase en
+    español llegaba tal cual al generador."""
+    with patch.object(main.prompt_writer, "image_prompt",
+                      return_value=("A realistic photo of a dog in fresh snow.", (832, 1216))) as mock_writer, \
+         patch.object(main.image_agent, "generate", return_value=b"png") as mock_gen:
+        resp = client.post("/chat", json={"message": "un perro en la nieve", "agent": "image"})
+    assert resp.json()["agent_used"] == "image"
+    assert mock_writer.call_args.args[2] == "un perro en la nieve"
+    assert mock_gen.call_args.args[0] == "A realistic photo of a dog in fresh snow."
+    assert (mock_gen.call_args.kwargs["width"], mock_gen.call_args.kwargs["height"]) == (832, 1216)
+
+
+def test_edit_photo_chains_plan_kontext_and_composition():
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), (10, 20, 30)).save(buf, format="PNG")
+    photo = buf.getvalue()
+    plan = main.photo_edit.EditPlan("Change the t-shirt to green. Keep everything else the same.", "local",
+                                    "te pongo la camiseta verde")
+    with patch.object(main.photo_edit, "plan_edit", return_value=[plan]) as mock_plan, \
+         patch.object(main.image_agent, "edit_with_kontext", return_value=photo) as mock_kontext, \
+         patch.object(main.image_agent, "upscale_bytes") as mock_upscale:
+        out, done = main._edit_photo("la camiseta verde", photo)
+    assert done == "He hecho esto: te pongo la camiseta verde."
+    assert mock_plan.call_args.args[2] == "la camiseta verde"
+    assert mock_kontext.call_args.args[0] == plan.instruction
+    mock_upscale.assert_not_called()
+    assert Image.open(io.BytesIO(out)).format == "JPEG"
+    assert Image.open(io.BytesIO(out)).size == (64, 48)
 
 
 # --- Activar el agente desde el chat normal (sin cambiar al modo Agente) ---

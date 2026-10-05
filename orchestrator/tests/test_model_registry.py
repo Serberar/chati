@@ -141,7 +141,7 @@ def test_list_image_architectures_includes_empty_ones(tmp_path, monkeypatch):
 
     archs = {a["id"]: a for a in model_registry.list_image_architectures()}
 
-    assert set(archs) == {"sdxl", "sd15", "flux"}
+    assert set(archs) == {"sdxl", "sd15", "flux", "flux_kontext"}
     assert archs["sdxl"]["installed_count"] == 1
     assert archs["sd15"]["installed_count"] == 0
     assert archs["sdxl"]["folder"] == str(img / "checkpoints" / "sdxl")
@@ -189,3 +189,22 @@ def test_video_model_path_returns_the_full_file_path(tmp_path, monkeypatch):
     path = model_registry.video_model_path("ltxv:modelo_v")
 
     assert path == vid / "checkpoints" / "ltxv" / "modelo_v.safetensors"
+
+
+def test_the_photo_edit_model_is_not_offered_as_a_generator(tmp_path, monkeypatch):
+    """FLUX Kontext solo edita una foto que se le da: si saliera en la lista,
+    elegirlo para generar desde texto fallaria (ver photo_edit.py)."""
+    img, vid = _make_tree(tmp_path)
+    (img / "diffusion_models" / "flux_kontext").mkdir(parents=True)
+    (img / "diffusion_models" / "flux_kontext" / "flux1-kontext-dev-Q4_K_S.gguf").write_bytes(b"x")
+    (img / "diffusion_models" / "flux" / "flux1-schnell-Q4_K_S.gguf").write_bytes(b"x")
+    monkeypatch.setattr(model_registry, "IMG_DIR", img)
+    monkeypatch.setattr(model_registry, "VID_DIR", vid)
+    assert [m.id for m in model_registry.list_image_models()] == ["flux:flux1-schnell-Q4_K_S"]
+    assert model_registry.get_edit_model().comfy_path.endswith("flux1-kontext-dev-Q4_K_S.gguf")
+
+
+def test_no_photo_edit_model_when_it_is_not_installed(tmp_path, monkeypatch):
+    img, vid = _make_tree(tmp_path)
+    monkeypatch.setattr(model_registry, "IMG_DIR", img)
+    assert model_registry.get_edit_model() is None
