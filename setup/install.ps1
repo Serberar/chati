@@ -194,7 +194,7 @@ $piperOnnx = "$piperDir\es_ES-davefx-medium.onnx"
 if (-not (Test-Path $piperOnnx)) {
     Write-Host "Descargando voz de Piper (es_ES-davefx-medium, ~63MB)..." -ForegroundColor Yellow
     New-Item -ItemType Directory -Path $piperDir -Force | Out-Null
-    $piperBase = "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium"
+    $piperBase = "https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/es/es_ES/davefx/medium"
     Invoke-WebRequest -Uri "$piperBase/es_ES-davefx-medium.onnx" -OutFile $piperOnnx
     Invoke-WebRequest -Uri "$piperBase/es_ES-davefx-medium.onnx.json" -OutFile "$piperOnnx.json"
     # huellas comprobadas el 2026-09-29: si el archivo cambia en el servidor, no se usa

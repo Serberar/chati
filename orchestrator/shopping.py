@@ -16,8 +16,9 @@ import threading
 import time
 import uuid
 from typing import Callable
+from urllib.parse import urlparse
 
-from web_tools import Blocked, Browser, ChatFn, EncryptedStore, json_from, site_label
+from web_tools import Blocked, Browser, ChatFn, EncryptedStore, is_private_host, json_from, site_label
 
 MAX_HISTORY = 10
 PAGE_MAX_CHARS = 6000
@@ -175,8 +176,17 @@ def evaluate_page(chat: ChatFn, plan: dict, page: dict) -> dict | None:
         "valoracion": rating if rating is None or 0 <= rating <= 5 else None,
         "opiniones": int(opinions) if opinions else None,
         "encaje": match,
-        "imagen": page.get("image"),
+        "imagen": _public_image(page.get("image")),
     }
+
+
+def _public_image(url: str | None) -> str | None:
+    """La imagen la elige la tienda y la carga el navegador del usuario: una
+    web podia poner https://192.168.1.1/... y hacer que el navegador llamara
+    al router de casa (auditoria 2026-10-05). Solo https a un servidor publico."""
+    if not url or not url.startswith("https://"):
+        return None
+    return None if is_private_host(urlparse(url).hostname) else url
 
 
 RECOMMEND_PROMPT = """Alguien quiere comprar: {producto}.

@@ -23,7 +23,7 @@ from urllib.parse import quote_plus
 
 import profile_store
 from rag import _extract_text
-from web_tools import BING, Blocked, Browser, ChatFn, EncryptedStore, json_from, site_label, unbing
+from web_tools import Blocked, Browser, ChatFn, EncryptedStore, json_from, site_label, unbing
 
 # nombres de antes, usados desde los tests y otros modulos
 _json_from, _site_label, _unbing = json_from, site_label, unbing

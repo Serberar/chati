@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 DIAS = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
@@ -194,6 +195,74 @@ def fecha_actual() -> str:
 SANDBOX = Path(__file__).with_name("python_sandbox.py")
 
 
+# Memoria maxima del Python de la jaula. Sin tope, un "x = 'a' * 10**11" (de
+# un documento con instrucciones escondidas) llenaba la RAM y el disco de
+# intercambio y dejaba el PC colgado (auditoria 2026-10-05). Para calculos sobra.
+PYTHON_MEMORY_LIMIT = 512 * 1024 ** 2
+_JOB_MEMORY_EXIT = 0xC0000017 - 2 ** 32  # STATUS_NO_MEMORY, como lo da Windows en un int con signo
+
+
+def _drain(pipe, buf: bytearray) -> None:
+    """Lee hasta el final, pero guarda solo lo que se va a mostrar."""
+    while chunk := pipe.read(65536):
+        if len(buf) < PYTHON_OUTPUT_LIMIT * 4:
+            buf.extend(chunk[:PYTHON_OUTPUT_LIMIT * 4 - len(buf)])
+
+
+def _limit_memory(proc: subprocess.Popen):
+    """Mete el proceso en un Job Object de Windows con tope de memoria (y que
+    muere si Chati cierra el job). None fuera de Windows o si falla: entonces
+    sigue valiendo el timeout."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _BasicLimits(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in ("ReadOps", "WriteOps", "OtherOps",
+                                                       "ReadBytes", "WriteBytes", "OtherBytes")]
+
+        class _ExtendedLimits(ctypes.Structure):
+            _fields_ = [("Basic", _BasicLimits), ("Io", _IoCounters), ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        limits = _ExtendedLimits()
+        # PROCESS_MEMORY | KILL_ON_JOB_CLOSE. Sin limite de procesos: el python.exe
+        # del venv es un lanzador que arranca el Python real como hijo (que hereda
+        # el job y su tope); lanzar programas ya lo impide la jaula.
+        limits.Basic.LimitFlags = 0x100 | 0x2000
+        limits.ProcessMemoryLimit = PYTHON_MEMORY_LIMIT
+        ok = kernel32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(limits), ctypes.sizeof(limits)) \
+            and kernel32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(int(proc._handle)))
+        if not ok:
+            kernel32.CloseHandle(wintypes.HANDLE(job))
+            return None
+        return job
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def _close_job(job) -> None:
+    if job:
+        import ctypes
+        from ctypes import wintypes
+        ctypes.WinDLL("kernel32").CloseHandle(wintypes.HANDLE(job))
+
+
 def ejecutar_python(codigo: str) -> str:
     """Ejecuta codigo Python en un proceso aparte con timeout, en una carpeta
     temporal y dentro de la jaula de python_sandbox.py: sin red, sin lanzar
@@ -207,23 +276,33 @@ def ejecutar_python(codigo: str) -> str:
         # -I: sin variables de entorno ni site del usuario; -B: sin escribir .pyc fuera
         env = {k: v for k, v in os.environ.items() if k.upper() in ("SYSTEMROOT", "WINDIR", "PATH")}
         env.update(TEMP=tmpdir, TMP=tmpdir, PYTHONIOENCODING="utf-8")
+        proc = subprocess.Popen([sys.executable, "-I", "-B", str(SANDBOX), tmpdir], cwd=tmpdir, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        job = _limit_memory(proc)
+        # la salida se lee sin guardarla entera: un print en bucle durante 10 s
+        # eran GB en la memoria de Chati (auditoria 2026-10-05)
+        out, err = bytearray(), bytearray()
+        readers = [threading.Thread(target=_drain, args=(pipe, buf), daemon=True)
+                   for pipe, buf in ((proc.stdout, out), (proc.stderr, err))]
+        for r in readers:
+            r.start()
         try:
-            result = subprocess.run(
-                [sys.executable, "-I", "-B", str(SANDBOX), tmpdir],
-                cwd=tmpdir,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-                timeout=PYTHON_EXEC_TIMEOUT,
-            )
+            returncode = proc.wait(timeout=PYTHON_EXEC_TIMEOUT)
         except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
             return f"El codigo tardo mas de {PYTHON_EXEC_TIMEOUT}s y se interrumpio (probable bucle infinito)."
+        finally:
+            for r in readers:
+                r.join(timeout=5)
+            _close_job(job)
 
-        output = result.stdout
-        if result.returncode != 0:
-            output += f"\n--- error (codigo {result.returncode}) ---\n{result.stderr}"
+        output = out.decode("utf-8", errors="replace")
+        if returncode != 0:
+            stderr = err.decode("utf-8", errors="replace")
+            if returncode == _JOB_MEMORY_EXIT or "MemoryError" in stderr:
+                stderr += f"\n(el codigo pidio mas de {PYTHON_MEMORY_LIMIT // 1024 ** 2} MB de memoria)"
+            output += f"\n--- error (codigo {returncode}) ---\n{stderr}"
         if not output.strip():
             output = "(el codigo se ejecuto sin errores pero no imprimio nada - usa print() para ver resultados)"
         if len(output) > PYTHON_OUTPUT_LIMIT:

@@ -445,10 +445,12 @@ def test_image_with_saved_person_face():
     client.post("/people", files={"image": ("ref.png", face_bytes, "image/png")},
                 data={"name": "Test FaceID Pipeline"})
     try:
-        resp = client.post("/image_with_face", data={
-            "prompt": "the same person in a park",
-            "person_name": "Test FaceID Pipeline",
-        })
+        # con Kontext instalado la foto se editaria: aqui se prueba el camino de FaceID
+        with patch.object(main.model_registry, "get_edit_model", return_value=None):
+            resp = client.post("/image_with_face", data={
+                "prompt": "the same person in a park",
+                "person_name": "Test FaceID Pipeline",
+            })
         data = resp.json()
         assert data["agent_used"] == "image_faceid"
         assert data["file_url"] is not None
@@ -840,6 +842,19 @@ def test_video_with_face_uses_controlnet_base_frame_when_no_face_is_detected():
     assert data["file_url"].endswith(".mp4")
     mock_controlnet.assert_called_once()
     mock_faceid.assert_not_called()
+
+
+def test_video_with_face_animates_the_edited_photo():
+    # auditoria 2026-10-05: la edicion devuelve (foto, resumen) y aqui se
+    # pasaba la tupla entera como fotograma
+    with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
+         patch.object(main, "_edit_photo", return_value=(b"fake-jpg", "He hecho esto: x.")), \
+         patch.object(main.prompt_writer, "video_prompt", return_value="People dance."), \
+         patch.object(main.video_agent, "generate_from_image", return_value=b"fake-mp4") as mock_video:
+        resp = client.post("/video_with_face", files={"image": ("yo.jpg", b"x", "image/jpeg")},
+                            data={"prompt": "que baile en la playa"})
+    assert resp.json()["file_url"].endswith(".mp4")
+    mock_video.assert_called_once()
 
 
 # --- Con el modelo de edicion (FLUX Kontext) instalado, la foto se edita en
@@ -1246,10 +1261,33 @@ def test_pending_work_is_empty_when_nothing_runs():
 def test_stop_work_aborts_agent_tasks_and_comfyui():
     with patch.object(main.opencode_client, "busy_session_ids", return_value=["ses_1", "ses_2"]), \
          patch.object(main.opencode_client, "abort") as mock_abort, \
-         patch.object(main.comfyui_client, "stop_everything") as mock_stop:
+         patch.object(main.comfyui_client, "stop_owned") as mock_stop:
         assert client.post("/work/stop").status_code == 200
     assert [c.args[1] for c in mock_abort.call_args_list] == ["ses_1", "ses_2"]
     mock_stop.assert_called_once()
+
+
+def test_stopping_only_touches_your_own_generations():
+    # auditoria 2026-10-05: el boton de parar de cualquiera (invitados incluidos)
+    # cortaba lo que estuviera generando ComfyUI, fuera de quien fuera
+    guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+    jobs = [{"id": "ajeno", "state": "running"}]
+    with main.comfyui_client._owners_lock:
+        main.comfyui_client._owners["ajeno"] = "otro-usuario"
+    try:
+        with patch.object(main.comfyui_client, "user_jobs", return_value=jobs), \
+             patch.object(main.comfyui_client, "stop_job") as mock_stop, \
+             patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
+             patch.object(main.opencode_client, "waiting_sessions", return_value={}):
+            assert guest.post("/cancel").status_code == 200
+            assert client.post("/cancel").status_code == 200
+            assert client.post("/work/generation/ajeno/stop").status_code == 403
+            assert client.post("/work/stop").status_code == 200
+            assert client.get("/work/pending").json()["generations"] == []
+        mock_stop.assert_not_called()
+    finally:
+        with main.comfyui_client._owners_lock:
+            main.comfyui_client._owners.pop("ajeno", None)
 
 
 def test_changing_mode_never_frees_comfyui_in_the_middle_of_a_generation():
@@ -1351,6 +1389,15 @@ def test_llm_proxy_only_for_opencode_and_cleans_streamed_tool_calls():
     assert resp.status_code == 200  # sin sesion de usuario: es la pasarela de OpenCode
     assert mock_req.call_args.args[1].endswith("/v1/chat/completions")
     assert '\\"workdir\\"' not in resp.text and "[DONE]" in resp.text
+
+
+def test_llm_proxy_only_reaches_the_chat_api():
+    # con "../api/pull" se llegaba a la API de administrar modelos de Ollama
+    opencode = TestClient(app, headers={"Authorization": f"Bearer {main.opencode_client.AUTH[1]}"})
+    with patch.object(main.requests, "request") as mock_req:
+        for bad in ("/llm/v1/%2e%2e/api/pull", "/llm/v1/..%2Fapi%2Fcreate", "/llm/v1/chat%3Fx"):
+            assert "Ruta no permitida" in opencode.post(bad, json={"model": "m"}).text, bad
+    mock_req.assert_not_called()
 
 
 # --- Tarea en directo (n.º 3 del roadmap): eventos de OpenCode -> SSE ---
@@ -1637,3 +1684,29 @@ def test_without_voice_libraries_the_rest_of_chati_still_works():
     assert resp.status_code == 503 and "voz" in resp.json()["detail"]
     with patch.object(main.voice_agent, "speak", side_effect=RuntimeError("La voz no esta disponible")):
         assert client.post("/speak", data={"text": "hola"}).status_code == 503
+
+
+def test_generations_are_recorded_under_whoever_asked():
+    seen = []
+
+    def fake_generate(*args, **kwargs):
+        seen.append(main.comfyui_client.current_owner.get())
+        return b"png"
+    with patch.object(main.prompt_writer, "image_prompt", return_value=("A dog.", (1024, 1024))), \
+         patch.object(main.image_agent, "generate", side_effect=fake_generate):
+        client.post("/chat", json={"message": "un perro", "agent": "image"})
+        guest = TestClient(app, headers={"X-Session-Token": client.post("/auth/guest").json()["token"]})
+        guest.post("/chat", json={"message": "un gato", "agent": "image"})
+    assert len(seen) == 2 and all(seen) and seen[0] != seen[1]
+    assert seen[1].startswith("invitado:")
+
+
+def test_upscaling_an_already_huge_image_is_refused_before_reaching_comfyui():
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (3000, 2000), (1, 2, 3)).save(buf, format="PNG")  # 6 MP: saldria de 96 MP
+    with patch.object(main.image_agent, "upscale") as mock_upscale:
+        resp = client.post("/image/upscale", files={"image": ("grande.png", buf.getvalue(), "image/png")})
+    assert "muy grande" in resp.json()["response"]
+    mock_upscale.assert_not_called()

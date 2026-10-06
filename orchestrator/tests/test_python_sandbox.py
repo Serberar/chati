@@ -41,3 +41,16 @@ def test_nothing_outside_the_sandbox(code):
     last = _last(tools.ejecutar_python(code))
     # bloqueado por la jaula, o el modulo ni siquiera esta (KeyError)
     assert "No permitido en ejecutar_python" in last or last.startswith("KeyError"), last
+
+
+def test_the_cage_has_a_memory_ceiling():
+    # sin tope, pedir decenas de GB dejaba el PC colgado (auditoria 2026-10-05)
+    out = tools.ejecutar_python("x = bytearray(1024**3)\nprint('reservado')")
+    assert "reservado" not in out
+    assert "memoria" in out
+    assert "ok" in tools.ejecutar_python("x = bytearray(20 * 1024**2)\nprint('ok')")
+
+
+def test_endless_output_does_not_pile_up_in_memory():
+    out = tools.ejecutar_python("print('y' * 10**7)")
+    assert len(out) < tools.PYTHON_OUTPUT_LIMIT + 100

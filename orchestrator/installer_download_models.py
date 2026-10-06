@@ -11,6 +11,7 @@ Imprime una linea por paso a stdout - el instalador (o quien lo llame) puede
 mostrar eso tal cual como progreso, no hace falta parsear nada mas fino."""
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -39,7 +40,9 @@ def _destination_for(entry: model_catalog.CatalogEntry) -> Path:
     raise ValueError(f"Modalidad sin carpeta de destino conocida: {entry.modality}")
 
 
-def _download_file(url: str, dest: Path) -> None:
+def _download_file(url: str, dest: Path, sha256: str | None = None) -> None:
+    """Descarga a un .part y solo lo deja como modelo si llega entero y con la
+    huella esperada (sha256, ver model_catalog.CatalogEntry.sha256)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         print(f"  ya estaba descargado: {dest.name}")
@@ -50,15 +53,23 @@ def _download_file(url: str, dest: Path) -> None:
         total = int(resp.headers.get("content-length", 0))
         written = 0
         last_pct_shown = -1
+        digest = hashlib.sha256()
         with open(tmp_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
                 f.write(chunk)
+                digest.update(chunk)
                 written += len(chunk)
                 if total:
                     pct = int(written * 100 / total)
                     if pct != last_pct_shown and pct % 10 == 0:
                         print(f"  {dest.name}: {pct}%")
                         last_pct_shown = pct
+    if total and written != total:  # cortada a medias: no dejar un modelo roto como si estuviera bien
+        tmp_path.unlink(missing_ok=True)
+        raise OSError(f"descarga incompleta de {dest.name}: {written} de {total} bytes")
+    if sha256 and digest.hexdigest() != sha256.lower():
+        tmp_path.unlink(missing_ok=True)
+        raise OSError(f"{dest.name} no es el archivo esperado (huella distinta): no se instala")
     tmp_path.replace(dest)
 
 
@@ -154,9 +165,9 @@ def download_selected(entry_ids: list[str]) -> list[str]:
             if entry.ollama_model:
                 _pull_ollama_model(entry.ollama_model)
             elif entry.download_url:
-                _download_file(entry.download_url, _destination_for(entry))
-            for url, relative in entry.extra_files:
-                _download_file(url, model_registry.IMG_DIR / relative)
+                _download_file(entry.download_url, _destination_for(entry), entry.sha256)
+            for url, relative, sha256 in entry.extra_files:
+                _download_file(url, model_registry.IMG_DIR / relative, sha256)
             _log(f"  hecho: {entry.label}")
         except (OSError, RuntimeError, subprocess.CalledProcessError, requests.RequestException) as exc:
             _log(f"  FALLO: {entry.label}: {exc}", error=True)

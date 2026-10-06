@@ -134,3 +134,11 @@ def test_only_exact_matches_are_recommended_when_there_are_enough():
     rec = shopping.recommend(chat, {"producto": "p"}, offers, True)
     assert rec == [{"url": "exacto1", "por_que": "x"}]
     assert "imitacion" not in seen[0] and "50.0" not in seen[0]
+
+
+def test_product_images_never_point_inside_the_house():
+    # la tienda elige la imagen y la carga el navegador del usuario (auditoria 2026-10-05)
+    assert shopping._public_image("https://8.8.8.8/foto.jpg") == "https://8.8.8.8/foto.jpg"
+    for bad in ("https://192.168.1.1/reboot", "http://8.8.8.8/x.jpg", "https://localhost/x.jpg",
+                "javascript:alert(1)", None):
+        assert shopping._public_image(bad) is None, bad

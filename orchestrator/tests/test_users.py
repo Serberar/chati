@@ -39,6 +39,8 @@ def test_cannot_create_duplicate_username():
 
     with pytest.raises(users.UserError):
         users.create_user("sergio", "otra-contraseña-123", "user")
+    with pytest.raises(users.UserError):  # "Sergio" se hacia pasar por "sergio"
+        users.create_user("Sergio", "otra-contraseña-123", "user")
 
 
 def test_short_password_rejected():
@@ -232,3 +234,13 @@ def test_init_db_adds_display_name_to_old_databases(tmp_path, monkeypatch):
     users.create_user("sergio", "contraseña-larga-123", "admin")
 
     assert users.get_user("sergio")["display_name"] is None
+
+
+def test_guest_sessions_are_capped():
+    import auth_sessions
+    tokens = [auth_sessions.create_guest_session() for _ in range(auth_sessions.MAX_GUEST_SESSIONS + 10)]
+    alive = [t for t in tokens if auth_sessions.get_session(t)]
+    assert len(alive) == auth_sessions.MAX_GUEST_SESSIONS
+    assert auth_sessions.get_session(tokens[-1])  # la recien creada siempre vale
+    for t in tokens:
+        auth_sessions.destroy_session(t)

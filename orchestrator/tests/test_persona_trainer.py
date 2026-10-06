@@ -200,3 +200,12 @@ def test_training_photos_are_deleted_when_it_finishes_and_persona_can_be_deleted
 
     assert persona_trainer.delete_persona("u1", "ana") is True
     assert not persona_trainer.persona_dir("u1", "ana").exists()
+
+
+def test_only_one_persona_trains_at_a_time_even_for_other_users(tmp_path, monkeypatch):
+    _isolate_dirs(tmp_path, monkeypatch)
+    persona_trainer._write_status("otro-usuario", "Ana", "sdxl", {"status": "training", "pid": 1234})
+    monkeypatch.setattr(persona_trainer, "_pid_alive", lambda pid: True)
+    assert persona_trainer._any_training_running()
+    monkeypatch.setattr(persona_trainer, "_pid_alive", lambda pid: False)
+    assert not persona_trainer._any_training_running()

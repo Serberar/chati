@@ -60,6 +60,9 @@ def test_sanitize_filename_strips_path_traversal():
     assert _sanitize_filename("../../etc/passwd") == "passwd"
     assert _sanitize_filename("C:\\Windows\\System32\\evil.dll") == "evil.dll"
     assert _sanitize_filename("informe.pdf") == "informe.pdf"
+    # flujo oculto de NTFS: escribiria dentro de "nota.txt" (auditoria 2026-10-05)
+    assert _sanitize_filename("nota.txt:oculto.pdf") == "nota.txt_oculto.pdf"
+    assert _sanitize_filename('a<b>"c|d?.txt') == "a_b__c_d_.txt"
 
 
 def test_sanitize_filename_rejects_empty_result():

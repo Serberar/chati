@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable
 
@@ -19,6 +20,28 @@ class GenerationCancelled(Exception):
 # Ollama antes de cada generacion. Aqui porque TODA generacion de imagen y
 # video pasa por submit_and_wait - un solo punto en vez de uno por endpoint.
 before_submit: Callable[[], None] | None = None
+
+# De quien es cada generacion (ComfyUI no sabe nada de los usuarios de Chati).
+# El boton de parar de un usuario cortaba TODO lo que hubiera en ComfyUI,
+# tambien lo de los demas, invitados incluidos (auditoria 2026-10-05: Sergio
+# paro su edicion y se cancelo la de otra prueba a la vez). main.py pone el
+# dueño de cada peticion en current_owner.
+current_owner: ContextVar[str | None] = ContextVar("comfy_owner", default=None)
+_owners: dict[str, str] = {}
+_owners_lock = threading.Lock()
+
+
+def owner_of(prompt_id: str) -> str | None:
+    with _owners_lock:
+        return _owners.get(prompt_id)
+
+
+def stop_owned(base_url: str, owner: str) -> int:
+    """Para solo las generaciones de `owner`. Devuelve cuantas."""
+    mine = [j for j in user_jobs(base_url) if owner_of(j["id"]) == owner]
+    for job in mine:
+        stop_job(base_url, job["id"])
+    return len(mine)
 
 def _comfy_dir() -> Path:
     return paths.DATA_ROOT / "ComfyUI"
@@ -66,6 +89,10 @@ def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: 
     )
     resp.raise_for_status()
     prompt_id = resp.json()["prompt_id"]
+    owner = current_owner.get()
+    if owner:
+        with _owners_lock:
+            _owners[prompt_id] = owner
 
     deadline = time.time() + timeout
     grace_deadline = time.time() + 5  # margen inicial: no comprobar la cola nada mas enviar (posible carrera)
@@ -107,7 +134,20 @@ def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: 
 
         time.sleep(1)
 
+    # tambien aqui: si no, la foto subida se quedaba en claro en input/ (auditoria 2026-10-05)
+    forget(base_url, prompt_id, workflow)
     raise TimeoutError(f"Generacion no termino en {timeout}s (prompt_id={prompt_id})")
+
+
+def upload_unique(base_url: str, image_bytes: bytes, filename: str) -> str:
+    """Sube una imagen a input/ de ComfyUI con un nombre que no comparte con
+    ninguna otra peticion; devuelve el nombre para el nodo LoadImage. forget()
+    la borra al terminar."""
+    suffix = Path(filename).suffix.lower() or ".png"
+    unique = f"chati_{uuid.uuid4().hex}{suffix if suffix in ('.png', '.jpg', '.jpeg', '.webp') else '.png'}"
+    resp = requests.post(f"{base_url}/upload/image", files={"image": (unique, image_bytes)}, timeout=30)
+    resp.raise_for_status()
+    return resp.json()["name"]
 
 
 def _try_unlink(path: Path) -> bool:
@@ -134,6 +174,8 @@ def forget(base_url: str, prompt_id: str, workflow: dict, output_info: dict | No
     el resultado cifrado, asi que aqui se borra el rastro en claro (auditoria
     2026-09-29: habia 87 fotos de cara y 181 imagenes sin cifrar en ComfyUI).
     Nunca falla: si algo no se puede borrar, no rompe la generacion."""
+    with _owners_lock:
+        _owners.pop(prompt_id, None)
     root = COMFY_DIR() if callable(COMFY_DIR) else COMFY_DIR
     targets = []
     if output_info and output_info.get("filename"):

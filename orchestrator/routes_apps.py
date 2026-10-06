@@ -9,7 +9,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import deep_search
 import job_search
@@ -44,8 +44,13 @@ def _started(start: Callable[[], None]):
 
 # --- Buscador de empleo (roadmap n.º 7, ver job_search.py) ---
 
+# topes: sin ellos, un texto de varios MB acababa entero en el prompt del
+# modelo y guardado en el historial (auditoria 2026-10-05)
+Query = Field(max_length=2000)
+
+
 class JobPrefsRequest(BaseModel):
-    prefs: dict
+    prefs: dict = Field(max_length=50)
 
 
 @router.get("/jobs")
@@ -87,8 +92,8 @@ def jobs_cancel(request: Request):
 # --- Compras (ver shopping.py) ---
 
 class ShoppingSearchRequest(BaseModel):
-    descripcion: str = ""
-    image_base64: str | None = None
+    descripcion: str = Field("", max_length=2000)
+    image_base64: str | None = Field(None, max_length=35_000_000)
     precio_min: float | str | None = None
     precio_max: float | str | None = None
     solo_espana: bool = True
@@ -123,8 +128,8 @@ def shopping_cancel(request: Request):
 # --- Busqueda profunda (ver deep_search.py) ---
 
 class DeepSearchRequest(BaseModel):
-    consulta: str
-    afinar_de: str | None = None  # id de una busqueda anterior: "consulta" se añade a ella
+    consulta: str = Query
+    afinar_de: str | None = Field(None, max_length=64)  # id de una busqueda anterior: "consulta" se añade a ella
 
 
 @router.get("/deep")

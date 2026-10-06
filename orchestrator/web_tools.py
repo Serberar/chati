@@ -12,6 +12,7 @@ import ipaddress
 import json
 import re
 import socket
+import time
 from typing import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
@@ -24,7 +25,11 @@ BING = "https://www.bing.com/search?setlang=es&cc=es&q={q}"
 # El navegador de las apps abre webs cualquiera y ejecuta su JavaScript: una
 # pagina maliciosa podia atacar desde ahi a los servicios de este ordenador
 # (ComfyUI no tiene contraseña) o a la red de casa (auditoria 2026-09-29).
-_host_cache: dict[str, bool] = {}
+# (es privado, cuando se comprobo). Con caducidad: guardado para siempre, un
+# dominio que primero apunta a internet y luego a 192.168.x (DNS rebinding)
+# seguia pasando como publico (auditoria 2026-10-05).
+_host_cache: dict[str, tuple[bool, float]] = {}
+_HOST_CACHE_SECONDS = 30
 
 
 def _ip_is_private(ip) -> bool:
@@ -41,13 +46,15 @@ def is_private_host(host: str | None) -> bool:
         return _ip_is_private(ipaddress.ip_address(host))
     except ValueError:
         pass
-    if host not in _host_cache:
+    cached = _host_cache.get(host)
+    if cached is None or time.monotonic() - cached[1] > _HOST_CACHE_SECONDS:
         try:
-            _host_cache[host] = any(_ip_is_private(ipaddress.ip_address(info[4][0].split("%")[0]))
-                                    for info in socket.getaddrinfo(host, None))
+            private = any(_ip_is_private(ipaddress.ip_address(info[4][0].split("%")[0]))
+                          for info in socket.getaddrinfo(host, None))
         except (OSError, ValueError):
-            _host_cache[host] = False  # no resuelve: el navegador tampoco podra
-    return _host_cache[host]
+            private = False  # no resuelve: el navegador tampoco podra
+        cached = _host_cache[host] = (private, time.monotonic())
+    return cached[0]
 
 
 def _guard(route) -> None:

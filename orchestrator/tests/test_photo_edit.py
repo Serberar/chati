@@ -191,3 +191,12 @@ def test_person_and_place_go_in_a_single_kontext_pass():
                                   "Keep her face and pose exactly the same. Do not add any other people.")
     assert merged.summary == "te pongo un bikini; te pongo en una playa"
     assert photo_edit.merge_steps([place]) == [place]
+
+
+def test_huge_photos_are_reduced_on_load():
+    big = Image.new("RGB", (9000, 6000), (90, 120, 150))  # 54 MP, como una de movil de 50+ MP
+    buf = io.BytesIO()
+    big.save(buf, format="JPEG", quality=70)
+    rgb = photo_edit.load_rgb(buf.getvalue())
+    assert rgb.shape[0] * rgb.shape[1] <= photo_edit.MAX_PIXELS
+    assert abs(rgb.shape[1] / rgb.shape[0] - 1.5) < 0.01

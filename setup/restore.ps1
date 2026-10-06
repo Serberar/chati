@@ -61,6 +61,16 @@ if (Test-Path $data) {
     Write-Host "Lo que habia se ha apartado en $apartado" -ForegroundColor Yellow
 }
 Expand-Archive -Path $Zip -DestinationPath $data -Force
+# Las claves no van en la copia (backup.ps1): se recuperan de lo apartado. Sin
+# la de OpenCode, Chati creaba otra y el agente (que sigue con la vieja) dejaba
+# de funcionar hasta reiniciar el PC (auditoria 2026-10-05).
+if ($apartado) {
+    foreach ($key in "opencode_password.txt", "registration_key.txt", "api_key.txt") {
+        if ((Test-Path "$apartado\$key") -and -not (Test-Path "$data\$key")) {
+            Copy-Item "$apartado\$key" "$data\$key"
+        }
+    }
+}
 Write-Host "Copia restaurada." -ForegroundColor Green
 
 if ($wasRunning) {

@@ -2,10 +2,8 @@ import json
 import time
 from pathlib import Path
 
-import requests
-
 import model_registry
-from agents.comfyui_client import submit_and_wait
+from agents.comfyui_client import submit_and_wait, upload_unique
 from agents.image_agent import NoModelInstalledError
 
 WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "ltxv_video.json"
@@ -32,15 +30,8 @@ class VideoAgent:
         return entry.comfy_path
 
     def upload_image(self, image_path: str) -> str:
-        with open(image_path, "rb") as f:
-            resp = requests.post(
-                f"{self.base_url}/upload/image",
-                files={"image": (Path(image_path).name, f)},
-                data={"overwrite": "true"},
-                timeout=30,
-            )
-        resp.raise_for_status()
-        return resp.json()["name"]
+        # nombre unico por subida: ver image_agent.upload_image_bytes
+        return upload_unique(self.base_url, Path(image_path).read_bytes(), Path(image_path).name)
 
     def generate(self, prompt: str, width: int = 512, height: int = 320, length: int = 25,
                  fps: int = 24, steps: int = 8, cfg: float = 1.5, timeout: int = 420,

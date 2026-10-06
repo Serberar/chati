@@ -24,7 +24,9 @@ def _user_dir(user_id: str | None) -> Path:
 def save_cv(filename: str, content: bytes, user_id: str | None = None,
             dek: bytes | None = None, key_generation: int | None = None) -> Path:
     d = _user_dir(user_id)
-    ext = Path(filename).suffix or ".pdf"
+    ext = Path(filename).suffix.lower()
+    if ext not in (".pdf", ".docx", ".doc", ".txt", ".md", ".odt", ".rtf"):  # va en el nombre del archivo
+        ext = ".pdf"
     # borra cualquier CV anterior (cifrado o no, otra extension incluida) para que solo haya uno activo
     for old in list(d.glob("cv.*")) + list(d.glob("meta.json")):
         old.unlink()

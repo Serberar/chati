@@ -193,6 +193,19 @@ def _drop_dataset(owner: str, name: str) -> None:
     shutil.rmtree(_dataset_dir(owner, name), ignore_errors=True)
 
 
+def _any_training_running() -> bool:
+    """De cualquier persona y usuario: solo comprobaba la misma persona, y dos
+    entrenamientos a la vez en 8 GB de VRAM no caben (auditoria 2026-10-05)."""
+    for status_file in PERSONAS_DIR.glob("*/*/sdxl/status.json"):
+        try:
+            status = json.loads(status_file.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        if status.get("status") == "training" and _pid_alive(status.get("pid", -1))                 and not any(status_file.parent.glob("*.safetensors")):
+            return True
+    return False
+
+
 def get_training_status(owner: str, name: str, architecture: str = "sdxl") -> dict:
     """Estado real, no solo lo que dice el archivo: si el .safetensors final
     ya existe se considera terminado aunque el proceso ya no este vivo (pudo
@@ -258,6 +271,8 @@ def start_training(owner: str, name: str, photo_paths: list[Path], epochs: int =
     existing = get_training_status(owner, name, "sdxl")
     if existing.get("status") == "training":
         raise TrainingAlreadyRunningError(f"Ya hay un entrenamiento en curso para '{name}'.")
+    if _any_training_running():
+        raise TrainingAlreadyRunningError("Ya se esta entrenando otra persona: espera a que termine (solo hay una GPU).")
 
     base_checkpoint = _pick_sdxl_base_checkpoint()
     folder_name = _sanitize_name(name)

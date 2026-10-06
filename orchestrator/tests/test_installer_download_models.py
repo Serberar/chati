@@ -75,7 +75,7 @@ def test_download_file_skips_if_already_present(tmp_path):
 def test_download_file_writes_the_full_content(tmp_path):
     dest = tmp_path / "sub" / "modelo.bin"
     fake_resp = MagicMock()
-    fake_resp.headers = {"content-length": "12"}
+    fake_resp.headers = {"content-length": "11"}
     fake_resp.iter_content.return_value = [b"hola ", b"mundo!"]
     fake_resp.__enter__.return_value = fake_resp
     fake_resp.__exit__.return_value = False
@@ -84,6 +84,22 @@ def test_download_file_writes_the_full_content(tmp_path):
         installer_download_models._download_file("http://fake/url", dest)
 
     assert dest.read_bytes() == b"hola mundo!"
+    assert not dest.with_suffix(dest.suffix + ".part").exists()
+
+
+def test_download_file_cut_halfway_leaves_no_broken_model(tmp_path):
+    dest = tmp_path / "modelo.bin"
+    fake_resp = MagicMock()
+    fake_resp.headers = {"content-length": "1000"}
+    fake_resp.iter_content.return_value = [b"solo un trozo"]
+    fake_resp.__enter__.return_value = fake_resp
+    fake_resp.__exit__.return_value = False
+
+    with patch.object(installer_download_models.requests, "get", return_value=fake_resp), \
+            pytest.raises(OSError, match="incompleta"):
+        installer_download_models._download_file("http://fake/url", dest)
+
+    assert not dest.exists()
     assert not dest.with_suffix(dest.suffix + ".part").exists()
 
 
@@ -168,9 +184,38 @@ def test_image_models_bring_the_files_they_need_to_work(tmp_path, monkeypatch):
     monkeypatch.setattr(model_registry, "IMG_DIR", tmp_path / "img")
     downloaded = []
     with patch.object(installer_download_models, "_download_file",
-                      side_effect=lambda url, dest: downloaded.append(dest)):
+                      side_effect=lambda url, dest, sha256=None: downloaded.append(dest)):
         assert installer_download_models.download_selected(["imagen-editar"]) == []
     relative = {d.relative_to(tmp_path / "img").as_posix() for d in downloaded}
     assert {"diffusion_models/flux_kontext/flux1-kontext-dev-Q4_K_S.gguf", "text_encoders/clip_l.safetensors",
             "text_encoders/t5xxl_fp8_e4m3fn.safetensors", "vae/flux-vae-bf16.safetensors",
             "matting/modnet.onnx", "upscale_models/RealESRGAN_x4plus.pth"} <= relative
+
+
+def test_download_file_rejects_a_file_with_another_fingerprint(tmp_path):
+    dest = tmp_path / "modelo.bin"
+    fake_resp = MagicMock()
+    fake_resp.headers = {"content-length": "11"}
+    fake_resp.iter_content.return_value = [b"hola ", b"mundo!"]
+    fake_resp.__enter__.return_value = fake_resp
+    fake_resp.__exit__.return_value = False
+
+    with patch.object(installer_download_models.requests, "get", return_value=fake_resp), \
+            pytest.raises(OSError, match="huella"):
+        installer_download_models._download_file("http://fake/url", dest, "0" * 64)
+    assert not dest.exists()
+
+    good = __import__("hashlib").sha256(b"hola mundo!").hexdigest()
+    with patch.object(installer_download_models.requests, "get", return_value=fake_resp):
+        installer_download_models._download_file("http://fake/url", dest, good)
+    assert dest.read_bytes() == b"hola mundo!"
+
+
+def test_every_model_download_is_pinned_and_fingerprinted():
+    import model_catalog
+    for entry in model_catalog._BASE_CATALOG:
+        files = ([(entry.download_url, entry.sha256)] if entry.download_url else []) + \
+                [(url, sha) for url, _, sha in entry.extra_files]
+        for url, sha in files:
+            assert "/resolve/main/" not in url, url  # "main" lo puede cambiar el autor
+            assert sha and len(sha) == 64, url

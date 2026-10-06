@@ -12,6 +12,7 @@ import time
 from cryptography.fernet import Fernet
 
 SESSION_TTL_SECONDS = 12 * 60 * 60  # 12 horas
+MAX_GUEST_SESSIONS = 50  # invitados a la vez en un PC de casa: sobra
 
 _sessions: dict[str, dict] = {}
 # FastAPI atiende peticiones en varios hilos: sin cerrojo, recorrer las
@@ -47,6 +48,11 @@ def create_guest_session() -> str:
     token = secrets.token_urlsafe(32)
     with _lock:
         _purge_expired()
+        # /auth/guest no pide nada: sin tope, cualquier programa del equipo
+        # podia crear millones (cada una 12 h en memoria). Se va la mas vieja.
+        guests = [t for t, s in _sessions.items() if s["role"] == "guest"]
+        for old in sorted(guests, key=lambda t: _sessions[t]["expires_at"])[:max(0, len(guests) - MAX_GUEST_SESSIONS + 1)]:
+            del _sessions[old]
         _sessions[token] = {
             "user_id": None, "username": None, "role": "guest",
             "dek": Fernet.generate_key(), "key_generation": 0,

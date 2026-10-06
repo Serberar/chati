@@ -39,16 +39,20 @@ def test_if_the_rewrite_fails_the_original_answer_is_kept():
 
 def test_a_correction_after_a_photo_edit_edits_that_photo_again():
     # Sergio, 2026-10-05: "corrige..." iba al chat normal y generaba otra imagen
-    session = {"last_photo": {"last": "a.jpg", "original": "b.jpg", "time": __import__("time").time()}}
+    session = {"last_photo": {"last": "a.jpg", "original": "b.jpg", "chat": "conv-1",
+                              "time": __import__("time").time()}}
     with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
             patch.object(main.photo_edit, "wants_edit", return_value=False):
         for msg in ("corrige la cara", "que no salga nadie mas", "quita a la otra persona",
                     "ponme unas gafas de sol", "vuelve a hacerla pero sin la toalla"):
-            assert main._wants_followup_edit(session, msg, None), msg
-        assert main._wants_followup_edit(session, "corrige la cara", "image")
-        for msg in ("que tiempo hace hoy", "hazme una imagen de un perro", "explicame este codigo"):
-            assert not main._wants_followup_edit(session, msg, None), msg
-        assert not main._wants_followup_edit(session, "corrige la cara", "code")
-        assert not main._wants_followup_edit({}, "corrige la cara", None)
+            assert main._wants_followup_edit(session, msg, None, "conv-1"), msg
+        assert main._wants_followup_edit(session, "corrige la cara", "image")  # modo Imagen: siempre
+        for msg in ("que tiempo hace hoy", "hazme una imagen de un perro", "explicame este codigo",
+                    "agente: arregla el bug del login", "arregla el error del archivo"):
+            assert not main._wants_followup_edit(session, msg, None, "conv-1"), msg
+        # auditoria 2026-10-05: en OTRA conversacion "arregla..." no es la foto
+        assert not main._wants_followup_edit(session, "corrige la cara", None, "conv-2")
+        assert not main._wants_followup_edit(session, "corrige la cara", "code", "conv-1")
+        assert not main._wants_followup_edit({}, "corrige la cara", None, "conv-1")
         old = {"last_photo": {**session["last_photo"], "time": 0}}
-        assert not main._wants_followup_edit(old, "corrige la cara", None)
+        assert not main._wants_followup_edit(old, "corrige la cara", None, "conv-1")

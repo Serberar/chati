@@ -1,8 +1,10 @@
 import base64
 import contextlib
+import io
 import json
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -50,7 +52,7 @@ from agents.image_agent import ImageAgent
 from agents.video_agent import VideoAgent
 from agents.voice_agent import VoiceAgent
 from agents import comfyui_client
-from agents.comfyui_client import GenerationCancelled, interrupt as comfyui_interrupt
+from agents.comfyui_client import GenerationCancelled
 from router import Router
 from verifier import Verifier
 import people
@@ -267,6 +269,12 @@ async def _unhandled_error(request: Request, exc: Exception):
 
 
 
+def _owner_of(session: dict) -> str:
+    """Dueño de las generaciones de ComfyUI: el usuario, o esta sesion de
+    invitado concreta (los invitados no comparten nada entre ellos)."""
+    return session.get("user_id") or f"invitado:{id(session)}"
+
+
 class SessionAuthMiddleware(BaseHTTPMiddleware):
     """Sustituye a la clave API estatica compartida (ver ROADMAP.md, punto 0,
     fase 4): cada peticion necesita un token de sesion valido, obtenido via
@@ -285,6 +293,7 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
         if path.startswith(access.PC_PATH_PREFIXES) and not access.can_use_pc(session):
             return access.pc_blocked()
         request.state.session = session
+        comfyui_client.current_owner.set(_owner_of(session))  # de quien es lo que se genere
         _mark_activity(True, request.method)
         try:
             return await call_next(request)
@@ -356,6 +365,8 @@ class ChatResponse(BaseModel):
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # fotos y audios: de sobra, y no se lee 1 GB entero en memoria
 MAX_DOC_BYTES = 100 * 1024 * 1024  # documentos y adjuntos del agente
+MAX_PERSONA_PHOTOS = 40  # para un LoRA de persona sobran (con 15-20 basta)
+MAX_SPEAK_CHARS = 8000  # ~8-10 min de audio: mas que cualquier respuesta
 
 
 def _read_upload(upload: UploadFile, limit: int = MAX_UPLOAD_BYTES) -> bytes:
@@ -429,6 +440,10 @@ async def llm_proxy_route(path: str, request: Request):
     expected = f"Bearer {opencode_client.AUTH[1]}"
     if not secrets.compare_digest(request.headers.get("authorization", "").encode(), expected.encode()):
         return JSONResponse({"detail": "No autorizado."}, status_code=401)
+    # solo la API de chat (/v1/...): con "../api/pull" se llegaba a la de
+    # administrar modelos de Ollama (auditoria 2026-10-05)
+    if not re.fullmatch(r"[A-Za-z0-9_\-/.]*", path) or ".." in path or "//" in path:
+        return JSONResponse({"detail": "Ruta no permitida."}, status_code=400)
     target = f"{CONFIG['ollama']['base_url']}/v1/{path}"
     body = llm_proxy.disable_thinking(await request.body(), set(CONFIG["opencode"].get("no_think_models", [])))
     headers = {"Content-Type": request.headers.get("content-type", "application/json")}
@@ -520,11 +535,11 @@ def delete_text_model(model: str, request: Request):
 
 
 @app.post("/cancel")
-def cancel_generation():
-    """Interrumpe la generacion de imagen/video en curso en ComfyUI. Como
-    solo hay una GPU y el sistema no lanza generaciones en paralelo, no hace
-    falta identificar cual: siempre es 'lo que este corriendo ahora mismo'."""
-    comfyui_interrupt(CONFIG["comfyui"]["base_url"])
+def cancel_generation(request: Request):
+    """Para las generaciones de imagen/video de quien lo pide (en marcha o en
+    cola). Antes cortaba lo que estuviera corriendo en ComfyUI, fuera de quien
+    fuera: un invitado podia parar las de los demas (auditoria 2026-10-05)."""
+    comfyui_client.stop_owned(CONFIG["comfyui"]["base_url"], _owner_of(request.state.session))
     return {"ok": True}
 
 
@@ -936,7 +951,8 @@ def code_git_init(request: Request, req: CodeProjectRequest):
     if not p.is_dir():
         return JSONResponse({"detail": "Esa carpeta no existe."}, status_code=400)
     if not (p / ".git").exists():
-        out = subprocess.run(["git", "init", "-q", str(p)], capture_output=True, text=True,
+        # "--": una carpeta que empiece por "-" no se toma como opcion de git
+        out = subprocess.run(["git", "init", "-q", "--", str(p.resolve())], capture_output=True, text=True,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if out.returncode != 0:
             return JSONResponse({"detail": f"git no pudo: {out.stderr.strip()}"}, status_code=400)
@@ -1018,6 +1034,21 @@ def _source_image_bytes(file_path: str | None, image: UploadFile | None, session
     raise ValueError("Hay que indicar una imagen (subida o ya generada).")
 
 
+MAX_UPSCALE_PIXELS = 4_200_000  # x4 por lado: ~67 MP de salida, lo que aguanta la GPU de 8 GB
+
+
+def _check_upscale_size(data: bytes) -> None:
+    """Una foto de 8000x8000 salia de 32000x32000 y tumbaba ComfyUI (auditoria 2026-10-05)."""
+    from PIL import Image, UnidentifiedImageError
+    try:
+        w, h = Image.open(io.BytesIO(data)).size
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("El archivo no es una imagen valida.") from exc
+    if w * h > MAX_UPSCALE_PIXELS:
+        raise ValueError(f"La imagen ya es muy grande para escalarla x4 ({w}x{h}); "
+                         f"como mucho unos {MAX_UPSCALE_PIXELS // 1_000_000} megapixeles.")
+
+
 @app.post("/image/upscale", response_model=ChatResponse)
 def image_upscale(request: Request, file_path: str | None = Form(None), image: UploadFile | None = File(None)):
     """Escala x4 una imagen (ya generada, referenciada por su nombre, o una
@@ -1026,6 +1057,7 @@ def image_upscale(request: Request, file_path: str | None = Form(None), image: U
     session = request.state.session
     try:
         src_bytes = _source_image_bytes(file_path, image, session)
+        _check_upscale_size(src_bytes)
     except ValueError as exc:
         return ChatResponse(agent_used="image_upscale", response=str(exc), verifier_gated=False)
 
@@ -1121,7 +1153,9 @@ def add_person(request: Request, name: str = Form(...), image: UploadFile = File
     session = request.state.session
     if session["role"] == "guest":
         return _guest_blocked()
-    ext = Path(image.filename or "").suffix or ".jpg"
+    ext = Path(image.filename or "").suffix.lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp"):  # va en el nombre del archivo guardado
+        ext = ".jpg"
     try:
         people.save_person(name, _read_upload(image), ext, user_id=session["user_id"],
                             dek=session["dek"], key_generation=session["key_generation"])
@@ -1588,15 +1622,26 @@ def _wants_photo_edit(message: str) -> bool:
         photo_edit.wants_edit(ollama, CONFIG["router"]["model"], message)
 
 
+def _decode_photo(image_base64: str) -> bytes | None:
+    """None si el adjunto no es base64 valido (antes: error 500)."""
+    try:
+        return base64.b64decode(image_base64, validate=True)
+    except ValueError:
+        return None
+
+
 def _photo_edit_reply(message: str, image_base64: str, session_id: str, auth_session: dict,
                       face_photo: bytes | None = None) -> ChatResponse:
     """Una foto adjunta en el chat automatico con una peticion de cambio
     ("ponnos en una playa"): se edita igual que en el modo Imagen. Con
     face_photo es una correccion de la foto de antes (ver _remember_photo)."""
     start = time.perf_counter()
-    photo = base64.b64decode(image_base64)
+    photo = _decode_photo(image_base64)
+    if photo is None:
+        return ChatResponse(agent_used="image_edit", verifier_gated=False, session_id=session_id,
+                            response="La foto adjunta no se ha podido leer. Vuelve a adjuntarla.")
     if face_photo is None:
-        _remember_upload(auth_session, photo)
+        _remember_upload(auth_session, photo, chat=session_id)
     try:
         # en una correccion cuenta tambien lo pedido antes: si ya llevaba
         # sombrero o gafas, "quita a la otra persona" no debe borrarselos
@@ -1611,7 +1656,7 @@ def _photo_edit_reply(message: str, image_base64: str, session_id: str, auth_ses
         resp = _with_bytes(ChatResponse(agent_used="image_edit", verifier_gated=False, session_id=session_id,
                                         response=done),
                            img_bytes, ".jpg", auth_session)
-        _remember_photo(auth_session, None, resp.file_path, message)
+        _remember_photo(auth_session, None, resp.file_path, message, chat=session_id)
     memory.add_message(session_id, "assistant", resp.response, agent="image_edit", dek=auth_session["dek"],
                         key_generation=auth_session["key_generation"], user_id=auth_session["user_id"])
     return resp
@@ -1631,7 +1676,7 @@ def _run_vision_chat(message: str, image_base64: str, session_id: str | None, au
                         dek=dek, key_generation=key_generation, user_id=user_id)
     if _wants_photo_edit(message):
         return _photo_edit_reply(message, image_base64, session_id, auth_session)
-    _remember_upload(auth_session, base64.b64decode(image_base64))  # por si luego pide cambiarla
+    _remember_upload(auth_session, _decode_photo(image_base64), chat=session_id)  # por si luego pide cambiarla
     _ensure_active_model(vision_agent.model)
     start = time.perf_counter()
     try:
@@ -1662,7 +1707,7 @@ def _stream_vision_chat(message: str, image_base64: str, session_id: str | None,
         resp = _photo_edit_reply(message, image_base64, session_id, auth_session)
         yield json.dumps({"type": "done", **resp.model_dump()}) + "\n"
         return
-    _remember_upload(auth_session, base64.b64decode(image_base64))  # por si luego pide cambiarla
+    _remember_upload(auth_session, _decode_photo(image_base64), chat=session_id)  # por si luego pide cambiarla
     yield json.dumps({"type": "start", "agent_used": "vision", "session_id": session_id}) + "\n"
     _ensure_active_model(vision_agent.model)
     start = time.perf_counter()
@@ -1691,7 +1736,7 @@ def _run_chat(message: str, agent_override: str | None, session_id: str | None, 
     session_id = _own_session_id(session_id, auth_session)
     memory.add_message(session_id, "user", message, dek=auth_session["dek"],
                         key_generation=auth_session["key_generation"], user_id=auth_session["user_id"])
-    if _wants_followup_edit(auth_session, message, agent_override):
+    if _wants_followup_edit(auth_session, message, agent_override, session_id):
         return _followup_edit_reply(message, session_id, auth_session)
     agent_name, is_factual = _resolve_agent(message, agent_override)
     start = time.perf_counter()
@@ -1725,7 +1770,7 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
     session_id = _own_session_id(session_id, auth_session)
     memory.add_message(session_id, "user", message, dek=dek, key_generation=key_generation, user_id=user_id)
 
-    if _wants_followup_edit(auth_session, message, agent_override):
+    if _wants_followup_edit(auth_session, message, agent_override, session_id):
         yield json.dumps({"type": "start", "agent_used": "image_edit", "session_id": session_id}) + "\n"
         resp = _followup_edit_reply(message, session_id, auth_session)
         yield json.dumps({"type": "done", **resp.model_dump()}) + "\n"
@@ -1878,16 +1923,20 @@ def create_persona(request: Request, name: str = Form(...), photos: list[UploadF
         return JSONResponse({"detail": "Falta el nombre de la persona."}, status_code=400)
     if len(photos) < 3:
         return JSONResponse({"detail": "Hacen falta al menos 3 fotos para entrenar algo decente."}, status_code=400)
+    if len(photos) > MAX_PERSONA_PHOTOS:
+        return JSONResponse({"detail": f"Como mucho {MAX_PERSONA_PHOTOS} fotos."}, status_code=400)
 
     tmp_dir = media_store.tmp_dir() / f"persona_{uuid.uuid4().hex}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     saved_paths = []
     try:
         for i, photo in enumerate(photos):
-            ext = Path(photo.filename or "").suffix or ".jpg"
+            ext = Path(photo.filename or "").suffix.lower()
+            if ext not in (".jpg", ".jpeg", ".png", ".webp"):  # va en el nombre del archivo
+                ext = ".jpg"
             dest = tmp_dir / f"{i:03d}{ext}"
+            saved_paths.append(dest)  # antes de escribir: si falla a medias, tambien se borra
             dest.write_bytes(_read_upload(photo))
-            saved_paths.append(dest)
         # el entrenamiento necesita la GPU entera: fuera modelos de chat e imagen
         _keep_only_ollama(set(), heavy=None)
         comfyui_client.free_memory(CONFIG["comfyui"]["base_url"])
@@ -1897,9 +1946,7 @@ def create_persona(request: Request, name: str = Form(...), photos: list[UploadF
     except persona_trainer.TrainingAlreadyRunningError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
     finally:
-        for p in saved_paths:
-            p.unlink(missing_ok=True)
-        tmp_dir.rmdir()
+        shutil.rmtree(tmp_dir, ignore_errors=True)  # fotos en claro: fuera pase lo que pase
     return result
 
 
@@ -2108,7 +2155,8 @@ def pending_work(request: Request):
     waiting_tasks = [{"session_id": sid, "title": summary(sid), "reason": reason}
                      for sid, reason in opencode_client.waiting_sessions(base).items()
                      if _owns_task(request, sid)]
-    generations = comfyui_client.user_jobs(CONFIG["comfyui"]["base_url"])
+    generations = [g for g in comfyui_client.user_jobs(CONFIG["comfyui"]["base_url"])
+                   if _may_stop_generation(request, g["id"])]
     running = sum(g["state"] == "running" for g in generations)
     queued = sum(g["state"] == "queued" for g in generations)
     return {"agent_tasks": agent_tasks, "waiting_tasks": waiting_tasks, "generations": generations,
@@ -2126,10 +2174,19 @@ def stop_agent_task(session_id: str, request: Request):
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
 
+def _may_stop_generation(request: Request, prompt_id: str) -> bool:
+    """Las propias; las sin dueño conocido (de antes de un reinicio), solo el admin."""
+    owner = comfyui_client.owner_of(prompt_id)
+    session = request.state.session
+    return owner == _owner_of(session) or (owner is None and session["role"] == "admin")
+
+
 @app.post("/work/generation/{prompt_id}/stop")
 def stop_generation(prompt_id: str, request: Request):
     if request.state.session["role"] == "guest":
         return _guest_blocked()
+    if not _may_stop_generation(request, prompt_id):
+        return JSONResponse({"detail": "Esa generacion no es tuya."}, status_code=403)
     try:
         comfyui_client.stop_job(CONFIG["comfyui"]["base_url"], prompt_id)
     except requests.RequestException as exc:
@@ -2149,8 +2206,8 @@ def stop_work(request: Request):
             opencode_client.abort(base, sid)
         except requests.RequestException:
             pass
-    try:
-        comfyui_client.stop_everything(CONFIG["comfyui"]["base_url"])
+    try:  # solo lo propio: antes vaciaba la cola de ComfyUI entera, de todos
+        comfyui_client.stop_owned(CONFIG["comfyui"]["base_url"], _owner_of(request.state.session))
     except requests.RequestException:
         pass
     return {"ok": True}
@@ -2458,7 +2515,8 @@ def voice_chat(request: Request, audio: UploadFile = File(...), session_id: str 
 def speak(request: Request, text: str = Form(...)):
     out_path = media_store.new_tmp_path(".wav")
     try:
-        voice_agent.speak(text, str(out_path))
+        # tope: sin el, un texto de varios MB tenia a Piper trabajando sin fin (auditoria 2026-10-05)
+        voice_agent.speak(text[:MAX_SPEAK_CHARS], str(out_path))
     except RuntimeError as exc:
         out_path.unlink(missing_ok=True)
         return JSONResponse({"detail": str(exc)}, status_code=503)
@@ -2498,31 +2556,37 @@ _FOLLOWUP_FIX = re.compile(
     r"\b(corrig\w*|arregl\w*|que no (salga|haya|lleve|tenga|aparezca)|sin (la|el|los|las|esa|ese|esos|esas) |"
     r"otra vez|vuelve a|sobra\w*|deja(me|la|lo)? (solo|igual)|mantén|manten|igual que antes)", re.IGNORECASE)
 _NOT_PHOTO = re.compile(r"\b(texto|codigo|código|programa|script|otra (imagen|foto)|imagen nueva|foto nueva|"
-                        r"desde cero|hazme una (imagen|foto)|genera(me)? una)\b", re.IGNORECASE)
+                        r"desde cero|hazme una (imagen|foto)|genera(me)? una|agente|bug|error|fallo|login|"
+                        r"archivo|carpeta|documento|web|pagina|página|funci[oó]n|instala\w*)\b", re.IGNORECASE)
 
 
-def _remember_photo(session: dict, original_name: str | None, last_name: str, request: str = "") -> None:
+def _remember_photo(session: dict, original_name: str | None, last_name: str, request: str = "",
+                    chat: str | None = None) -> None:
     """La ultima foto de esta sesion de login (la subida y la ultima editada),
     para que "corrige esto" o "ahora ponme un sombrero" sigan editando ESA
     foto. Antes el siguiente mensaje sin foto adjunta iba al chat normal, que
     no sabia nada de ella y generaba otra imagen desde cero (Sergio,
     2026-10-05: "ha perdido el contexto y ha empezado a imaginar"). Va en la
-    sesion: se pierde al cerrar sesion, y las imagenes estan cifradas."""
+    sesion: se pierde al cerrar sesion, y las imagenes estan cifradas.
+    chat: la conversacion donde esta la foto (None: modo Imagen)."""
     mem = dict(session.get("last_photo") or {})
     if original_name is not None:  # foto nueva: lo pedido sobre la anterior ya no cuenta
         mem.update(original=original_name, requests="")
-    mem.update(last=last_name, time=time.time(), requests="\n".join(filter(None, [mem.get("requests"), request])))
+    mem.update(last=last_name, time=time.time(), chat=chat, requests="\n".join(filter(None, [mem.get("requests"), request])))
     session["last_photo"] = mem
 
 
-def _remember_upload(session: dict, photo: bytes) -> None:
+def _remember_upload(session: dict, photo: bytes | None, chat: str | None = None) -> None:
     """Una foto recien subida: es la original y, de momento, tambien la ultima."""
+    # sin editor no hay nada que seguir editando: no se guarda la foto
+    if photo is None or model_registry.get_edit_model() is None:
+        return
     try:
         name = media_store.save(photo_edit.to_jpeg(photo_edit.load_rgb(photo)), ".jpg", session["dek"])
     except Exception:
         log.warning("No se pudo guardar la foto subida para seguir editandola", exc_info=True)
         return
-    _remember_photo(session, name, name)
+    _remember_photo(session, name, name, chat=chat)
 
 
 def _remembered_photo(session: dict) -> tuple[bytes, bytes] | None:
@@ -2535,12 +2599,18 @@ def _remembered_photo(session: dict) -> tuple[bytes, bytes] | None:
     return (last, original or last) if last else None
 
 
-def _wants_followup_edit(session: dict, message: str, agent_override: str | None) -> bool:
-    """Mensaje sin foto que en realidad es un cambio sobre la foto de antes."""
+def _wants_followup_edit(session: dict, message: str, agent_override: str | None,
+                         chat: str | None = None) -> bool:
+    """Mensaje sin foto que en realidad es un cambio sobre la foto de antes.
+    En el chat automatico, solo en la misma conversacion de la foto: en otra,
+    "arregla el bug del login" acababa en el editor de fotos (auditoria
+    2026-10-05). En el modo Imagen vale siempre."""
     if agent_override not in (None, "image") or model_registry.get_edit_model() is None:
         return False
     mem = session.get("last_photo")
     if not mem or time.time() - mem["time"] > _PHOTO_MEMORY_SECONDS or _NOT_PHOTO.search(message):
+        return False
+    if agent_override is None and mem.get("chat") != chat:
         return False
     if _FOLLOWUP_FIX.search(message):  # antes que las preguntas: "que no salga..."
         return True
@@ -2572,7 +2642,20 @@ def _edit_photo(request_text: str, photo: bytes, face_photo: bytes | None = None
     luego se vuelve a poner la original en todo lo que no se pidio cambiar.
     Devuelve un JPEG a la resolucion de la foto original y que se ha hecho. face_photo: de donde
     sacar la cara exacta (en una correccion, la foto que subio el usuario, no
-    la ya editada)."""
+    la ya editada). De una en una (_edit_lock)."""
+    with _edit_lock:
+        return _edit_photo_locked(request_text, photo, face_photo, earlier)
+
+
+# Dos ediciones a la vez se quitaban la GPU (8 GB) la una a la otra: el
+# modelo de vision o el planificador de una se cargaba en mitad del Kontext
+# de la otra y una pasada pasaba de 2,5 a casi 10 min (2026-10-05, 29 s/it).
+# En fila, cada una tarda lo suyo.
+_edit_lock = threading.Lock()
+
+
+def _edit_photo_locked(request_text: str, photo: bytes, face_photo: bytes | None,
+                       earlier: str) -> tuple[bytes, str]:
     scene = photo_edit.describe_photo(ollama, vision_agent.model, photo)
     ollama.unload(vision_agent.model)  # fuera de la GPU antes del traductor y de Kontext
     steps = photo_edit.merge_steps(photo_edit.plan_edit(ollama, CONFIG["router"]["model"], request_text,
@@ -2737,6 +2820,8 @@ def video_with_face(request: Request, prompt: str = Form(...), image: UploadFile
 
     try:
         img_bytes = _image_from_photo(prompt, ref_bytes, model_id)[4]()
+        if isinstance(img_bytes, tuple):  # edicion: (foto, que se ha hecho)
+            img_bytes = img_bytes[0]
     except Exception as exc:
         metrics.log_event("video_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(

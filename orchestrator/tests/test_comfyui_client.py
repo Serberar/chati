@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agents.comfyui_client import GenerationCancelled, submit_and_wait
+from agents.comfyui_client import GenerationCancelled, submit_and_wait, upload_unique
 
 
 def _mock_responses(history_by_call, queue_response=None):
@@ -87,7 +87,6 @@ def test_real_failure_raises_runtime_error_not_cancelled(mock_get, mock_post):
 
 
 def test_before_submit_hook_runs_before_sending_the_workflow(monkeypatch):
-    from unittest.mock import MagicMock
     from agents import comfyui_client
 
     calls = []
@@ -181,3 +180,37 @@ def test_forget_deletes_comfyui_copies_but_nothing_outside(tmp_path, monkeypatch
     assert not face.exists() and not result.exists()
     assert outside.exists()
     mock_post.assert_called_once_with("http://fake/history", json={"delete": ["pid"]}, timeout=5)
+
+
+def test_each_upload_gets_its_own_name():
+    # con el mismo nombre y overwrite, una peticion en cola usaba la foto de otra
+    # (auditoria 2026-10-05)
+    from unittest.mock import MagicMock
+    resp = MagicMock()
+    resp.json.side_effect = lambda: {"name": mock_post.call_args.kwargs["files"]["image"][0]}
+    with patch("agents.comfyui_client.requests.post", return_value=resp) as mock_post:
+        a = upload_unique("http://x", b"1", "reference.png")
+        b = upload_unique("http://x", b"2", "reference.png")
+    assert a != b and a.endswith(".png") and b.startswith("chati_")
+    assert "overwrite" not in (mock_post.call_args.kwargs.get("data") or {})
+
+
+def test_each_generation_remembers_who_asked_for_it():
+    from unittest.mock import MagicMock
+    from agents import comfyui_client
+    post = MagicMock()
+    post.json.return_value = {"prompt_id": "p-1"}
+    hist = MagicMock()
+    hist.json.return_value = {}
+    token = comfyui_client.current_owner.set("usuario-a")
+    try:
+        with patch("agents.comfyui_client.requests.post", return_value=post), \
+             patch("agents.comfyui_client.requests.get", return_value=hist), \
+             patch("agents.comfyui_client._is_still_queued", return_value=True), \
+             patch("agents.comfyui_client.time.sleep", side_effect=lambda s: None):
+            with pytest.raises(TimeoutError):
+                comfyui_client.submit_and_wait("http://x", {}, "save", "images", timeout=0)
+    finally:
+        comfyui_client.current_owner.reset(token)
+    # se apunta al enviarla y se olvida al terminar (aqui, al agotar el tiempo)
+    assert comfyui_client.owner_of("p-1") is None

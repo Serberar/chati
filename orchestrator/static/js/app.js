@@ -3003,9 +3003,10 @@ function renderAgentChanges(view, data, busy) {
     note.textContent = "Si continúas la tarea, lo deshecho ya no se podrá recuperar.";
   } else if (ch.files > 0) {
     const msg = document.createElement("span");
-    const n = ch.files === 1 ? "1 archivo" : `${ch.files} archivos`;
+    // numeros a la fuerza: vienen de la API de OpenCode y van dentro de innerHTML
+    const n = ch.files === 1 ? "1 archivo" : `${Number(ch.files) || 0} archivos`;
     msg.innerHTML = `📝 Ha cambiado <b>${n}</b> en <span class="where"></span> ` +
-      `<span class="plus">+${ch.additions}</span> <span class="minus">−${ch.deletions}</span>`;
+      `<span class="plus">+${Number(ch.additions) || 0}</span> <span class="minus">−${Number(ch.deletions) || 0}</span>`;
     msg.querySelector(".where").textContent = whereShort;
     const list = document.createElement("div");
     list.className = "diff-list";

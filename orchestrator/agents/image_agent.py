@@ -5,11 +5,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import requests
 from PIL import Image
 
 import model_registry
-from agents.comfyui_client import submit_and_wait
+from agents.comfyui_client import submit_and_wait, upload_unique
 
 WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "flux_image.json"
 SDXL_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "sdxl_image.json"
@@ -162,29 +161,17 @@ class ImageAgent:
     def upload_image(self, image_path: str) -> str:
         """Sube una imagen de referencia a ComfyUI y devuelve el nombre de archivo
         que hay que usar en el nodo LoadImage."""
-        with open(image_path, "rb") as f:
-            resp = requests.post(
-                f"{self.base_url}/upload/image",
-                files={"image": (Path(image_path).name, f)},
-                data={"overwrite": "true"},
-                timeout=30,
-            )
-        resp.raise_for_status()
-        return resp.json()["name"]
+        return self.upload_image_bytes(Path(image_path).read_bytes(), Path(image_path).name)
 
     def upload_image_bytes(self, image_bytes: bytes, filename: str) -> str:
         """Igual que upload_image() pero a partir de bytes ya en memoria, no
         de una ruta en disco - para referencias de cara que pueden venir
         descifradas en memoria (ver ROADMAP.md, punto 0, fase 4), sin tener
-        que escribir el original sin cifrar a un archivo temporal."""
-        resp = requests.post(
-            f"{self.base_url}/upload/image",
-            files={"image": (filename, image_bytes)},
-            data={"overwrite": "true"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()["name"]
+        que escribir el original sin cifrar a un archivo temporal.
+        Con un nombre unico por subida: con el mismo nombre ("reference.png")
+        y overwrite, una peticion en cola acababa usando la foto de OTRA (o
+        sin foto, si la otra terminaba y la borraba) - auditoria 2026-10-05."""
+        return upload_unique(self.base_url, image_bytes, filename)
 
     def generate_with_controlnet(self, prompt: str, reference_image_bytes: bytes,
                                   control_type: str = "canny", strength: float = 0.8,

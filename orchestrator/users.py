@@ -168,7 +168,11 @@ def create_user(username: str, password: str, role: str,
         raise UserError("La contraseña debe tener al menos 8 caracteres.")
     if role not in ("admin", "user"):
         raise UserError(f"Rol invalido: {role}")
-    if get_user(username):
+    # sin distinguir mayusculas: "Admin" junto a "admin" se hacia pasar por el
+    # en la lista de usuarios (auditoria 2026-10-05)
+    with closing(_connect()) as conn:
+        taken = conn.execute("SELECT 1 FROM users WHERE lower(username) = lower(?)", (username,)).fetchone()
+    if taken:
         raise UserError(f"Ya existe un usuario '{username}'.")
 
     salt = os.urandom(16)

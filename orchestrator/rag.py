@@ -35,6 +35,9 @@ def _sanitize_filename(filename: str) -> str:
     """Se queda solo con el nombre de archivo, sin componentes de ruta, para
     que no se pueda escribir/borrar fuera de DOCS_DIR (path traversal)."""
     name = Path(filename).name  # descarta cualquier '..', '/', 'C:\\...' etc.
+    # ':' en Windows escribe en un flujo oculto de OTRO archivo ("a.txt:x.pdf"),
+    # y el resto no son validos en un nombre: fuera (auditoria 2026-10-05)
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" ")
     name = name.lstrip(".")  # evita nombres tipo '..' o archivos ocultos vacios
     if not name:
         raise ValueError("Nombre de archivo invalido")

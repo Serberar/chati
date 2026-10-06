@@ -4,7 +4,7 @@ alguno deja de responder, lo reinicia automaticamente. Corre en bucle
 infinito - se registra para arrancar sola al iniciar sesion via Task
 Scheduler (ver install_watchdog.ps1).
 
-Log de reinicios: watchdog.log, en esta misma carpeta.
+Log de reinicios: watchdog.log, en <carpeta de datos>\data\logs.
 #>
 
 # AiRoot (codigo, orchestrator/) se calcula a partir de donde vive este
@@ -21,7 +21,17 @@ $DataRoot = if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
                                [Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User") }
             elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
             else { $AiRoot }
-$LogFile = "$PSScriptRoot\watchdog.log"
+# Registro y fecha de la ultima copia en la carpeta de DATOS: con el instalador
+# el script vive en Program Files, donde el usuario no puede escribir; no se
+# guardaba la fecha y la copia (que reinicia Chati) se repetia en cada vuelta
+# (auditoria 2026-10-05; en el Sandbox no se veia porque alli se es admin).
+$StateDir = "$DataRoot\data\logs"
+New-Item -ItemType Directory -Path $StateDir -Force -ErrorAction SilentlyContinue | Out-Null
+$LogFile = "$StateDir\watchdog.log"
+$BackupMarker = "$StateDir\last_backup.txt"
+if (-not (Test-Path $BackupMarker) -and (Test-Path "$PSScriptRoot\last_backup.txt")) {
+    Copy-Item "$PSScriptRoot\last_backup.txt" $BackupMarker -ErrorAction SilentlyContinue  # de antes del cambio
+}
 $CheckIntervalSeconds = 30
 # Fallos seguidos antes de reiniciar: un servicio ocupado (Ollama cargando un
 # modelo, ComfyUI arrancando) puede tardar mas de 5s en contestar sin estar
@@ -187,7 +197,7 @@ function Ensure-OpenCode {
 }
 
 function Ensure-DailyBackup {
-    $marker = "$PSScriptRoot\last_backup.txt"
+    $marker = $BackupMarker
     $today = Get-Date -Format "yyyy-MM-dd"
     $last = if (Test-Path $marker) { Get-Content $marker -Raw } else { "" }
     if ($last.Trim() -ne $today) {

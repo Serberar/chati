@@ -89,4 +89,6 @@ foreach ($f in $antiguos) {
     Write-Host "Backup antiguo eliminado: $($f.Name)" -ForegroundColor DarkGray
 }
 
-Set-Content -Path "$PSScriptRoot\last_backup.txt" -Value (Get-Date -Format "yyyy-MM-dd")
+# en la carpeta de datos, no junto al script (en Program Files no se puede escribir): ver watchdog.ps1
+New-Item -ItemType Directory -Path "$origen\logs" -Force | Out-Null
+Set-Content -Path "$origen\logs\last_backup.txt" -Value (Get-Date -Format "yyyy-MM-dd")

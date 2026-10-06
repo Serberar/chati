@@ -237,10 +237,26 @@ _PERSON_CHANGE = re.compile(
     re.IGNORECASE)
 
 
+# Mas que de sobra para una foto (y para Kontext, que trabaja a 1 MP). Una
+# de movil de 108 MP pasaba sin aviso y restore_faces/compose_* la llevan a
+# float32 varias veces: varios GB de RAM por foto (auditoria 2026-10-05).
+MAX_PIXELS = 40_000_000
+
+
 def load_rgb(image_bytes: bytes) -> np.ndarray:
     """Las fotos del movil vienen giradas en el EXIF: sin exif_transpose la
-    edicion sale tumbada."""
-    return np.array(ImageOps.exif_transpose(Image.open(io.BytesIO(image_bytes))).convert("RGB"))
+    edicion sale tumbada. Las enormes se reducen a MAX_PIXELS."""
+    img = Image.open(io.BytesIO(image_bytes))
+    w, h = img.size
+    if w * h > MAX_PIXELS:
+        scale = (MAX_PIXELS / (w * h)) ** 0.5
+        target = (max(1, int(w * scale)), max(1, int(h * scale)))
+        img.draft("RGB", target)  # JPEG: decodifica ya reducida, sin pasar por el tamaño completo
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        side = max(target)  # el lado largo: vale este girada por el EXIF o no
+        img.thumbnail((side, side), Image.LANCZOS)
+        return np.array(img)
+    return np.array(ImageOps.exif_transpose(img).convert("RGB"))
 
 
 def to_png(rgb: np.ndarray) -> bytes:
