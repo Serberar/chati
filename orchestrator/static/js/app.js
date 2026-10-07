@@ -1357,10 +1357,13 @@ function addMessage(role, tag) {
   return bubble;
 }
 
-async function send() {
-  const text = promptEl.value.trim();
+// retry: {text, mode, b64, file, preview} de una peticion anterior que fallo
+// (boton "Reintentar"): se vuelve a enviar igual, foto incluida
+async function send(retry = null) {
+  const text = retry ? retry.text : promptEl.value.trim();
   if (!text) return;
-  const mode = MODES[currentMode];
+  const modeKey = retry ? retry.mode : currentMode;
+  const mode = MODES[modeKey];
   if (mode.isAgent) {
     promptEl.value = "";
     promptEl.style.height = "auto";
@@ -1369,27 +1372,30 @@ async function send() {
   }
 
   addMessage("user").textContent = text;
-  const attachedImageB64 = mode.allowAttach ? visionImageBase64 : null;
-  const attachedFile = mode.allowAttach ? visionImageInput.files[0] : null;
-  if (attachedImageB64) {
+  const attachedImageB64 = retry ? retry.b64 : (mode.allowAttach ? visionImageBase64 : null);
+  const attachedFile = retry ? retry.file : (mode.allowAttach ? visionImageInput.files[0] : null);
+  const preview = retry ? retry.preview : (attachedImageB64 || attachedFile ? attachPreviewImg.src : null);
+  if (preview) {
     const img = document.createElement("img");
     img.className = "attach";
-    img.src = attachPreviewImg.src;
+    img.src = preview;
     log.lastElementChild.querySelector(".bubble").appendChild(img);
   }
-  promptEl.value = "";
-  promptEl.style.height = "auto";
+  if (!retry) {
+    promptEl.value = "";
+    promptEl.style.height = "auto";
+    visionImageBase64 = null;
+    visionImageInput.value = "";
+    attachPreviewRow.classList.remove("show");
+  }
   sendBtn.disabled = true;
-  visionImageBase64 = null;
-  visionImageInput.value = "";
-  attachPreviewRow.classList.remove("show");
 
   // en modo imagen/video, una foto adjunta preserva esa cara (IPAdapter
   // FaceID); sin foto, genera normal a partir solo del texto
   // modo Imagen con foto: por el chat en streaming, como el automatico (se
   // edita y se ve en que fase va); video sigue con su ruta propia
-  const useFaceEndpoint = mode.faceEndpoint && attachedFile && currentMode !== "image";
-  const usePersona = currentMode === "image" && !attachedFile && personaSelect.value;
+  const useFaceEndpoint = mode.faceEndpoint && attachedFile && modeKey !== "image";
+  const usePersona = modeKey === "image" && !attachedFile && personaSelect.value;
   // "Detener" para todo lo que se genera (mejoras.md: tener que esperar a que
   // termine algo que ya se ve que esta mal era incomodo)
   currentAbort = new AbortController();
@@ -1399,6 +1405,8 @@ async function send() {
 
   const bubble = addMessage("assistant", "generando...");
   const stopTyping = startTypingIndicator(bubble);
+  // para el boton "Reintentar" si no sale (appendRetry)
+  bubble._retry = { text, mode: modeKey, b64: attachedImageB64, file: attachedFile, preview };
 
   try {
     if (usePersona) {
@@ -1412,14 +1420,14 @@ async function send() {
       const form = new FormData();
       form.append("prompt", text);
       form.append("image", attachedFile);
-      if (currentMode === "image" && modelSelect.value) form.append("model_id", modelSelect.value);
+      if (modeKey === "image" && modelSelect.value) form.append("model_id", modelSelect.value);
       // la foto queda en ESTA conversacion: luego "ahora ponle..." o "deshaz eso" la siguen editando
       if (getSessionId()) form.append("session_id", getSessionId());
       const resp = await fetch(mode.faceEndpoint, { method: "POST", body: form, signal });
       const data = await resp.json();
       renderResult(bubble, data);
     } else {
-      const imgForVision = (MODES[currentMode].isText || currentMode === "image") ? attachedImageB64 : null;
+      const imgForVision = (mode.isText || modeKey === "image") ? attachedImageB64 : null;
       await streamChatInto(bubble, mode.endpoint, text, mode.agent, imgForVision, signal);
     }
   } catch (err) {
@@ -1430,9 +1438,11 @@ async function send() {
       note.className = "stopped-note";
       note.textContent = "(detenido)";
       bubble.appendChild(note);
+      if (currentAbortIsMedia) appendRetry(bubble);
     } else {
       bubble.className = "bubble error";
       bubble.textContent = "Error de conexion: " + err;
+      appendRetry(bubble);
     }
   } finally {
     stopTyping();
@@ -3340,6 +3350,8 @@ async function streamChatInto(bubble, endpoint, text, agentOverride, imageBase64
     }
     if (finalData.file_url) {
       appendMediaWithActions(bubble, finalData.file_url, finalData.file_path);
+    } else if (isRetryable(finalData.response)) {
+      appendRetry(bubble);
     }
     // el chat detecto una accion sobre el equipo y se la paso al agente
     if (finalData.agent_task_id) openAgentView(finalData.agent_task_id, Date.now());
@@ -3372,7 +3384,35 @@ function renderResult(bubble, data) {
   if (data.file_url) {
     appendMediaWithActions(bubble, data.file_url, data.file_path);
     if (data.agent_used === "image_edit") appendEditShortcuts(bubble);
+  } else if (isRetryable(data.response)) {
+    appendRetry(bubble);
   }
+}
+
+// Una imagen, un video o una edicion que no ha salido (cancelada, tiempo
+// agotado, fallo): se avisa y se puede repetir lo mismo con un boton, sin
+// volver a escribirlo ni a adjuntar la foto (Sergio, 2026-10-07). Los textos
+// salen de _generation_error_message en main.py.
+const RETRYABLE = /^(Se ha cancelado la generación|No ha terminado a tiempo|No se ha podido terminar)/;
+
+function isRetryable(text) {
+  return RETRYABLE.test((text || "").trim());
+}
+
+function appendRetry(bubble) {
+  const ctx = bubble._retry;
+  if (!ctx || bubble.querySelector(".retry-actions")) return;
+  const row = document.createElement("div");
+  row.className = "media-actions retry-actions";
+  const btn = document.createElement("button");
+  btn.textContent = "↻ Reintentar";
+  btn.title = `Volver a pedir "${ctx.text}"`;
+  btn.addEventListener("click", () => {
+    if (sendBtn.disabled) return;  // hay algo en marcha
+    send(ctx);
+  });
+  row.appendChild(btn);
+  bubble.appendChild(row);
 }
 
 // Atajos bajo una foto editada: lo mismo que escribir "deshaz eso" u "otra
@@ -4450,7 +4490,7 @@ submitInpaintBtn.addEventListener("click", async () => {
   }
 });
 
-sendBtn.addEventListener("click", send);
+sendBtn.addEventListener("click", () => send());  // sin el evento: send(x) es "reintentar x"
 promptEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();

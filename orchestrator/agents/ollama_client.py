@@ -47,11 +47,20 @@ def _think(model: str, think: bool | None) -> bool | None:
     return False if think is None and model in NO_THINK_MODELS else think
 
 
+def _comfyui_generating() -> bool:
+    # sin main.py (un script, los tests) tambien se respeta a ComfyUI: un test
+    # que llamaba al modelo de verdad lo metio en la GPU durante una edicion
+    # de Sergio y la atasco hasta cancelarse (2026-10-07)
+    from agents import comfyui_client
+    return comfyui_client.gpu_busy("http://127.0.0.1:8188")
+
+
 class OllamaClient:
-    # Lo pone main.py: True mientras ComfyUI genera una imagen o un video. Entonces
-    # los modelos se ejecutan en la CPU (num_gpu 0) y no se precargan: en la GPU
-    # le quitaban la memoria a la imagen y la atascaban (2026-10-06).
-    gpu_busy: Callable[[], bool] | None = None
+    # True mientras ComfyUI genera una imagen o un video (main.py lo apunta a
+    # su ComfyUI). Entonces los modelos se ejecutan en la CPU (num_gpu 0) y no
+    # se precargan: en la GPU le quitaban la memoria a la imagen y la
+    # atascaban (2026-10-06).
+    gpu_busy: Callable[[], bool] | None = staticmethod(_comfyui_generating)
 
     def _gpu_options(self, options: dict) -> dict:
         if self.gpu_busy is not None and self.gpu_busy():

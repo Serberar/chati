@@ -44,6 +44,28 @@ def generation_running() -> bool:
         return _active > 0
 
 
+_queue_seen = {"at": 0.0, "busy": False}
+
+
+def gpu_busy(base_url: str) -> bool:
+    """Hay una imagen generandose, de este proceso o de CUALQUIER otro (se le
+    pregunta a ComfyUI, con la respuesta guardada 2 s). Solo con el contador
+    de este proceso, otro programa que hablaba con Ollama (los tests, el
+    agente) le metia el modelo de chat en la GPU a una edicion en marcha y la
+    dejaba 15 minutos atascada hasta cancelarse (2026-10-07)."""
+    if generation_running():
+        return True
+    now = time.time()
+    if now - _queue_seen["at"] > 2:
+        try:
+            queue = requests.get(f"{base_url}/queue", timeout=0.5).json()
+            busy = bool(queue.get("queue_running") or queue.get("queue_pending"))
+        except (requests.RequestException, ValueError, AttributeError):
+            busy = False  # ComfyUI apagado o sin responder: nada que proteger
+        _queue_seen.update(at=now, busy=busy)
+    return _queue_seen["busy"]
+
+
 def owner_of(prompt_id: str) -> str | None:
     with _owners_lock:
         return _owners.get(prompt_id)

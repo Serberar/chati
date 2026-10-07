@@ -465,7 +465,8 @@ def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "
 
 _CLOTHES_EN = re.compile(
     r"\b(sweater|shirt|t-shirt|blouse|dress|gown|jacket|coat|blazer|suit|tuxedo|hoodie|sweatshirt|cardigan|vest|"
-    r"skirt|trousers|pants|jeans|shorts|swimsuit|swim trunks|bikini|outfit|clothes|top|tank top|jumpsuit|uniform)\b",
+    r"skirt|trousers|pants|jeans|shorts|swimsuit|swim trunks|bikini|outfit|clothes|clothing|top|tank top|"
+    r"jumpsuit|uniform)\b",
     re.IGNORECASE)
 
 
@@ -1275,6 +1276,58 @@ def _multiband(top: np.ndarray, base: np.ndarray, alpha: np.ndarray, face_w: flo
     reach = np.clip(reach * 4, 0, 1)[..., None]
     out[y0:y1, x0:x1] = region * reach + out[y0:y1, x0:x1] * (1 - reach)
     return out
+
+
+def is_clothes_only(step, request: str) -> bool:
+    """El paso solo cambia ropa del cuerpo (poner, cambiar o quitar una
+    prenda): ni postura, ni fondo, ni la cara, ni algo en la cabeza
+    (sombrero, gafas...)."""
+    change = _KEEP.sub("", step.instruction or "")
+    return (step.mode == "local" and bool(_CLOTHES_EN.search(change)) and not is_pose_change(step.instruction)
+            and wants_face_kept(request) and wants_hair_kept(request)
+            and not re.search(r"\b(background|scene|sky|beach|place|location|people|person)\b", change,
+                              re.IGNORECASE))
+
+
+def clothes_mask(rgb: np.ndarray) -> np.ndarray | None:
+    """Donde puede ir la ropa nueva (0..1): las personas por debajo de la
+    barbilla, con margen por si la prenda nueva es mas ancha. La cabeza queda
+    FUERA: Kontext genera solo el cuerpo y dibuja el cuello siguiendo la
+    cabeza real, que no se toca. Pegar la cara original sobre un cuerpo
+    generado entero nunca casaba (otro tono, otro cuello, la cabeza "de
+    lado" sobre un cuello recto; Sergio, 2026-10-07). None sin caras."""
+    faces = _faces(rgb)
+    if not faces:
+        return None
+    h, w = rgb.shape[:2]
+    people = (matte(rgb) > 0.2).astype(np.uint8)
+    k = max(3, int(min(h, w) * 0.04)) | 1
+    mask = cv2.dilate(people, np.ones((k, k), np.uint8)).astype(np.float32)
+    for f in faces:
+        x, y, fw, fh = (float(v) for v in f[:4])
+        chin = int(min(h, y + fh * 1.0))
+        x0, x1 = int(max(0, x - fw * 0.9)), int(min(w, x + fw * 1.9))
+        mask[:chin, x0:x1] = 0  # la cabeza entera, pelo incluido
+    if mask.mean() < 0.01:
+        return None
+    return mask
+
+
+def mask_png_for_kontext(mask: np.ndarray) -> bytes:
+    w, h = kontext_size(mask.shape[1], mask.shape[0])
+    small = cv2.resize((mask * 255).astype(np.uint8), (w, h), interpolation=cv2.INTER_AREA)
+    return to_png(np.dstack([small] * 3))
+
+
+def compose_masked(orig: np.ndarray, edited_small: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Lo generado dentro de la mascara, la foto original exacta fuera. Con
+    la mascara Kontext no reencuadra (el latente de fuera no cambia), asi que
+    no hace falta alinear."""
+    h, w = orig.shape[:2]
+    edited = cv2.resize(edited_small, (w, h), interpolation=cv2.INTER_LANCZOS4)
+    edited = add_grain(edited, grain_sigma(orig))
+    alpha = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), max(1.5, min(h, w) * 0.004))[..., None]
+    return (orig * (1 - alpha) + edited * alpha).clip(0, 255).astype(np.uint8)
 
 
 def finish(orig: np.ndarray, edited_small: np.ndarray, mode: str) -> np.ndarray:

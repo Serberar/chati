@@ -260,3 +260,27 @@ def test_a_job_that_ends_between_looking_at_history_and_queue_is_not_cancelled(m
     with patch("agents.comfyui_client.time.time", lambda: next(clock)):
         result = submit_and_wait("http://fake", {}, "save_image", "images", timeout=600)
     assert result["content"] == b"png"
+
+
+def test_the_gpu_counts_as_busy_while_any_process_generates():
+    """2026-10-07: otro proceso (los tests) metio el modelo de chat en la GPU a
+    una edicion en marcha de otro y la atasco 15 minutos."""
+    import agents.comfyui_client as cc
+
+    class Resp:
+        def __init__(self, data):
+            self._data = data
+
+        def json(self):
+            return self._data
+
+    cc._queue_seen.update(at=0.0, busy=False)
+    with patch("agents.comfyui_client.requests.get", return_value=Resp({"queue_running": [[1, "x"]],
+                                                                        "queue_pending": []})):
+        assert cc.gpu_busy("http://fake") is True
+    cc._queue_seen.update(at=0.0, busy=False)
+    with patch("agents.comfyui_client.requests.get", return_value=Resp({"queue_running": [], "queue_pending": []})):
+        assert cc.gpu_busy("http://fake") is False
+    cc._queue_seen.update(at=0.0, busy=False)
+    with patch("agents.comfyui_client.requests.get", side_effect=__import__("requests").ConnectionError()):
+        assert cc.gpu_busy("http://fake") is False  # ComfyUI apagado: nada que proteger

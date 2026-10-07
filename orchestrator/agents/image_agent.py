@@ -223,7 +223,7 @@ class ImageAgent:
         return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]
 
     def edit_with_kontext(self, instruction: str, image_png: bytes, steps: int = 20,
-                          timeout: int = 900) -> bytes:
+                          timeout: int = 900, mask_png: bytes | None = None) -> bytes:
         """Edita la foto siguiendo una instruccion en ingles (FLUX Kontext).
         image_png ya a su tamano (photo_edit.prepare_for_kontext). Devuelve lo
         que genera Kontext tal cual; photo_edit.finish() es quien vuelve a
@@ -241,6 +241,16 @@ class ImageAgent:
         workflow["positive_encode"]["inputs"]["text"] = instruction
         workflow["sampler"]["inputs"]["seed"] = int(time.time() * 1000) % (2**32)
         workflow["sampler"]["inputs"]["steps"] = steps
+        if mask_png is not None:
+            # solo lo blanco de la mascara se genera (la ropa); lo demas (la
+            # cabeza) se queda fijo y Kontext dibuja el cuello siguiendolo
+            mask_name = self.upload_image_bytes(mask_png, "edit_mask.png")
+            workflow["load_mask"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
+            workflow["image_to_mask"] = {"class_type": "ImageToMask",
+                                         "inputs": {"image": ["load_mask", 0], "channel": "red"}}
+            workflow["noise_mask"] = {"class_type": "SetLatentNoiseMask",
+                                      "inputs": {"samples": ["vae_encode", 0], "mask": ["image_to_mask", 0]}}
+            workflow["sampler"]["inputs"]["latent_image"] = ["noise_mask", 0]
         return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]
 
     def refine_with_kontext(self, instruction: str, image_png: bytes, mask_png: bytes, denoise: float = 0.4,

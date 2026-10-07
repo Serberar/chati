@@ -413,3 +413,25 @@ def test_only_the_seam_band_is_pasted_back():
     assert np.array_equal(out[250:300, 200:400], img[250:300, 200:400])  # la cara, ni un pixel
     assert np.abs(out[310:320, 250:350].astype(int) - img[310:320, 250:350]).mean() > 10
     assert photo_edit.seam_crop(img, []) is None
+
+
+def test_clothes_only_steps_are_told_apart():
+    plan = photo_edit.EditPlan
+    assert photo_edit.is_clothes_only(plan("Replace her black sweater with a red spaghetti-strap dress. Keep her "
+                                           "face, pose and framing.", "local"), "ponme un vestido rojo de tirantes")
+    assert not photo_edit.is_clothes_only(plan("Change the background to a beach. Keep his clothes.", "fondo"),
+                                          "ponme en la playa")
+    assert not photo_edit.is_clothes_only(plan("Put a red wool hat on him. Keep his shirt.", "local"), "ponle un gorro")
+    assert not photo_edit.is_clothes_only(plan("Make him kneel in his shirt, zoomed out.", "local"), "de rodillas")
+
+
+def test_the_clothes_mask_leaves_the_head_out():
+    """2026-10-07: con la ropa, Kontext solo genera el cuerpo; la cabeza de la
+    foto no se toca y el cuello sale siguiendola."""
+    rgb = np.array(Image.open(FIXTURES_DIR / "sample_face.png").convert("RGB"))
+    (face,) = photo_edit._faces(rgb)
+    x, y, fw, fh = (int(v) for v in face[:4])
+    mask = photo_edit.clothes_mask(rgb)
+    assert mask is not None
+    assert mask[y:y + fh - 2, x:x + fw].max() == 0     # la cara, fuera
+    assert mask[y + fh + 5:].max() > 0                 # el cuerpo, dentro

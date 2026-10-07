@@ -240,7 +240,7 @@ def _free_memory_for_agent(agent: str | None, model: str | None = None, wait: bo
 
 comfyui_client.before_submit = _free_memory_for_generation
 # y mientras se genera, ningun modelo de Ollama entra en la GPU (chat en la CPU)
-OllamaClient.gpu_busy = staticmethod(comfyui_client.generation_running)
+OllamaClient.gpu_busy = staticmethod(lambda: comfyui_client.gpu_busy(CONFIG["comfyui"]["base_url"]))
 opencode_client.before_task = _free_memory_for_agent
 
 OUTPUT_DIR = paths.OUTPUT_DIR
@@ -389,9 +389,15 @@ def _with_bytes(resp: ChatResponse, data: bytes, ext: str, session: dict) -> Cha
 
 
 def _generation_error_message(action: str, exc: Exception) -> str:
+    """Lo que se le dice cuando una imagen o un video no sale. La interfaz
+    reconoce estos comienzos y pone un boton para reintentar lo mismo sin
+    volver a escribirlo (Sergio, 2026-10-07) - ver RETRYABLE en app.js."""
     if isinstance(exc, GenerationCancelled):
-        return "Generación cancelada."
-    return f"Fallo {action}: {exc}"
+        return "Se ha cancelado la generación. Puedes reintentarlo con el botón."
+    if "no termino" in str(exc):
+        return ("No ha terminado a tiempo: el equipo estaba demasiado ocupado. "
+                "Puedes reintentarlo con el botón.")
+    return f"No se ha podido terminar ({action}): {exc}"
 
 
 # Actividad del usuario, para que la copia de seguridad (que reinicia el
@@ -2832,18 +2838,31 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
     else:
         face_src, keep_hair = photo, photo_edit.wants_hair_kept(request_text)
     current = photo_edit.load_rgb(photo)
+    head_touched = False
     for step in steps:
+        # Solo ropa: Kontext genera solo el cuerpo y la cabeza de la foto no se
+        # toca (ni se pega despues). Pegar la cara sobre un cuerpo generado
+        # entero no casaba: otro tono, otro cuello, la cabeza "de lado" sobre
+        # un cuello recto (Sergio, 2026-10-07).
+        mask = (photo_edit.clothes_mask(current)
+                if photo_edit.is_clothes_only(step, request_text) else None)
         t = time.perf_counter()
-        edited_png = image_agent.edit_with_kontext(step.instruction, photo_edit.prepare_for_kontext(current))
-        log.info("Edicion: Kontext %.0f s", time.perf_counter() - t)
+        edited_png = image_agent.edit_with_kontext(
+            step.instruction, photo_edit.prepare_for_kontext(current),
+            mask_png=None if mask is None else photo_edit.mask_png_for_kontext(mask))
+        log.info("Edicion: Kontext %.0f s%s", time.perf_counter() - t, " (solo el cuerpo)" if mask is not None else "")
         t = time.perf_counter()
         edited = photo_edit.load_rgb(edited_png)
         if photo_edit.needs_upscale(current, edited):
             edited = photo_edit.load_rgb(image_agent.upscale_bytes(edited_png))
-        mode = "entera" if photo_edit.is_pose_change(step.instruction) else step.mode
-        current = photo_edit.finish(current, edited, mode)
+        if mask is not None:
+            current, mode = photo_edit.compose_masked(current, edited, mask), "cuerpo"
+        else:
+            mode = "entera" if photo_edit.is_pose_change(step.instruction) else step.mode
+            current = photo_edit.finish(current, edited, mode)
+            head_touched = True
         log.info("Edicion: componer (%s) %.0f s", mode, time.perf_counter() - t)
-    if face_src is not None:
+    if face_src is not None and head_touched:
         # la cara exacta de antes, no la redibujada por Kontext; si cambio la
         # postura, solo la cara (pelo y contorno nuevos, ver restore_faces)
         t = time.perf_counter()
