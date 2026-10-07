@@ -3029,7 +3029,7 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
         # toca (ni se pega despues). Pegar la cara sobre un cuerpo generado
         # entero no casaba: otro tono, otro cuello, la cabeza "de lado" sobre
         # un cuello recto (Sergio, 2026-10-07).
-        mask = (photo_edit.clothes_mask(current)
+        mask = (photo_edit.clothes_mask(current, step.instruction)
                 if photo_edit.is_clothes_only(step, request_text) else None)
         t = time.perf_counter()
         edited_png = image_agent.edit_with_kontext(

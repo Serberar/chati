@@ -437,3 +437,23 @@ def test_the_clothes_mask_leaves_the_head_out():
     # ya son cuello u hombros y pueden cambiar
     assert mask[int(y + fh * 0.15):int(y + fh * 0.85), int(x + fw * 0.25):int(x + fw * 0.75)].max() == 0
     assert mask[y + fh + 5:].max() > 0                 # el cuerpo, dentro
+
+
+def test_the_garment_asked_decides_what_changes():
+    """2026-10-07: con el modelo de ropa se cambia la prenda pedida y nada mas."""
+    upper, lower, whole = photo_edit._UPPER_PARTS, photo_edit._LOWER_PARTS, photo_edit._WHOLE_PARTS
+    assert photo_edit._parts_to_change("Replace his white t-shirt with a Hawaiian shirt. Keep his jeans.") == upper
+    assert photo_edit._parts_to_change("Replace his jeans with black shorts. Keep his shirt.") == lower
+    assert photo_edit._parts_to_change("Replace her sweater with a red dress.") == whole
+    assert photo_edit._parts_to_change("Dress both people in warm winter coats.") == upper  # vestir, no vestido
+
+
+def test_the_clothes_mask_never_touches_face_or_hair(monkeypatch):
+    labels = np.zeros((200, 100), np.uint8)
+    labels[10:60, 30:70] = photo_edit.FACE
+    labels[0:10, 25:75] = photo_edit.HAIR
+    labels[60:200, 10:90] = photo_edit.UPPER
+    monkeypatch.setattr(photo_edit, "parse_people", lambda rgb: labels)
+    mask = photo_edit.clothes_mask(np.zeros((200, 100, 3), np.uint8), "Replace his shirt with a jacket.")
+    assert mask[labels == photo_edit.FACE].max() == 0 and mask[labels == photo_edit.HAIR].max() == 0
+    assert mask[100:190, 20:80].min() == 1

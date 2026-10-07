@@ -1321,13 +1321,83 @@ def is_clothes_only(step, request: str) -> bool:
                               re.IGNORECASE))
 
 
-def clothes_mask(rgb: np.ndarray) -> np.ndarray | None:
-    """Donde puede ir la ropa nueva (0..1): las personas por debajo de la
-    barbilla, con margen por si la prenda nueva es mas ancha. La cabeza queda
-    FUERA: Kontext genera solo el cuerpo y dibuja el cuello siguiendo la
-    cabeza real, que no se toca. Pegar la cara original sobre un cuerpo
-    generado entero nunca casaba (otro tono, otro cuello, la cabeza "de
-    lado" sobre un cuello recto; Sergio, 2026-10-07). None sin caras."""
+# Reconocer la ropa y las partes del cuerpo, pixel a pixel (SegFormer B2
+# "clothes", entrenado con el conjunto ATR; licencia "other": uso personal
+# sin problema, revisar antes de repartirlo en un instalador). Adivinar la
+# ropa con figuras alrededor de la cara no valia para cualquier foto: en un
+# primer plano se quedaba medio hombro sin cambiar (Sergio, 2026-10-07).
+PARSE_MODEL = MODELS_DIR / "img" / "parsing" / "segformer_b2_clothes.onnx"
+_parse_session = None
+# etiquetas del modelo
+BACKGROUND, HAT, HAIR, SUNGLASSES, UPPER, SKIRT, PANTS, DRESS, BELT = range(9)
+LEFT_SHOE, RIGHT_SHOE, FACE, LEFT_LEG, RIGHT_LEG, LEFT_ARM, RIGHT_ARM, BAG, SCARF = range(9, 18)
+_UPPER_PARTS = {UPPER, SCARF, LEFT_ARM, RIGHT_ARM}
+_LOWER_PARTS = {SKIRT, PANTS, BELT, LEFT_LEG, RIGHT_LEG}
+_WHOLE_PARTS = _UPPER_PARTS | _LOWER_PARTS | {DRESS}
+_UPPER_WORDS = re.compile(
+    r"\b(shirt|t-shirt|blouse|sweater|jumper|hoodie|sweatshirt|jacket|coat|blazer|cardigan|vest|top|tank top|"
+    r"polo|turtleneck|bra|bikini top)(?:e?s)?\b", re.IGNORECASE)  # tambien en plural: "coats"
+_LOWER_WORDS = re.compile(r"\b(pants|trousers|jeans|shorts|skirt|leggings|bikini bottom|belt)(?:e?s)?\b",
+                          re.IGNORECASE)
+_WHOLE_WORDS = re.compile(
+    r"\b(dress|gown|jumpsuit|suit|tuxedo|swimsuit|outfit|clothes|clothing|uniform|bikini|pajamas|robe|"
+    r"overalls|dungarees)(?:e?s)?\b", re.IGNORECASE)
+
+
+def parse_people(rgb: np.ndarray) -> np.ndarray | None:
+    """Que es cada pixel (etiquetas de arriba), al tamaño de la foto. None si
+    no esta el modelo."""
+    global _parse_session
+    if not PARSE_MODEL.exists():
+        return None
+    if _parse_session is None:
+        _parse_session = ort.InferenceSession(str(PARSE_MODEL), providers=["CPUExecutionProvider"])
+    h, w = rgb.shape[:2]
+    x = cv2.resize(rgb, (512, 512), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    x = (x - np.array([0.485, 0.456, 0.406], np.float32)) / np.array([0.229, 0.224, 0.225], np.float32)
+    logits = _parse_session.run(None, {_parse_session.get_inputs()[0].name: x.transpose(2, 0, 1)[None]})[0][0]
+    # las probabilidades a tamaño completo antes de elegir: bordes suaves y bien puestos
+    up = np.stack([cv2.resize(c, (w, h), interpolation=cv2.INTER_LINEAR) for c in logits])
+    return up.argmax(axis=0).astype(np.uint8)
+
+
+def _parts_to_change(instruction: str) -> set[int]:
+    """Que partes cambian segun la prenda pedida: arriba (y brazos, por si
+    cambia la manga), abajo (y piernas) o todo."""
+    change = _KEEP.sub("", instruction or "")
+    # "Dress both people in coats": ahi "dress" es vestir, no un vestido
+    change = re.sub(r"\bdress(es|ed|ing)?\s+(him|her|them|both|the|all|everyone|each)\b", " ", change,
+                    flags=re.IGNORECASE)
+    whole = bool(_WHOLE_WORDS.search(change))
+    upper, lower = bool(_UPPER_WORDS.search(change)), bool(_LOWER_WORDS.search(change))
+    if whole or (upper and lower) or not (upper or lower):
+        return _WHOLE_PARTS
+    return _UPPER_PARTS if upper else _LOWER_PARTS
+
+
+def clothes_mask(rgb: np.ndarray, instruction: str = "") -> np.ndarray | None:
+    """Donde puede ir la ropa nueva (0..1): la prenda que se cambia, con
+    margen por si la nueva es mas ancha o tiene otro escote. La cara, el
+    pelo, las gafas y el fondo quedan FUERA: Kontext genera solo eso y la
+    cabeza real no se toca. Con el modelo de ropa (parse_people); sin el, o
+    si no reconoce ninguna prenda, a ojo alrededor de la cara."""
+    labels = parse_people(rgb)
+    if labels is not None:
+        h, w = rgb.shape[:2]
+        change = np.isin(labels, list(_parts_to_change(instruction))).astype(np.uint8)
+        if change.mean() > 0.005:
+            k = max(3, int(min(h, w) * 0.03)) | 1
+            mask = cv2.dilate(change, np.ones((k, k), np.uint8))
+            mask[np.isin(labels, [FACE, HAIR, SUNGLASSES, HAT])] = 0
+            return mask.astype(np.float32)
+    return _clothes_mask_around_face(rgb)
+
+
+def _clothes_mask_around_face(rgb: np.ndarray) -> np.ndarray | None:
+    """Respaldo sin el modelo de ropa: las personas menos la cabeza. Pegar la
+    cara original sobre un cuerpo generado entero nunca casaba (otro tono,
+    otro cuello, la cabeza "de lado" sobre un cuello recto; Sergio,
+    2026-10-07). None sin caras."""
     faces = _faces(rgb)
     if not faces:
         return None
