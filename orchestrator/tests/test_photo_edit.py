@@ -368,3 +368,19 @@ def test_no_old_clothes_left_in_the_border_kontext_did_not_generate():
     assert out.shape[0] < h and abs(out.shape[1] / out.shape[0] - w / h) < 0.01  # recortada, misma proporcion
     left = out[out.shape[0] // 2:, :8].reshape(-1, 3).astype(int)
     assert np.abs(left - (128, 128, 128)).max(axis=1).min() > 40  # ni rastro del gris
+
+
+def test_new_skin_from_kontext_gets_the_real_skin_tone(monkeypatch):
+    """2026-10-07: Kontext hacia el cuello mas palido que la cara original y al
+    volver a ponerla se notaba el corte bajo la barbilla."""
+    monkeypatch.setattr(photo_edit, "matte", lambda rgb: np.ones(rgb.shape[:2], np.float32))
+    pale, warm = (225, 190, 175), (215, 160, 125)
+    result = np.full((400, 300, 3), pale, np.uint8)       # cara y cuello de Kontext
+    result[:, :40] = (30, 60, 200)                        # algo que no es piel (fondo azul)
+    lit = result.copy()
+    lit[60:220, 90:210] = warm                            # la cara original, mas calida
+    face = np.array([90, 60, 120, 160] + [0] * 11, np.float32)
+    out = photo_edit._match_skin(result.astype(np.float32), result, lit, np.zeros((400, 300), np.float32), face)
+    neck = out[300:380, 120:180].reshape(-1, 3).mean(axis=0)
+    assert np.abs(neck - warm).max() < np.abs(np.array(pale) - warm).max() / 2  # el cuello va hacia el tono real
+    assert np.abs(out[300:, :30] - result[300:, :30]).max() < 2                 # lo que no es piel no se toca

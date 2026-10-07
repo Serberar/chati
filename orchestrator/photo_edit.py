@@ -1018,7 +1018,10 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
         else:
             # sombrero, gorra...: de las cejas para abajo, el resto es de Kontext
             cv2.ellipse(zone, (cx, int(y + fh * 0.5)), (int(fw * 0.47), int(fh * 0.38)), 0, 0, 360, 1, -1)
-        cv2.ellipse(zone, (cx, int(y + fh * 0.6)), (int(fw * 0.5), int(fh * 0.47)), 0, 0, 360, 1, -1)
+        # hasta la barbilla y no mas: el corte en mitad del cuello (piel lisa y
+        # seguida) se notaba muchisimo; en el contorno de la mandibula ya hay un
+        # cambio natural de plano y de sombra (Sergio, 2026-10-07)
+        cv2.ellipse(zone, (cx, int(y + fh * 0.58)), (int(fw * 0.5), int(fh * 0.40)), 0, 0, 360, 1, -1)
         if not keep_hair:
             zone[:int(y + fh * 0.15)] = 0
         zone_w = cv2.warpAffine(zone, m, (w, h), flags=cv2.INTER_LINEAR)
@@ -1044,9 +1047,131 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
                 filled = cv2.inpaint(out.clip(0, 255).astype(np.uint8), hole, 9, cv2.INPAINT_TELEA).astype(np.float32)
             out = np.where(grown[..., None] > 0, filled, out)
         lit = _relight(warped, result, (head > 0.5).astype(np.float32))
-        alpha = head[..., None]
-        out = lit * alpha + out * (1 - alpha)
+        out = _match_skin(out, result, lit, head, faces_r[j])
+        out = _multiband(lit, out, head, fw * scale)
     return out.clip(0, 255).astype(np.uint8)
+
+
+def _cheeks(img_lab: np.ndarray, face: np.ndarray) -> np.ndarray:
+    """Piel de la cara (Lab, mediana): entre los ojos y la boca, sin el centro
+    (nariz)."""
+    x, y, fw, fh = (float(v) for v in face[:4])
+    h, w = img_lab.shape[:2]
+    pts = []
+    for cx in (x + fw * 0.27, x + fw * 0.73):
+        y0, y1 = int(max(0, y + fh * 0.48)), int(min(h, y + fh * 0.66))
+        x0, x1 = int(max(0, cx - fw * 0.1)), int(min(w, cx + fw * 0.1))
+        if y1 > y0 and x1 > x0:
+            pts.append(img_lab[y0:y1, x0:x1].reshape(-1, 3))
+    return np.median(np.concatenate(pts), axis=0) if pts else np.zeros(3, np.float32)
+
+
+def _match_skin(out: np.ndarray, result: np.ndarray, lit: np.ndarray, head: np.ndarray,
+                face: np.ndarray) -> np.ndarray:
+    """La piel nueva de Kontext (cuello, escote, brazos) con el tono de la piel
+    de verdad: se le aplica el mismo cambio de color que hay entre la cara de
+    Kontext y la original. Kontext la hacia mas palida y al volver a poner la
+    cara quedaba una franja clara bajo la barbilla, el "corte del cuello"
+    (Sergio, 2026-10-07)."""
+    lab_r = cv2.cvtColor(result, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab_l = cv2.cvtColor(lit.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
+    skin_k = _cheeks(lab_r, face)
+    shift = _cheeks(lab_l, face) - skin_k
+    shift = np.clip(shift, [-25, -12, -12], [25, 12, 12])
+    if np.abs(shift).max() < 2:
+        return out
+    lab_o = cv2.cvtColor(out.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
+    # piel de Kontext: color parecido al de su cara (la ropa, el pelo y el
+    # fondo no se tocan), fuera de la cabeza que se va a pegar
+    chroma = np.linalg.norm(lab_r[..., 1:] - skin_k[1:], axis=2)
+    light = np.abs(lab_r[..., 0] - skin_k[0])
+    weight = np.clip(1.5 - chroma / 8, 0, 1) * np.clip(1.5 - light / 40, 0, 1)
+    x, y, fw, fh = (float(v) for v in face[:4])
+    weight[:int(max(0, y + fh * 0.5))] = 0  # de la boca para abajo: cuello, escote, brazos
+    weight *= matte(result) > 0.5  # solo la persona: no la mesa o una pared de color piel
+    weight = cv2.GaussianBlur(weight.astype(np.float32), (0, 0), max(1.5, fw * 0.02))
+    if weight.max() < 0.05:
+        return out
+    lab_o = lab_o + weight[..., None] * shift
+    # y la textura: la piel de Kontext es lisa (y ampliada, algo borrosa) y la
+    # de la cara original tiene poros y pecas; junto a ella parecia de plastico.
+    # Se le añade el detalle fino que le falta, con la fuerza del de la cara.
+    s = max(0.8, fw * 0.004)
+
+    def detail(lab_l):
+        return lab_l - cv2.GaussianBlur(lab_l, (0, 0), s)
+
+    have_mask = weight > 0.6
+    if have_mask.sum() > 100:
+        target = _cheek_std(detail(lab_l[..., 0]), face)
+        have = float(np.std(detail(lab_o[..., 0])[have_mask]))
+        need = np.sqrt(max(0.0, target ** 2 - have ** 2))
+        if need > 0.3:
+            rng = np.random.default_rng(1)
+            noise = cv2.GaussianBlur(rng.normal(0, 1, weight.shape).astype(np.float32), (0, 0), s * 0.6)
+            noise = detail(noise)
+            noise *= need / max(float(noise.std()), 1e-6)
+            lab_o[..., 0] += noise * weight
+    new = cv2.cvtColor(lab_o.clip(0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB).astype(np.float32)
+    # solo donde hay piel: el ida y vuelta a Lab cambia unos niveles el resto
+    touched = np.clip(weight * 20, 0, 1)[..., None]
+    return new * touched + out.astype(np.float32) * (1 - touched)
+
+
+def _cheek_std(img: np.ndarray, face: np.ndarray) -> float:
+    x, y, fw, fh = (float(v) for v in face[:4])
+    h, w = img.shape[:2]
+    vals = []
+    for cx in (x + fw * 0.27, x + fw * 0.73):
+        y0, y1 = int(max(0, y + fh * 0.48)), int(min(h, y + fh * 0.66))
+        x0, x1 = int(max(0, cx - fw * 0.1)), int(min(w, cx + fw * 0.1))
+        if y1 > y0 and x1 > x0:
+            vals.append(img[y0:y1, x0:x1].ravel())
+    return float(np.std(np.concatenate(vals))) if vals else 0.0
+
+
+def _multiband(top: np.ndarray, base: np.ndarray, alpha: np.ndarray, face_w: float) -> np.ndarray:
+    """`top` sobre `base` con mezcla por bandas (piramide de Laplace): el tono
+    y la luz se funden en una franja ancha y el detalle (poros, pelo) en una
+    estrecha. Con una sola mezcla suave se notaba el escalon de color en el
+    cuello entre la cara original y el cuello de Kontext (Sergio, 2026-10-07).
+    Solo en el recuadro de la cara, para que no tarde en fotos de 12 MP."""
+    levels = int(np.clip(np.log2(max(face_w, 16) / 6), 2, 6))
+    ys, xs = np.nonzero(alpha > 0.002)
+    if not len(ys):
+        return base
+    h, w = alpha.shape
+    pad = int(face_w * 0.5)
+    y0, y1 = max(0, ys.min() - pad), min(h, ys.max() + pad + 1)
+    x0, x1 = max(0, xs.min() - pad), min(w, xs.max() + pad + 1)
+    step = 2 ** levels
+    # tamaño multiplo de 2^niveles, repitiendo el borde
+    ph, pw = -(-(y1 - y0) // step) * step, -(-(x1 - x0) // step) * step
+
+    def prep(img):
+        crop = img[y0:y1, x0:x1].astype(np.float32)
+        return cv2.copyMakeBorder(crop, 0, ph - crop.shape[0], 0, pw - crop.shape[1], cv2.BORDER_REPLICATE)
+
+    a, b, m = prep(top), prep(base), prep(alpha)
+    ga, gb, gm = [a], [b], [m]
+    for _ in range(levels):
+        ga.append(cv2.pyrDown(ga[-1]))
+        gb.append(cv2.pyrDown(gb[-1]))
+        gm.append(cv2.pyrDown(gm[-1]))
+    blended = ga[-1] * gm[-1][..., None] + gb[-1] * (1 - gm[-1][..., None])
+    for i in range(levels - 1, -1, -1):
+        size = (ga[i].shape[1], ga[i].shape[0])
+        la = ga[i] - cv2.pyrUp(ga[i + 1], dstsize=size)
+        lb = gb[i] - cv2.pyrUp(gb[i + 1], dstsize=size)
+        mi = gm[i][..., None]
+        blended = cv2.pyrUp(blended, dstsize=size) + la * mi + lb * (1 - mi)
+    out = base.astype(np.float32).copy()
+    region = blended[:y1 - y0, :x1 - x0]
+    # fuera de la zona (alpha 0 y lejos) se queda base exacta
+    reach = cv2.GaussianBlur((alpha[y0:y1, x0:x1] > 0.002).astype(np.float32), (0, 0), max(2.0, face_w * 0.15))
+    reach = np.clip(reach * 4, 0, 1)[..., None]
+    out[y0:y1, x0:x1] = region * reach + out[y0:y1, x0:x1] * (1 - reach)
+    return out
 
 
 def finish(orig: np.ndarray, edited_small: np.ndarray, mode: str) -> np.ndarray:
