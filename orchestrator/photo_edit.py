@@ -126,9 +126,10 @@ Reglas que no se pueden saltar (con fallos reales, 2026-10-05):
 - Quitar una prenda: di que queda a la vista en su lugar, no solo "remove".
   Con "Remove the white t-shirt" el editor dejaba otra camiseta beige
   (2026-10-07). "quitame la camiseta" (un hombre) -> "Remove the man's white
-  t-shirt completely so that he is shirtless, with his bare chest and
+  t-shirt completely so that he is shirtless, with his bare neck, chest and
   shoulders visible."; quitar una chaqueta -> lo que lleva debajo ("showing
-  the shirt he wears underneath").
+  the shirt he wears underneath"). Di siempre lo que SE VE, nunca lo que no
+  ("Do not add a necklace" hacia que el editor dibujara un collar).
 - Al cambiar ropa, describe la prenda nueva con TODO lo que diga el usuario
   (color, tirantes, mangas, largo, tejido, estampado) y mantén el cuerpo:
   "Keep her body shape and proportions exactly the same." (el editor le
@@ -519,9 +520,9 @@ def _keep_body(instruction: str) -> str:
     low = instruction.lower()
     who = "her" if re.search(r"\b(woman|her|she|girl)\b", low) else \
         "his" if re.search(r"\b(man|his|he|boy)\b", low) else "their"
-    # y sin joyas inventadas: al quitar una camiseta salio un collar fino que
-    # no estaba (Sergio, 2026-10-07)
-    keep = f"Keep {who} body shape and proportions exactly the same. Do not add any jewelry or necklace."
+    # Nada de "Do not add any necklace": estos modelos entienden mal las
+    # negaciones y nombrarlo le hacia dibujar un collar (2026-10-07)
+    keep = f"Keep {who} body shape and proportions exactly the same."
     m = re.search(r"\s*Do not add any other", instruction)
     if m:
         return f"{instruction[:m.start()].rstrip()} {keep} {instruction[m.start():].lstrip()}"
