@@ -1388,9 +1388,43 @@ def clothes_mask(rgb: np.ndarray, instruction: str = "") -> np.ndarray | None:
         if change.mean() > 0.005:
             k = max(3, int(min(h, w) * 0.03)) | 1
             mask = cv2.dilate(change, np.ones((k, k), np.uint8))
-            mask[np.isin(labels, [FACE, HAIR, SUNGLASSES, HAT])] = 0
+            mask[np.isin(labels, [FACE, HAIR, SUNGLASSES, HAT, BAG])] = 0
+            # brazos y manos: nunca, ni por el margen. Al cambiar una camisa se
+            # redibujaba la mano con el vaso (Sergio, 2026-10-07). Solo con
+            # manga larga entra el brazo pegado a la prenda, sin la punta.
+            arms = np.isin(labels, [LEFT_ARM, RIGHT_ARM])
+            mask[arms] = 0
+            if _LONG_SLEEVES.search(_KEEP.sub("", instruction or "")):
+                mask[_sleeve_zone(labels, change, rgb) > 0] = 1
             return mask.astype(np.float32)
     return _clothes_mask_around_face(rgb)
+
+
+_LONG_SLEEVES = re.compile(
+    r"\b(long[- ]sleeved?|sweaters?|jumpers?|hoodies?|sweatshirts?|jackets?|coats?|blazers?|cardigans?|"
+    r"turtlenecks?|suits?|tuxedos?|parkas?|raincoats?)\b", re.IGNORECASE)
+
+
+def _sleeve_zone(labels: np.ndarray, garment: np.ndarray, rgb: np.ndarray) -> np.ndarray:
+    """Para una prenda de manga larga: el brazo que sale de la prenda que se
+    cambia (no el de otra persona), hasta un poco antes de la mano. La mano
+    queda en la punta del brazo, lo mas lejos de la prenda."""
+    h, w = labels.shape
+    zone = np.zeros((h, w), np.uint8)
+    if not garment.any():
+        return zone
+    from_garment = cv2.distanceTransform(1 - garment, cv2.DIST_L2, 5)
+    touching = cv2.dilate(garment, np.ones((5, 5), np.uint8)) > 0
+    for arm_label in (LEFT_ARM, RIGHT_ARM):
+        n, comps = cv2.connectedComponents((labels == arm_label).astype(np.uint8))
+        for i in range(1, n):
+            comp = comps == i
+            if not (comp & touching).any():
+                continue  # el brazo de otra persona
+            reach = float(from_garment[comp].max())
+            # todo el brazo menos el ultimo 30% (la mano y la muñeca)
+            zone[comp & (from_garment < 0.7 * reach)] = 1
+    return zone
 
 
 def _clothes_mask_around_face(rgb: np.ndarray) -> np.ndarray | None:
