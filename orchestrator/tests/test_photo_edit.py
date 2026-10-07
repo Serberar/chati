@@ -433,5 +433,7 @@ def test_the_clothes_mask_leaves_the_head_out():
     x, y, fw, fh = (int(v) for v in face[:4])
     mask = photo_edit.clothes_mask(rgb)
     assert mask is not None
-    assert mask[y:y + fh - 2, x:x + fw].max() == 0     # la cara, fuera
+    # la cara en si (de los ojos a la boca), fuera; las esquinas del recuadro
+    # ya son cuello u hombros y pueden cambiar
+    assert mask[int(y + fh * 0.15):int(y + fh * 0.85), int(x + fw * 0.25):int(x + fw * 0.75)].max() == 0
     assert mask[y + fh + 5:].max() > 0                 # el cuerpo, dentro
