@@ -1289,11 +1289,6 @@ def is_clothes_only(step, request: str) -> bool:
                               re.IGNORECASE))
 
 
-# Ancho de la transicion entre la cabeza original y el cuerpo generado, en
-# altos de cara (desviacion del desenfoque): ~+-0,15 de alto de cara.
-HEAD_RAMP = 0.07
-
-
 def clothes_mask(rgb: np.ndarray) -> np.ndarray | None:
     """Donde puede ir la ropa nueva (0..1): las personas por debajo de la
     barbilla, con margen por si la prenda nueva es mas ancha. La cabeza queda
@@ -1310,17 +1305,10 @@ def clothes_mask(rgb: np.ndarray) -> np.ndarray | None:
     mask = cv2.dilate(people, np.ones((k, k), np.uint8)).astype(np.float32)
     for f in faces:
         x, y, fw, fh = (float(v) for v in f[:4])
-        # la cabeza entera, pelo incluido, fuera... pero no con un corte: una
-        # transicion progresiva alrededor de la barbilla (y por los lados) en
-        # la que la IA genera poco a poco. Con el corte recto se notaba la
-        # union, una linea que cruzaba el pelo (Sergio, 2026-10-07).
-        head = np.zeros((h, w), np.float32)
-        chin = int(min(h, y + fh * (1.0 + HEAD_RAMP * 0.3)))
+        chin = int(min(h, y + fh * 1.0))
         x0, x1 = int(max(0, x - fw * 0.9)), int(min(w, x + fw * 1.9))
-        head[:chin, x0:x1] = 1
-        head = cv2.GaussianBlur(head, (0, 0), max(2.0, fh * HEAD_RAMP))
-        mask *= 1 - head
-    if (mask > 0.5).mean() < 0.01:
+        mask[:chin, x0:x1] = 0  # la cabeza entera, pelo incluido
+    if mask.mean() < 0.01:
         return None
     return mask
 
