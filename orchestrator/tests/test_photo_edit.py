@@ -457,3 +457,11 @@ def test_the_clothes_mask_never_touches_face_or_hair(monkeypatch):
     mask = photo_edit.clothes_mask(np.zeros((200, 100, 3), np.uint8), "Replace his shirt with a jacket.")
     assert mask[labels == photo_edit.FACE].max() == 0 and mask[labels == photo_edit.HAIR].max() == 0
     assert mask[100:190, 20:80].min() == 1
+
+
+def test_leaving_the_pose_is_not_a_pose_change():
+    # 2026-10-07: "leaving his ... pose ... the same" al quitar una camiseta se
+    # tomaba por postura: Kontext entera, motas por toda la foto, cara pegada
+    assert not photo_edit.is_pose_change("Remove the white t-shirt from the man, leaving his short beard, "
+                                         "facial features, expression, hair, pose, and framing exactly the same.")
+    assert photo_edit.is_pose_change("Make him kneel on the grass, leaving his clothes the same.")

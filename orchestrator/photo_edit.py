@@ -123,6 +123,12 @@ Reglas que no se pueden saltar (con fallos reales, 2026-10-05):
 - El sitio o el fondo va SOLO en el paso "fondo", nunca en el paso "local".
 - Ropa de baño: para un hombre "swim trunks, bare chest"; para una mujer el
   bañador o bikini que pida (si no dice, "a one-piece swimsuit").
+- Quitar una prenda: di que queda a la vista en su lugar, no solo "remove".
+  Con "Remove the white t-shirt" el editor dejaba otra camiseta beige
+  (2026-10-07). "quitame la camiseta" (un hombre) -> "Remove the man's white
+  t-shirt completely so that he is shirtless, with his bare chest and
+  shoulders visible."; quitar una chaqueta -> lo que lleva debajo ("showing
+  the shirt he wears underneath").
 - Al cambiar ropa, describe la prenda nueva con TODO lo que diga el usuario
   (color, tirantes, mangas, largo, tejido, estampado) y mantén el cuerpo:
   "Keep her body shape and proportions exactly the same." (el editor le
@@ -537,8 +543,11 @@ def _same_person(summary: str, requests: list[str]) -> str:
 
 # Desde donde empieza "lo que no cambia". Tambien ", keeping ...": sin eso el
 # "pose" de "keeping his face, pose and framing" contaba como cambio de postura
-# y se usaba la de Kontext entera, sin la foto original (2026-10-07)
-_KEEP = re.compile(r"[\s,]*\b(while keeping|keeping|Keep|Do not)\b.*$", re.IGNORECASE | re.DOTALL)
+# y se usaba la de Kontext entera, sin la foto original (2026-10-07). Y todas
+# las formas de decirlo: con "leaving his ... pose ... the same" paso lo mismo
+# al quitar una camiseta (motas por toda la foto y la cara pegada).
+_KEEP = re.compile(r"[\s,]*\b(while keeping|keeping|Keep|leaving|leave|preserving|preserve|retaining|retain|"
+                   r"maintaining|maintain|Do not|Don't|without changing)\b.*$", re.IGNORECASE | re.DOTALL)
 
 
 def merge_steps(plans: list[EditPlan]) -> list[EditPlan]:
