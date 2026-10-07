@@ -2495,9 +2495,27 @@ def rename_session(session_id: str, request: Request, title: str = Form(...)):
 def delete_session(session_id: str, request: Request):
     if not _owns_session(request, session_id):
         return _not_your_session()
+    _delete_conversation(request.state.session, session_id)
+    return {"ok": True}
+
+
+@app.delete("/sessions")
+def delete_all_sessions(request: Request):
+    """Todas las conversaciones del usuario de una vez, para cuando se
+    acumulan (Sergio, 2026-10-07). Solo las suyas: sin usuario, list_sessions
+    devolveria las de todos, asi que no se hace."""
+    session = request.state.session
+    if not session.get("user_id"):
+        return JSONResponse({"detail": "Hay que iniciar sesion para borrar el historial."}, status_code=403)
+    ids = [s["session_id"] for s in memory.list_sessions(limit=1_000_000, user_id=session["user_id"])]
+    for session_id in ids:
+        _delete_conversation(session, session_id)
+    return {"ok": True, "deleted": len(ids)}
+
+
+def _delete_conversation(session: dict, session_id: str) -> None:
     # las fotos de la conversacion (subidas, ediciones y sus versiones) tambien,
     # no a los 30 dias de la limpieza general
-    session = request.state.session
     names = {m["media"] for m in memory.get_history(session_id, limit=100000) if m.get("media")}
     state = photo_session.load(session, session_id)
     names |= set(state["versions"]) if state else set()
@@ -2505,8 +2523,7 @@ def delete_session(session_id: str, request: Request):
         media_store.delete(name)
     memory.clear_session(session_id)
     knowledge_base.delete_conversation(session_id)  # tambien borra su rastro de la memoria a largo plazo (RAG)
-    session_docs.delete_session(request.state.session["user_id"], session_id)
-    return {"ok": True}
+    session_docs.delete_session(session["user_id"], session_id)
 
 
 @app.put("/sessions/{session_id}/messages/{message_id}")

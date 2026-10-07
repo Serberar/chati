@@ -120,6 +120,12 @@
     padding: 4px 20px 6px; font-size: 11px; letter-spacing: 0.05em;
     text-transform: uppercase; color: var(--muted); font-weight: 600;
   }
+  #convSectionLabel { display: flex; align-items: center; justify-content: space-between; }
+  #clearAllConvBtn {
+    background: none; border: none; color: var(--muted); font-size: 11px; cursor: pointer;
+    text-transform: none; letter-spacing: 0; padding: 2px 4px; border-radius: 4px;
+  }
+  #clearAllConvBtn:hover { color: var(--error); background: var(--panel-3); }
   #convList { flex: 1; overflow-y: auto; padding: 0 10px 8px; min-height: 60px; }
   .conv-row {
     position: relative; padding: 9px 56px 9px 12px; border-radius: var(--radius-sm);
@@ -937,7 +943,8 @@
   </div>
 
   <button id="newChatBtn">+ Nueva conversacion</button>
-  <div id="convSectionLabel">Conversaciones</div>
+  <div id="convSectionLabel"><span>Conversaciones</span>
+    <button id="clearAllConvBtn" title="Borrar todas las conversaciones" style="display:none">Borrar todas</button></div>
   <div id="convList"></div>
 
   <div id="bgTasksWrap">

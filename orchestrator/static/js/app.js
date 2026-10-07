@@ -3533,6 +3533,9 @@ async function loadConversations() {
   } catch (err) { return; }
 
   convList.innerHTML = "";
+  const clearAll = document.getElementById("clearAllConvBtn");
+  clearAll.style.display = sessions.length ? "" : "none";
+  clearAll.dataset.count = sessions.length;
   if (!sessions.length) {
     convList.innerHTML = '<div id="convEmpty">Sin conversaciones todavia. Escribe algo para empezar una.</div>';
     return;
@@ -3607,6 +3610,33 @@ async function loadConversations() {
     convList.appendChild(row);
   });
 }
+
+// Borrar todas las conversaciones de una vez, para cuando se acumulan
+// (Sergio, 2026-10-07). Con sus fotos y documentos adjuntos; "Mis
+// documentos" no se toca.
+const clearAllConvBtn = document.getElementById("clearAllConvBtn");
+clearAllConvBtn.addEventListener("click", async () => {
+  const n = Number(clearAllConvBtn.dataset.count || 0);
+  const ok = confirm(
+    `¿Borrar ${n === 1 ? "la conversacion" : `las ${n} conversaciones`}?\n\n` +
+    "Se borran tambien sus fotos, ediciones y documentos adjuntos. " +
+    "Lo guardado en \"Mis documentos\" no se toca.\n\nNo se puede deshacer.");
+  if (!ok) return;
+  clearAllConvBtn.disabled = true;
+  try {
+    const resp = await fetch("/sessions", { method: "DELETE" });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(data.detail || "No se pudieron borrar las conversaciones.");
+      return;
+    }
+    localStorage.removeItem("ia_session_id");
+    startNewConversation(false);
+    await loadConversations();
+  } finally {
+    clearAllConvBtn.disabled = false;
+  }
+});
 
 // Al borrar una conversacion con documentos adjuntos, el usuario decide si
 // pasan a "Mis documentos" (memoria permanente) o se borran con ella.

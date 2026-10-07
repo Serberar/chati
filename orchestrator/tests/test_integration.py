@@ -1910,3 +1910,13 @@ def test_without_people_a_background_change_is_not_cut_out_as_a_person():
          patch.object(main, "_apply_edit", return_value=b"jpg") as mock_apply:
         main._edit_photo("que el parque sea una playa", b"foto")
     assert [s.mode for s in mock_apply.call_args.args[0]] == ["local"]
+
+
+def test_all_conversations_of_the_user_can_be_deleted_at_once():
+    """2026-10-07: un boton para borrar todas las conversaciones de golpe."""
+    with patch.object(main.memory, "list_sessions", return_value=[{"session_id": "a"}, {"session_id": "b"}]) as ls, \
+         patch.object(main, "_delete_conversation") as delete:
+        resp = client.delete("/sessions")
+    assert resp.status_code == 200 and resp.json() == {"ok": True, "deleted": 2}
+    assert ls.call_args.kwargs["user_id"]  # solo las del usuario, nunca las de todos
+    assert [c.args[1] for c in delete.call_args_list] == ["a", "b"]
