@@ -519,7 +519,9 @@ def _keep_body(instruction: str) -> str:
     low = instruction.lower()
     who = "her" if re.search(r"\b(woman|her|she|girl)\b", low) else \
         "his" if re.search(r"\b(man|his|he|boy)\b", low) else "their"
-    keep = f"Keep {who} body shape and proportions exactly the same."
+    # y sin joyas inventadas: al quitar una camiseta salio un collar fino que
+    # no estaba (Sergio, 2026-10-07)
+    keep = f"Keep {who} body shape and proportions exactly the same. Do not add any jewelry or necklace."
     m = re.search(r"\s*Do not add any other", instruction)
     if m:
         return f"{instruction[:m.start()].rstrip()} {keep} {instruction[m.start():].lstrip()}"
@@ -1403,8 +1405,13 @@ def clothes_mask(rgb: np.ndarray, instruction: str = "") -> np.ndarray | None:
             # manga larga entra el brazo pegado a la prenda, sin la punta.
             arms = np.isin(labels, [LEFT_ARM, RIGHT_ARM])
             mask[arms] = 0
-            if _LONG_SLEEVES.search(_KEEP.sub("", instruction or "")):
-                mask[_sleeve_zone(labels, change, rgb) > 0] = 1
+            long_sleeves = bool(_LONG_SLEEVES.search(_KEEP.sub("", instruction or "")))
+            mask[_sleeve_zone(labels, change, rgb, long_sleeves) > 0] = 1
+            # las manos (y lo que sostengan), siempre fuera: con el detector de
+            # manos, no adivinandolas por la forma del brazo
+            # (solo lo que no es ropa: la camiseta de alrededor si cambia)
+            garment = np.isin(labels, [UPPER, SKIRT, PANTS, DRESS, BELT, SCARF])
+            mask[(_hands_mask(rgb) > 0) & ~garment] = 0
             return mask.astype(np.float32)
     return _clothes_mask_around_face(rgb)
 
@@ -1414,26 +1421,136 @@ _LONG_SLEEVES = re.compile(
     r"turtlenecks?|suits?|tuxedos?|parkas?|raincoats?)\b", re.IGNORECASE)
 
 
-def _sleeve_zone(labels: np.ndarray, garment: np.ndarray, rgb: np.ndarray) -> np.ndarray:
-    """Para una prenda de manga larga: el brazo que sale de la prenda que se
-    cambia (no el de otra persona), hasta un poco antes de la mano. La mano
-    queda en la punta del brazo, lo mas lejos de la prenda."""
+# Detector de manos (palmas) de MediaPipe, version ONNX de opencv_zoo (Apache
+# 2.0): el modelo de ropa no separa la mano del brazo y adivinarla por la
+# forma del brazo fallaba (la mano del vaso se redibujaba; Sergio, 2026-10-07).
+HANDS_MODEL = MODELS_DIR / "img" / "hands" / "palm_detection_mediapipe_2023feb.onnx"
+_hands_session = None
+_PALM_ANCHORS = None
+
+
+def _palm_anchors() -> np.ndarray:
+    """Las 2016 anclas del detector (SSD de MediaPipe: 24x24x2 + 12x12x6)."""
+    global _PALM_ANCHORS
+    if _PALM_ANCHORS is None:
+        anchors = []
+        for size, per_cell in ((24, 2), (12, 6)):
+            for y in range(size):
+                for x in range(size):
+                    anchors += [((x + 0.5) / size, (y + 0.5) / size)] * per_cell
+        _PALM_ANCHORS = np.array(anchors, np.float32)
+    return _PALM_ANCHORS
+
+
+def detect_hands(rgb: np.ndarray, threshold: float = 0.35) -> list[tuple[float, float, float]]:
+    """Manos de la foto: (x, y, tamaño de la palma) en pixeles. [] sin modelo."""
+    global _hands_session
+    if not HANDS_MODEL.exists():
+        return []
+    if _hands_session is None:
+        _hands_session = ort.InferenceSession(str(HANDS_MODEL), providers=["CPUExecutionProvider"])
+    h, w = rgb.shape[:2]
+    side = max(h, w)  # cuadrada, con relleno, como la espera el modelo
+    square = np.zeros((side, side, 3), np.uint8)
+    square[:h, :w] = rgb
+    x = cv2.resize(square, (192, 192), interpolation=cv2.INTER_AREA).astype(np.float32)[None] / 255.0
+    boxes, scores = _hands_session.run(None, {_hands_session.get_inputs()[0].name: x})
+    boxes, scores = boxes[0], 1 / (1 + np.exp(-np.clip(scores[0, :, 0], -50, 50)))
+    anchors = _palm_anchors()
+    keep = scores > threshold
+    if not keep.any():
+        return []
+    cx = boxes[keep, 0] / 192 + anchors[keep, 0]
+    cy = boxes[keep, 1] / 192 + anchors[keep, 1]
+    bw, bh = boxes[keep, 2] / 192, boxes[keep, 3] / 192
+    rects = [[float((a - c / 2) * side), float((b - d / 2) * side), float(c * side), float(d * side)]
+             for a, b, c, d in zip(cx, cy, bw, bh)]
+    picked = cv2.dnn.NMSBoxes(rects, scores[keep].tolist(), threshold, 0.3)
+    hands = []
+    for i in np.array(picked).flatten():
+        rx, ry, rw, rh = rects[int(i)]
+        hands.append((rx + rw / 2, ry + rh / 2, max(rw, rh)))
+    return hands
+
+
+def _hands_mask(rgb: np.ndarray) -> np.ndarray:
+    """Las manos enteras (dedos incluidos) y lo que tengan cogido justo
+    alrededor: un circulo bastante mas grande que la palma."""
+    h, w = rgb.shape[:2]
+    out = np.zeros((h, w), np.uint8)
+    for x, y, size in detect_hands(rgb):
+        cv2.circle(out, (int(x), int(y)), int(1.4 * size), 1, -1)
+    return out
+
+
+def _sleeve_zone(labels: np.ndarray, garment: np.ndarray, rgb: np.ndarray, long_sleeves: bool) -> np.ndarray:
+    """Que parte del brazo que sale de la prenda (no el de otra persona) se
+    puede redibujar, medido A LO LARGO del brazo desde la prenda (en linea
+    recta, un brazo doblado engañaba: el final del antebrazo quedaba "cerca"
+    de la camiseta y salia una manga azul suelta en la muñeca, 2026-10-07):
+    - siempre un tramo pegado a la prenda, para que la piel nueva y la
+      original se fundan (si no, quedaba una linea donde acababa la manga);
+    - con manga larga, todo el brazo menos la mano (la punta: lo ultimo, salvo
+      que el brazo salga cortado por el borde de la foto)."""
     h, w = labels.shape
     zone = np.zeros((h, w), np.uint8)
     if not garment.any():
         return zone
-    from_garment = cv2.distanceTransform(1 - garment, cv2.DIST_L2, 5)
+    faces = _faces(rgb)
+    face_w = float(np.median([f[2] for f in faces])) if faces else 0.12 * min(h, w)
     touching = cv2.dilate(garment, np.ones((5, 5), np.uint8)) > 0
+    edge = max(2, int(0.01 * min(h, w)))
+    border = np.zeros((h, w), bool)
+    border[:edge], border[-edge:], border[:, :edge], border[:, -edge:] = True, True, True, True
     for arm_label in (LEFT_ARM, RIGHT_ARM):
         n, comps = cv2.connectedComponents((labels == arm_label).astype(np.uint8))
         for i in range(1, n):
             comp = comps == i
-            if not (comp & touching).any():
+            contact = comp & touching
+            if not contact.any():
                 continue  # el brazo de otra persona
-            reach = float(from_garment[comp].max())
-            # todo el brazo menos el ultimo 30% (la mano y la muñeca)
-            zone[comp & (from_garment < 0.7 * reach)] = 1
+            # se mide desde el hombro: el contacto con la prenda mas cerca de la
+            # cara (una mano apoyada delante de la camisa tambien la "toca")
+            if faces:
+                fx, fy = (float(v) for v in np.mean([[f[0] + f[2] / 2, f[1] + f[3] / 2] for f in faces], axis=0))
+                ys, xs = np.nonzero(contact)
+                d = np.hypot(xs - fx, ys - fy)
+                keep = d <= d.min() + 0.6 * face_w
+                contact = np.zeros_like(contact)
+                contact[ys[keep], xs[keep]] = True
+            along = _distance_along(comp, contact)
+            reach = float(along[comp].max())
+            # siempre: un tramo junto a la prenda para fundir la piel
+            zone[comp & (along <= 0.45 * face_w)] = 1
+            if long_sleeves:
+                hand_cut = border[comp & (along >= 0.9 * reach)].any()  # la punta sale de la foto
+                limit = reach if hand_cut else max(0.0, reach - 0.9 * face_w)  # sin la mano
+                zone[comp & (along <= limit)] = 1
     return zone
+
+
+def _distance_along(region: np.ndarray, start: np.ndarray) -> np.ndarray:
+    """Distancia (en pixeles de la foto) desde `start` recorriendo solo por
+    dentro de `region`, no en linea recta. Se calcula reducida (rapido)."""
+    h, w = region.shape
+    f = min(1.0, 256 / max(h, w))
+    small_region = cv2.resize(region.astype(np.uint8), (max(1, int(w * f)), max(1, int(h * f))),
+                              interpolation=cv2.INTER_NEAREST)
+    small_start = cv2.resize(start.astype(np.uint8), small_region.shape[::-1], interpolation=cv2.INTER_NEAREST)
+    small_start &= small_region
+    dist = np.full(small_region.shape, np.inf, np.float32)
+    frontier = small_start.astype(bool)
+    dist[frontier] = 0
+    kernel = np.ones((3, 3), np.uint8)
+    step = 0
+    while frontier.any():
+        step += 1
+        grown = cv2.dilate(frontier.astype(np.uint8), kernel).astype(bool) & small_region.astype(bool)
+        new = grown & np.isinf(dist)
+        dist[new] = step
+        frontier = new
+    dist[np.isinf(dist)] = 0
+    return cv2.resize(dist, (w, h), interpolation=cv2.INTER_NEAREST) / f
 
 
 def _clothes_mask_around_face(rgb: np.ndarray) -> np.ndarray | None:
