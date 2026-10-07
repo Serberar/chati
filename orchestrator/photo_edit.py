@@ -1156,27 +1156,41 @@ def _match_skin(out: np.ndarray, result: np.ndarray, lit: np.ndarray, head: np.n
     (Sergio, 2026-10-07)."""
     lab_r = cv2.cvtColor(result, cv2.COLOR_RGB2LAB).astype(np.float32)
     lab_l = cv2.cvtColor(lit.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
-    skin_k = _cheeks(lab_r, face)
-    # el tono de la barbilla, que es lo que toca el cuello: con el de las
-    # mejillas (mas amarillo) el cuello quedaba de otro color justo en el corte
-    # (Sergio, 2026-10-07). Con barba, el de las mejillas.
-    chin_l, chin_r = _chin(lab_l, face), _chin(lab_r, face)
-    if chin_l is not None and chin_r is not None and abs(chin_l[0] - _cheeks(lab_l, face)[0]) < 20:
-        shift = chin_l - chin_r
-    else:
-        shift = _cheeks(lab_l, face) - skin_k
-    shift = np.clip(shift, [-25, -12, -12], [25, 12, 12])
+    x, y, fw, fh = (float(v) for v in face[:4])
+    person = matte(result) > 0.5
+    # El tono se mide justo en la union: la piel original por DENTRO del borde
+    # (mandibula y barbilla) y la de Kontext por FUERA (el cuello). Comparando
+    # con su cara, el escote de Kontext (de otro tono que su cara) apenas se
+    # corregia y de lejos la cara se veia de otro color que el cuerpo, como
+    # una mascara (Sergio, 2026-10-07).
+    k = max(3, int(fw * 0.08)) | 1
+    inside = (head > 0.5).astype(np.uint8)
+    touched_head = (head > 0.05).astype(np.uint8)
+    low = np.zeros(head.shape, bool)
+    low[int(min(head.shape[0], max(0, y + fh * 0.75))):] = True
+    inner = (inside - cv2.erode(inside, np.ones((k, k), np.uint8))).astype(bool) & low
+    outer = (cv2.dilate(touched_head, np.ones((k, k), np.uint8)) - touched_head).astype(bool) & low & person
+    cheek_l, cheek_r = _cheeks(lab_l, face), _cheeks(lab_r, face)
+    # solo piel (no el pelo, ni el cuello negro del jersey original)
+    inner &= np.linalg.norm(lab_l[..., 1:] - cheek_l[1:], axis=2) < 15
+    outer &= np.linalg.norm(lab_r[..., 1:] - cheek_r[1:], axis=2) < 20
+    if inner.sum() >= 30 and outer.sum() >= 30:
+        neck_k = np.median(lab_r[outer], axis=0)
+        shift = np.median(lab_l[inner], axis=0) - neck_k
+    else:  # sin piel a los dos lados (cuello tapado...): la de las caras
+        neck_k = cheek_r
+        shift = cheek_l - cheek_r
+    shift = np.clip(shift, [-30, -15, -15], [30, 15, 15])
     if np.abs(shift).max() < 2:
         return out
     lab_o = cv2.cvtColor(out.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
-    # piel de Kontext: color parecido al de su cara (la ropa, el pelo y el
-    # fondo no se tocan), fuera de la cabeza que se va a pegar
-    chroma = np.linalg.norm(lab_r[..., 1:] - skin_k[1:], axis=2)
-    light = np.abs(lab_r[..., 0] - skin_k[0])
+    # piel de Kontext: color parecido al de su cuello (la ropa, el pelo y el
+    # fondo no se tocan)
+    chroma = np.linalg.norm(lab_r[..., 1:] - neck_k[1:], axis=2)
+    light = np.abs(lab_r[..., 0] - neck_k[0])
     weight = np.clip(1.5 - chroma / 8, 0, 1) * np.clip(1.5 - light / 40, 0, 1)
-    x, y, fw, fh = (float(v) for v in face[:4])
     weight[:int(max(0, y + fh * 0.5))] = 0  # de la boca para abajo: cuello, escote, brazos
-    weight *= matte(result) > 0.5  # solo la persona: no la mesa o una pared de color piel
+    weight *= person  # solo la persona: no la mesa o una pared de color piel
     weight = cv2.GaussianBlur(weight.astype(np.float32), (0, 0), max(1.5, fw * 0.02))
     if weight.max() < 0.05:
         return out
