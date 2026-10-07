@@ -1404,6 +1404,16 @@ def clothes_mask(rgb: np.ndarray, instruction: str = "") -> np.ndarray | None:
             # modelo se lleva unos pixeles de la prenda vieja (el borde del cuello
             # de la camiseta) y quedaban como un hilo sobre la piel nueva
             keep = np.isin(labels, [FACE, HAIR, SUNGLASSES, HAT, BAG]).astype(np.uint8)
+            # el modelo llama "cara" tambien al cuello: protegido, su borde era
+            # el del cuello de la camiseta vieja y quedaba una linea como un
+            # collar sobre el pecho nuevo (2026-10-07). La cara, hasta la barbilla.
+            faces = _faces(rgb)
+            if faces:
+                below_chin = np.ones((h, w), bool)
+                for f in faces:
+                    x, y, fw, fh = (float(v) for v in f[:4])
+                    below_chin[:int(y + fh * 0.98), int(max(0, x - fw * 0.3)):int(min(w, x + fw * 1.3))] = False
+                keep[(labels == FACE) & below_chin] = 0
             e = max(3, int(min(h, w) * 0.008)) | 1
             mask[cv2.erode(keep, np.ones((e, e), np.uint8)) > 0] = 0
             # brazos y manos: nunca, ni por el margen. Al cambiar una camisa se
