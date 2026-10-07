@@ -1018,10 +1018,11 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
         else:
             # sombrero, gorra...: de las cejas para abajo, el resto es de Kontext
             cv2.ellipse(zone, (cx, int(y + fh * 0.5)), (int(fw * 0.47), int(fh * 0.38)), 0, 0, 360, 1, -1)
-        # hasta la barbilla y no mas: el corte en mitad del cuello (piel lisa y
-        # seguida) se notaba muchisimo; en el contorno de la mandibula ya hay un
-        # cambio natural de plano y de sombra (Sergio, 2026-10-07)
-        cv2.ellipse(zone, (cx, int(y + fh * 0.58)), (int(fw * 0.5), int(fh * 0.40)), 0, 0, 360, 1, -1)
+        # la mandibula y la barbilla enteras, con margen: Kontext dibuja la cara
+        # algo mas delgada y, con una zona mas justa, por los lados asomaba su
+        # mandibula y cambiaba la forma de la cara (Sergio, 2026-10-07). La
+        # union queda en el cuello y la disimula el repintado (_seam_band).
+        cv2.ellipse(zone, (cx, int(y + fh * 0.6)), (int(fw * 0.55), int(fh * 0.47)), 0, 0, 360, 1, -1)
         if not keep_hair:
             zone[:int(y + fh * 0.15)] = 0
         zone_w = cv2.warpAffine(zone, m, (w, h), flags=cv2.INTER_LINEAR)
@@ -1050,31 +1051,31 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
         out = _match_skin(out, result, lit, head, faces_r[j])
         out = _multiband(lit, out, head, fw * scale)
         if seams is not None:
-            seams.append((_seam_band(head, faces_r[j], fw * scale), faces_r[j]))
+            protected = (head > 0.05).astype(np.float32)
+            seams.append((_seam_band(protected, faces_r[j], fw * scale), faces_r[j], protected))
     return out.clip(0, 255).astype(np.uint8)
 
 
 # 0,3-0,6 con la referencia no cambiaban nada; sin ella, 0,5 aun dejaba el
-# borde y 0,7 ya era continuo (foto de Sergio, 2026-10-07)
+# borde y 0,7 ya era continuo (foto de Sergio, 2026-10-07). Solo se repinta
+# por FUERA de la cara (ver _seam_band), asi que la cara no cambia nunca.
 SEAM_DENOISE = 0.65
 SEAM_PROMPT = ("Make the skin, hair and lighting look natural and seamless where the face meets the neck and "
                "the hair, as in one single real photograph. Keep the face, facial features, expression, hair, "
                "clothes and background exactly the same.")
 
 
-def _seam_band(head: np.ndarray, face: np.ndarray, face_w: float) -> np.ndarray:
-    """La franja donde la cabeza pegada se junta con lo de Kontext, de los ojos
-    para abajo (barbilla, mandibula, pelo a los lados): lo unico que se
-    repinta al final (seam_crop). Los ojos, la nariz y la boca no entran."""
-    inside = (head > 0.5).astype(np.uint8)
-    k = max(5, int(face_w * 0.07)) | 1
-    band = cv2.dilate(inside, np.ones((k, k), np.uint8)) - cv2.erode(inside, np.ones((k, k), np.uint8))
+def _seam_band(protected: np.ndarray, face: np.ndarray, face_w: float) -> np.ndarray:
+    """La franja de FUERA de la cabeza pegada que la toca, de los ojos para
+    abajo (el cuello bajo la barbilla, el pelo a los lados): lo unico que se
+    repinta al final (seam_crop). Nada de la cara original, ni su contorno:
+    con la franja a los dos lados del borde la IA redibujaba la mandibula y
+    le cambiaba la forma de la cara (Sergio, 2026-10-07)."""
+    inside = (protected > 0.5).astype(np.uint8)
+    k = max(5, int(face_w * 0.12)) | 1
+    band = cv2.dilate(inside, np.ones((k, k), np.uint8)) - inside
     x, y, fw, fh = (float(v) for v in face[:4])
     band[:int(max(0, y + fh * 0.5))] = 0
-    # el centro de la cara (boca y nariz) nunca, aunque el borde pase cerca
-    core = np.zeros_like(band)
-    cv2.ellipse(core, (int(x + fw / 2), int(y + fh * 0.62)), (int(fw * 0.3), int(fh * 0.28)), 0, 0, 360, 1, -1)
-    band[core > 0] = 0
     return band.astype(np.float32)
 
 
@@ -1083,11 +1084,11 @@ def seam_crop(img: np.ndarray, seams: list) -> tuple[tuple[int, int, int, int], 
     Kontext, para repintar la franja. None si no hay union que repintar."""
     if not seams:
         return None
-    band = np.maximum.reduce([b for b, _ in seams])
+    band = np.maximum.reduce([b for b, _, _ in seams])
     if band.sum() < 50:
         return None
     ys, xs = np.nonzero(band)
-    fw = max(float(f[2]) for _, f in seams)
+    fw = max(float(f[2]) for _, f, _ in seams)
     h, w = band.shape
     pad = int(fw * 0.6)
     y0, y1 = max(0, ys.min() - pad), min(h, ys.max() + pad + 1)
@@ -1104,10 +1105,13 @@ def paste_seam(img: np.ndarray, refined_png: bytes, box: tuple[int, int, int, in
     la foto se queda exactamente como estaba."""
     y0, y1, x0, x1 = box
     refined = cv2.resize(load_rgb(refined_png), (x1 - x0, y1 - y0), interpolation=cv2.INTER_LANCZOS4)
-    band = np.maximum.reduce([b for b, _ in seams])[y0:y1, x0:x1]
-    fw = max(float(f[2]) for _, f in seams)
-    alpha = cv2.GaussianBlur(band, (0, 0), max(1.5, fw * 0.025))[..., None]
+    band = np.maximum.reduce([b for b, _, _ in seams])[y0:y1, x0:x1]
+    protected = np.maximum.reduce([p for _, _, p in seams])[y0:y1, x0:x1]
+    fw = max(float(f[2]) for _, f, _ in seams)
+    alpha = cv2.GaussianBlur(band, (0, 0), max(1.5, fw * 0.025))
     alpha = np.clip(alpha * 1.5, 0, 1)
+    # la cara pegada no se toca: ni un pixel (ni por el borde suave)
+    alpha = (alpha * (protected < 0.02))[..., None]
     out = img.copy()
     region = img[y0:y1, x0:x1].astype(np.float32)
     # el ida y vuelta por Kontext puede mover un poco el color: se ajusta al de
