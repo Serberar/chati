@@ -63,6 +63,16 @@ def _agent_tasks_skip_difficulty_assessment(request):
         return
     with patch.object(main, "_assess_for_fast_agent", return_value=None):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _seam_repaint_is_simulated():
+    # el repintado de la union de la cara usa ComfyUI de verdad: aqui devuelve
+    # el recorte tal cual (los tests que simulan Kontext no tienen GPU)
+    with patch.object(main.image_agent, "refine_with_kontext", side_effect=lambda inst, png, mask, **kw: png):
+        yield
+
+
 client = TestClient(app, headers={"X-Session-Token": _test_token})
 
 
@@ -1816,7 +1826,7 @@ def test_the_face_comes_from_the_last_approved_version_after_a_face_change():
          patch.object(main.photo_edit, "needs_upscale", return_value=False), \
          patch.object(main.photo_edit, "finish", side_effect=lambda cur, ed, mode: ed), \
          patch.object(main.photo_edit, "to_jpeg", side_effect=lambda x: x), \
-         patch.object(main.photo_edit, "restore_faces", side_effect=lambda src, cur, keep_hair, face_only=False: used.append(src) or cur):
+         patch.object(main.photo_edit, "restore_faces", side_effect=lambda src, cur, keep_hair, face_only=False, seams=None: used.append(src) or cur):
         main._apply_edit([plan], b"base", b"original", "que sea al atardecer", ["ponme en la playa"])
         main._apply_edit([plan], b"base", b"original", "que sea al atardecer", ["ponte gafas de sol"])
         main._apply_edit([plan], b"base", b"original", "ponle barba", [])

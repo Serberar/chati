@@ -951,7 +951,7 @@ def _background_fill(source: np.ndarray, out: np.ndarray, hole: np.ndarray, k: i
 
 
 def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
-                  face_only: bool = False) -> np.ndarray:
+                  face_only: bool = False, seams: list | None = None) -> np.ndarray:
     """Vuelve a poner cada cara ORIGINAL encima de la del resultado, alineada
     por ojos, nariz y boca y con la luz del sitio nuevo. Sin esto, al cambiar
     mucha ropa (jersey -> bañador) el paso "local" se quedaba entero con lo de
@@ -1049,7 +1049,74 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
         lit = _relight(warped, result, (head > 0.5).astype(np.float32))
         out = _match_skin(out, result, lit, head, faces_r[j])
         out = _multiband(lit, out, head, fw * scale)
+        if seams is not None:
+            seams.append((_seam_band(head, faces_r[j], fw * scale), faces_r[j]))
     return out.clip(0, 255).astype(np.uint8)
+
+
+# 0,3-0,6 con la referencia no cambiaban nada; sin ella, 0,5 aun dejaba el
+# borde y 0,7 ya era continuo (foto de Sergio, 2026-10-07)
+SEAM_DENOISE = 0.65
+SEAM_PROMPT = ("Make the skin, hair and lighting look natural and seamless where the face meets the neck and "
+               "the hair, as in one single real photograph. Keep the face, facial features, expression, hair, "
+               "clothes and background exactly the same.")
+
+
+def _seam_band(head: np.ndarray, face: np.ndarray, face_w: float) -> np.ndarray:
+    """La franja donde la cabeza pegada se junta con lo de Kontext, de los ojos
+    para abajo (barbilla, mandibula, pelo a los lados): lo unico que se
+    repinta al final (seam_crop). Los ojos, la nariz y la boca no entran."""
+    inside = (head > 0.5).astype(np.uint8)
+    k = max(5, int(face_w * 0.07)) | 1
+    band = cv2.dilate(inside, np.ones((k, k), np.uint8)) - cv2.erode(inside, np.ones((k, k), np.uint8))
+    x, y, fw, fh = (float(v) for v in face[:4])
+    band[:int(max(0, y + fh * 0.5))] = 0
+    # el centro de la cara (boca y nariz) nunca, aunque el borde pase cerca
+    core = np.zeros_like(band)
+    cv2.ellipse(core, (int(x + fw / 2), int(y + fh * 0.62)), (int(fw * 0.3), int(fh * 0.28)), 0, 0, 360, 1, -1)
+    band[core > 0] = 0
+    return band.astype(np.float32)
+
+
+def seam_crop(img: np.ndarray, seams: list) -> tuple[tuple[int, int, int, int], bytes, bytes] | None:
+    """El trozo de la foto alrededor de la union (y su mascara), al tamaño de
+    Kontext, para repintar la franja. None si no hay union que repintar."""
+    if not seams:
+        return None
+    band = np.maximum.reduce([b for b, _ in seams])
+    if band.sum() < 50:
+        return None
+    ys, xs = np.nonzero(band)
+    fw = max(float(f[2]) for _, f in seams)
+    h, w = band.shape
+    pad = int(fw * 0.6)
+    y0, y1 = max(0, ys.min() - pad), min(h, ys.max() + pad + 1)
+    x0, x1 = max(0, xs.min() - pad), min(w, xs.max() + pad + 1)
+    kw, kh = kontext_size(x1 - x0, y1 - y0)
+    crop = cv2.resize(img[y0:y1, x0:x1], (kw, kh), interpolation=cv2.INTER_LANCZOS4)
+    mask = cv2.resize((band[y0:y1, x0:x1] * 255).astype(np.uint8), (kw, kh), interpolation=cv2.INTER_LINEAR)
+    mask = cv2.dilate(mask, np.ones((9, 9), np.uint8))  # el latente va de 8 en 8 px
+    return (int(y0), int(y1), int(x0), int(x1)), to_png(crop), to_png(np.dstack([mask] * 3))
+
+
+def paste_seam(img: np.ndarray, refined_png: bytes, box: tuple[int, int, int, int], seams: list) -> np.ndarray:
+    """Vuelve a poner SOLO la franja repintada, con borde suave: el resto de
+    la foto se queda exactamente como estaba."""
+    y0, y1, x0, x1 = box
+    refined = cv2.resize(load_rgb(refined_png), (x1 - x0, y1 - y0), interpolation=cv2.INTER_LANCZOS4)
+    band = np.maximum.reduce([b for b, _ in seams])[y0:y1, x0:x1]
+    fw = max(float(f[2]) for _, f in seams)
+    alpha = cv2.GaussianBlur(band, (0, 0), max(1.5, fw * 0.025))[..., None]
+    alpha = np.clip(alpha * 1.5, 0, 1)
+    out = img.copy()
+    region = img[y0:y1, x0:x1].astype(np.float32)
+    # el ida y vuelta por Kontext puede mover un poco el color: se ajusta al de
+    # alrededor para que la franja no se distinga por eso
+    ring = (alpha[..., 0] > 0.05) & (alpha[..., 0] < 0.5)
+    if ring.sum() > 50:
+        refined = refined.astype(np.float32) + (region[ring].mean(axis=0) - refined[ring].mean(axis=0))
+    out[y0:y1, x0:x1] = (refined * alpha + region * (1 - alpha)).clip(0, 255).astype(np.uint8)
+    return out
 
 
 def _cheeks(img_lab: np.ndarray, face: np.ndarray) -> np.ndarray:
@@ -1066,6 +1133,16 @@ def _cheeks(img_lab: np.ndarray, face: np.ndarray) -> np.ndarray:
     return np.median(np.concatenate(pts), axis=0) if pts else np.zeros(3, np.float32)
 
 
+def _chin(img_lab: np.ndarray, face: np.ndarray) -> np.ndarray | None:
+    x, y, fw, fh = (float(v) for v in face[:4])
+    h, w = img_lab.shape[:2]
+    y0, y1 = int(max(0, y + fh * 0.86)), int(min(h, y + fh * 0.97))
+    x0, x1 = int(max(0, x + fw * 0.35)), int(min(w, x + fw * 0.65))
+    if y1 <= y0 or x1 <= x0:
+        return None
+    return np.median(img_lab[y0:y1, x0:x1].reshape(-1, 3), axis=0)
+
+
 def _match_skin(out: np.ndarray, result: np.ndarray, lit: np.ndarray, head: np.ndarray,
                 face: np.ndarray) -> np.ndarray:
     """La piel nueva de Kontext (cuello, escote, brazos) con el tono de la piel
@@ -1076,7 +1153,14 @@ def _match_skin(out: np.ndarray, result: np.ndarray, lit: np.ndarray, head: np.n
     lab_r = cv2.cvtColor(result, cv2.COLOR_RGB2LAB).astype(np.float32)
     lab_l = cv2.cvtColor(lit.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
     skin_k = _cheeks(lab_r, face)
-    shift = _cheeks(lab_l, face) - skin_k
+    # el tono de la barbilla, que es lo que toca el cuello: con el de las
+    # mejillas (mas amarillo) el cuello quedaba de otro color justo en el corte
+    # (Sergio, 2026-10-07). Con barba, el de las mejillas.
+    chin_l, chin_r = _chin(lab_l, face), _chin(lab_r, face)
+    if chin_l is not None and chin_r is not None and abs(chin_l[0] - _cheeks(lab_l, face)[0]) < 20:
+        shift = chin_l - chin_r
+    else:
+        shift = _cheeks(lab_l, face) - skin_k
     shift = np.clip(shift, [-25, -12, -12], [25, 12, 12])
     if np.abs(shift).max() < 2:
         return out
@@ -1105,10 +1189,11 @@ def _match_skin(out: np.ndarray, result: np.ndarray, lit: np.ndarray, head: np.n
     if have_mask.sum() > 100:
         target = _cheek_std(detail(lab_l[..., 0]), face)
         have = float(np.std(detail(lab_o[..., 0])[have_mask]))
-        need = np.sqrt(max(0.0, target ** 2 - have ** 2))
+        # la mitad como mucho: con toda, el escote parecia papel de lija
+        need = min(np.sqrt(max(0.0, target ** 2 - have ** 2)), 0.5 * target)
         if need > 0.3:
             rng = np.random.default_rng(1)
-            noise = cv2.GaussianBlur(rng.normal(0, 1, weight.shape).astype(np.float32), (0, 0), s * 0.6)
+            noise = cv2.GaussianBlur(rng.normal(0, 1, weight.shape).astype(np.float32), (0, 0), s)
             noise = detail(noise)
             noise *= need / max(float(noise.std()), 1e-6)
             lab_o[..., 0] += noise * weight

@@ -242,3 +242,33 @@ class ImageAgent:
         workflow["sampler"]["inputs"]["seed"] = int(time.time() * 1000) % (2**32)
         workflow["sampler"]["inputs"]["steps"] = steps
         return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]
+
+    def refine_with_kontext(self, instruction: str, image_png: bytes, mask_png: bytes, denoise: float = 0.4,
+                            steps: int = 20, timeout: int = 600) -> bytes:
+        """Repinta SOLO lo blanco de la mascara, con poca intensidad (denoise) y
+        viendo toda la imagen: para que la union entre la cara original y lo
+        que genero Kontext no se note (photo_edit.seam_crop). Fuera de la
+        mascara el latente no se toca."""
+        entry = model_registry.get_edit_model()
+        if entry is None:
+            raise NoModelInstalledError("No esta instalado el modelo para editar fotos (FLUX Kontext).")
+        image_name = self.upload_image_bytes(image_png, "seam_source.png")
+        mask_name = self.upload_image_bytes(mask_png, "seam_mask.png")
+        workflow = json.loads(json.dumps(self.kontext_template))
+        workflow["unet_loader"]["inputs"]["unet_name"] = entry.comfy_path
+        workflow["load_image"]["inputs"]["image"] = image_name
+        workflow["positive_encode"]["inputs"]["text"] = instruction
+        workflow["load_mask"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
+        workflow["image_to_mask"] = {"class_type": "ImageToMask",
+                                     "inputs": {"image": ["load_mask", 0], "channel": "red"}}
+        workflow["noise_mask"] = {"class_type": "SetLatentNoiseMask",
+                                  "inputs": {"samples": ["vae_encode", 0], "mask": ["image_to_mask", 0]}}
+        workflow["sampler"]["inputs"]["latent_image"] = ["noise_mask", 0]
+        # sin la foto de referencia: con ella Kontext copia la imagen tal cual,
+        # union incluida, y el repintado no cambiaba nada (2026-10-07)
+        workflow["guidance"]["inputs"]["conditioning"] = ["positive_encode", 0]
+        del workflow["reference_latent"]
+        workflow["sampler"]["inputs"]["denoise"] = denoise
+        workflow["sampler"]["inputs"]["seed"] = int(time.time() * 1000) % (2**32)
+        workflow["sampler"]["inputs"]["steps"] = steps
+        return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]

@@ -384,3 +384,29 @@ def test_new_skin_from_kontext_gets_the_real_skin_tone(monkeypatch):
     neck = out[300:380, 120:180].reshape(-1, 3).mean(axis=0)
     assert np.abs(neck - warm).max() < np.abs(np.array(pale) - warm).max() / 2  # el cuello va hacia el tono real
     assert np.abs(out[300:, :30] - result[300:, :30]).max() < 2                 # lo que no es piel no se toca
+
+
+def test_the_seam_band_never_touches_eyes_nose_or_mouth():
+    """2026-10-07: la union bajo la barbilla se repinta con Kontext; los
+    rasgos de la cara original no pueden entrar."""
+    head = np.zeros((600, 500), np.float32)
+    cv2.ellipse(head, (250, 260), (130, 190), 0, 0, 360, 1, -1)
+    face = np.array([150, 100, 200, 260] + [0] * 11, np.float32)  # x, y, ancho, alto
+    band = photo_edit._seam_band(head, face, 200)
+    assert band[:230].sum() == 0                       # nada por encima de los ojos (y + 0,5 alto)
+    assert band[230:300, 200:300].sum() == 0           # ni la nariz y la boca
+    assert band[430:470, 230:270].sum() > 0            # si el borde bajo la barbilla
+
+
+def test_only_the_seam_band_is_pasted_back():
+    img = _textured(seed=7)
+    band = np.zeros(img.shape[:2], np.float32)
+    band[300:330, 200:400] = 1
+    face = np.array([200, 100, 200, 220] + [0] * 11, np.float32)
+    seams = [(band, face)]
+    box, crop_png, mask_png = photo_edit.seam_crop(img, seams)
+    repainted = photo_edit.to_png(np.full_like(photo_edit.load_rgb(crop_png), 128))
+    out = photo_edit.paste_seam(img, repainted, box, seams)
+    assert np.array_equal(out[:200], img[:200])        # lejos de la franja, identica
+    assert np.abs(out[310:320, 250:350].astype(int) - img[310:320, 250:350]).mean() > 10
+    assert photo_edit.seam_crop(img, []) is None

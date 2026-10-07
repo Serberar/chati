@@ -2848,10 +2848,35 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
         # postura, solo la cara (pelo y contorno nuevos, ver restore_faces)
         t = time.perf_counter()
         pose = any(photo_edit.is_pose_change(step.instruction) for step in steps)
+        seams: list = []
         current = photo_edit.restore_faces(photo_edit.load_rgb(face_src), current, keep_hair=keep_hair,
-                                           face_only=pose)
+                                           face_only=pose, seams=seams)
         log.info("Edicion: caras %.0f s", time.perf_counter() - t)
+        current = _repaint_seam(current, seams)
     return photo_edit.to_jpeg(current)
+
+
+def _repaint_seam(current, seams: list):
+    """La franja donde la cara original se junta con lo de Kontext, repintada
+    por Kontext con poca intensidad: aun igualando tono y textura el corte del
+    cuello se notaba ("parece un photoshop mal hecho", Sergio, 2026-10-07).
+    Si falla, se queda la foto sin repintar."""
+    crop = photo_edit.seam_crop(current, seams)
+    if crop is None:
+        return current
+    _report("Afinando la unión de la cara…")
+    t = time.perf_counter()
+    box, crop_png, mask_png = crop
+    try:
+        refined = image_agent.refine_with_kontext(photo_edit.SEAM_PROMPT, crop_png, mask_png,
+                                                  denoise=photo_edit.SEAM_DENOISE)
+    except comfyui_client.GenerationCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - mejor la foto sin repintar que ninguna
+        log.warning("Edicion: no se pudo repintar la union: %s", exc)
+        return current
+    log.info("Edicion: union %.0f s", time.perf_counter() - t)
+    return photo_edit.paste_seam(current, refined, box, seams)
 
 
 def _image_from_photo(prompt: str, ref_bytes: bytes, model_id: str | None) -> tuple[str, str, str, str, object]:
