@@ -1,7 +1,9 @@
 {
   "unet_loader": {
     "class_type": "UnetLoaderGGUF",
-    "inputs": { "unet_name": "__UNET_PATH__" }
+    "inputs": {
+      "unet_name": "__UNET_PATH__"
+    }
   },
   "clip_loader": {
     "class_type": "DualCLIPLoaderGGUF",
@@ -13,53 +15,132 @@
   },
   "vae_loader": {
     "class_type": "VAELoader",
-    "inputs": { "vae_name": "flux-vae-bf16.safetensors" }
+    "inputs": {
+      "vae_name": "flux-vae-bf16.safetensors"
+    }
   },
   "load_image": {
     "class_type": "LoadImage",
-    "inputs": { "image": "__IMAGE_FILENAME__" }
+    "inputs": {
+      "image": "__IMAGE_FILENAME__"
+    }
   },
   "vae_encode": {
     "class_type": "VAEEncode",
-    "inputs": { "pixels": ["load_image", 0], "vae": ["vae_loader", 0] }
+    "inputs": {
+      "pixels": [
+        "load_image",
+        0
+      ],
+      "vae": [
+        "vae_loader",
+        0
+      ]
+    }
   },
   "positive_encode": {
     "class_type": "CLIPTextEncode",
-    "inputs": { "clip": ["clip_loader", 0], "text": "__PROMPT__" }
+    "inputs": {
+      "clip": [
+        "clip_loader",
+        0
+      ],
+      "text": "__PROMPT__"
+    }
   },
   "reference_latent": {
     "class_type": "ReferenceLatent",
-    "inputs": { "conditioning": ["positive_encode", 0], "latent": ["vae_encode", 0] }
+    "inputs": {
+      "conditioning": [
+        "positive_encode",
+        0
+      ],
+      "latent": [
+        "vae_encode",
+        0
+      ]
+    }
   },
   "guidance": {
     "class_type": "FluxGuidance",
-    "inputs": { "conditioning": ["reference_latent", 0], "guidance": 2.5 }
+    "inputs": {
+      "conditioning": [
+        "reference_latent",
+        0
+      ],
+      "guidance": 2.5
+    }
   },
   "negative_zeroed": {
     "class_type": "ConditioningZeroOut",
-    "inputs": { "conditioning": ["positive_encode", 0] }
+    "inputs": {
+      "conditioning": [
+        "positive_encode",
+        0
+      ]
+    }
   },
   "sampler": {
     "class_type": "KSampler",
     "inputs": {
-      "model": ["unet_loader", 0],
+      "model": [
+        "easy_cache",
+        0
+      ],
       "seed": "__SEED__",
       "steps": "__STEPS__",
       "cfg": 1.0,
       "sampler_name": "euler",
       "scheduler": "simple",
-      "positive": ["guidance", 0],
-      "negative": ["negative_zeroed", 0],
-      "latent_image": ["vae_encode", 0],
+      "positive": [
+        "guidance",
+        0
+      ],
+      "negative": [
+        "negative_zeroed",
+        0
+      ],
+      "latent_image": [
+        "vae_encode",
+        0
+      ],
       "denoise": 1.0
     }
   },
   "vae_decode": {
     "class_type": "VAEDecode",
-    "inputs": { "samples": ["sampler", 0], "vae": ["vae_loader", 0] }
+    "inputs": {
+      "samples": [
+        "sampler",
+        0
+      ],
+      "vae": [
+        "vae_loader",
+        0
+      ]
+    }
   },
   "save_image": {
     "class_type": "SaveImage",
-    "inputs": { "images": ["vae_decode", 0], "filename_prefix": "ia_personal_edit" }
+    "inputs": {
+      "images": [
+        "vae_decode",
+        0
+      ],
+      "filename_prefix": "ia_personal_edit"
+    }
+  },
+  "easy_cache": {
+    "class_type": "EasyCache",
+    "inputs": {
+      "model": [
+        "unet_loader",
+        0
+      ],
+      "reuse_threshold": 0.2,
+      "start_percent": 0.15,
+      "end_percent": 0.95,
+      "verbose": false
+    }
   }
 }

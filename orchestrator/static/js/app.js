@@ -1386,7 +1386,9 @@ async function send() {
 
   // en modo imagen/video, una foto adjunta preserva esa cara (IPAdapter
   // FaceID); sin foto, genera normal a partir solo del texto
-  const useFaceEndpoint = mode.faceEndpoint && attachedFile;
+  // modo Imagen con foto: por el chat en streaming, como el automatico (se
+  // edita y se ve en que fase va); video sigue con su ruta propia
+  const useFaceEndpoint = mode.faceEndpoint && attachedFile && currentMode !== "image";
   const usePersona = currentMode === "image" && !attachedFile && personaSelect.value;
   // "Detener" para todo lo que se genera (mejoras.md: tener que esperar a que
   // termine algo que ya se ve que esta mal era incomodo)
@@ -1411,11 +1413,13 @@ async function send() {
       form.append("prompt", text);
       form.append("image", attachedFile);
       if (currentMode === "image" && modelSelect.value) form.append("model_id", modelSelect.value);
+      // la foto queda en ESTA conversacion: luego "ahora ponle..." o "deshaz eso" la siguen editando
+      if (getSessionId()) form.append("session_id", getSessionId());
       const resp = await fetch(mode.faceEndpoint, { method: "POST", body: form, signal });
       const data = await resp.json();
       renderResult(bubble, data);
     } else {
-      const imgForVision = MODES[currentMode].isText ? attachedImageB64 : null;
+      const imgForVision = (MODES[currentMode].isText || currentMode === "image") ? attachedImageB64 : null;
       await streamChatInto(bubble, mode.endpoint, text, mode.agent, imgForVision, signal);
     }
   } catch (err) {
@@ -3294,7 +3298,7 @@ async function streamChatInto(bubble, endpoint, text, agentOverride, imageBase64
         setSessionId(evt.session_id);
         const tagWrap = bubble.parentElement.querySelector(".tag");
         if (tagWrap) tagWrap.textContent = evt.agent_used;
-        if (evt.agent_used === "image" || evt.agent_used === "video") {
+        if (["image", "video", "image_edit"].includes(evt.agent_used)) {
           cancelBtn.style.display = "inline-block";
           currentAbortIsMedia = true;
         }
@@ -3367,7 +3371,33 @@ function renderResult(bubble, data) {
 
   if (data.file_url) {
     appendMediaWithActions(bubble, data.file_url, data.file_path);
+    if (data.agent_used === "image_edit") appendEditShortcuts(bubble);
   }
+}
+
+// Atajos bajo una foto editada: lo mismo que escribir "deshaz eso" u "otra
+// vez" (Sergio edita fotos a menudo y prueba varias versiones)
+const EDIT_SHORTCUTS = [
+  ["↶ Deshacer", "deshaz eso"],
+  ["↻ Otra versión", "otra vez"],
+  ["Volver a la original", "vuelve a la original"],
+];
+
+function appendEditShortcuts(bubble) {
+  const row = document.createElement("div");
+  row.className = "media-actions edit-shortcuts";
+  for (const [label, text] of EDIT_SHORTCUTS) {
+    const btn = document.createElement("button");
+    btn.textContent = label;
+    btn.title = `Igual que escribir "${text}"`;
+    btn.addEventListener("click", () => {
+      if (sendBtn.disabled) return;  // hay algo en marcha
+      promptEl.value = text;
+      send();
+    });
+    row.appendChild(btn);
+  }
+  bubble.appendChild(row);
 }
 
 function downloadLink(fileUrl) {
@@ -3624,7 +3654,7 @@ newChatBtn.addEventListener("click", () => startNewConversation());
 
 const ATTACHED_DOC_PREFIX = "📄 Documento adjuntado: ";
 
-function addLoadedMessage(role, content, agent, messageId, sessionId) {
+function addLoadedMessage(role, content, agent, messageId, sessionId, media) {
   if (agent === "adjunto" && content.startsWith(ATTACHED_DOC_PREFIX)) {
     addDocCard(content.slice(ATTACHED_DOC_PREFIX.length));
     return;
@@ -3653,6 +3683,10 @@ function addLoadedMessage(role, content, agent, messageId, sessionId) {
     renderMarkdownInto(bubble, content, { highlight: true });
   } else {
     bubble.textContent = content;
+  }
+  // la foto subida o la imagen resultante de ese mensaje (se guardan 30 dias)
+  if (media && /^[0-9a-f]{32}\.(png|jpg|webp|mp4)$/.test(media)) {
+    appendMediaWithActions(bubble, "/media/" + media, media);
   }
 
   wrap.appendChild(roleEl);
@@ -3709,7 +3743,7 @@ async function loadConversationIntoLog(sessionId) {
   localStorage.setItem("ia_session_id", sessionId);
   refreshDocChips();
   log.innerHTML = "";
-  messages.forEach(m => addLoadedMessage(m.role, m.content, m.agent, m.id, sessionId));
+  messages.forEach(m => addLoadedMessage(m.role, m.content, m.agent, m.id, sessionId, m.media));
   log.scrollTop = log.scrollHeight;
   planPanel.style.display = "none";
   document.querySelectorAll(".conv-row").forEach(r => r.classList.remove("current"));

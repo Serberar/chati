@@ -46,6 +46,9 @@ def init_db():
         # usuarios - nunca borra ni renombra nada existente
         _ensure_column(conn, "messages", "user_id", "TEXT")
         _ensure_column(conn, "messages", "key_generation", "INTEGER")
+        # la imagen de ese mensaje (nombre en media_store, cifrada aparte): para
+        # que el historial vuelva a enseñar las fotos y las ediciones
+        _ensure_column(conn, "messages", "media", "TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_session ON messages(session_id, id)")
         # nombre opcional de una conversacion (ver ROADMAP.md) - cifrado igual
         # que el contenido de los mensajes, un titulo puede ser tan revelador
@@ -56,6 +59,17 @@ def init_db():
                 title TEXT NOT NULL,
                 user_id TEXT,
                 key_generation INTEGER,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        # la foto que se esta editando en cada conversacion, con sus versiones
+        # (ver photo_session.py). Cifrada: lleva lo que el usuario pidio.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_photos (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                key_generation INTEGER,
+                data TEXT NOT NULL,
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
@@ -81,7 +95,7 @@ def _decrypt_row_content(content: str, row_key_generation: int | None,
 
 def add_message(session_id: str, role: str, content: str, agent: str | None = None,
                  dek: bytes | None = None, key_generation: int | None = None,
-                 user_id: str | None = None) -> None:
+                 user_id: str | None = None, media: str | None = None) -> None:
     stored_content = content
     stored_key_generation = None
     if dek is not None:
@@ -89,9 +103,9 @@ def add_message(session_id: str, role: str, content: str, agent: str | None = No
         stored_key_generation = key_generation
     with closing(_connect()) as conn:
         conn.execute(
-            "INSERT INTO messages (session_id, role, content, agent, user_id, key_generation) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, role, stored_content, agent, user_id, stored_key_generation),
+            "INSERT INTO messages (session_id, role, content, agent, user_id, key_generation, media) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, role, stored_content, agent, user_id, stored_key_generation, media),
         )
         conn.commit()
 
@@ -101,14 +115,14 @@ def get_history(session_id: str, limit: int = 12,
     """Devuelve los ultimos `limit` mensajes de la sesion, en orden cronologico."""
     with closing(_connect()) as conn:
         rows = conn.execute(
-            "SELECT id, role, content, agent, created_at, key_generation "
+            "SELECT id, role, content, agent, created_at, key_generation, media "
             "FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
             (session_id, limit),
         ).fetchall()
     return [
         {"id": i, "role": r, "content": _decrypt_row_content(c, kg, dek, key_generation),
-         "agent": a, "created_at": t}
-        for i, r, c, a, t, kg in reversed(rows)
+         "agent": a, "created_at": t, "media": m}
+        for i, r, c, a, t, kg, m in reversed(rows)
     ]
 
 
@@ -220,6 +234,7 @@ def clear_session(session_id: str) -> None:
     with closing(_connect()) as conn:
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM session_titles WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM session_photos WHERE session_id = ?", (session_id,))
         conn.commit()
 
 
@@ -230,8 +245,30 @@ def delete_user_messages(user_id: str) -> int:
     with closing(_connect()) as conn:
         cur = conn.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM session_titles WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM session_photos WHERE user_id = ?", (user_id,))
         conn.commit()
         return cur.rowcount
+
+
+def save_session_photo(session_id: str, user_id: str, data: str, dek: bytes, key_generation: int) -> None:
+    stored = crypto_utils.encrypt_text(dek, data).decode("ascii")
+    with closing(_connect()) as conn:
+        conn.execute(
+            "INSERT INTO session_photos (session_id, user_id, key_generation, data, updated_at) "
+            "VALUES (?, ?, ?, ?, datetime('now')) ON CONFLICT(session_id) DO UPDATE SET "
+            "data = excluded.data, key_generation = excluded.key_generation, updated_at = excluded.updated_at",
+            (session_id, user_id, key_generation, stored))
+        conn.commit()
+
+
+def load_session_photo(session_id: str, user_id: str, dek: bytes, key_generation: int) -> str | None:
+    """None si no hay, si es de otro usuario o de una clave anterior."""
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT data, key_generation FROM session_photos WHERE session_id = ? AND user_id = ?",
+                           (session_id, user_id)).fetchone()
+    if not row or row[1] != key_generation:
+        return None
+    return crypto_utils.decrypt_text(dek, row[0].encode("ascii"))
 
 
 init_db()

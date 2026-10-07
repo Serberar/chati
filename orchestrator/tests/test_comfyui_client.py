@@ -214,3 +214,49 @@ def test_each_generation_remembers_who_asked_for_it():
         comfyui_client.current_owner.reset(token)
     # se apunta al enviarla y se olvida al terminar (aqui, al agotar el tiempo)
     assert comfyui_client.owner_of("p-1") is None
+
+
+def test_a_slow_answer_from_comfyui_does_not_kill_the_generation():
+    # 2026-10-06: "Read timed out" en una consulta de estado tiraba una edicion de 4 min
+    import requests as real_requests
+    from unittest.mock import MagicMock
+    done = {"p": {"status": {"status_str": "success"},
+                  "outputs": {"save": {"images": [{"filename": "a.png", "type": "output"}]}}}}
+    post = MagicMock()
+    post.json.return_value = {"prompt_id": "p"}
+    answers = iter([real_requests.ReadTimeout("lento"), MagicMock(json=lambda: done),
+                    MagicMock(content=b"png", raise_for_status=lambda: None)])
+    with patch("agents.comfyui_client.requests.post", return_value=post), \
+         patch("agents.comfyui_client.requests.get", side_effect=lambda *a, **k: (
+             (_ for _ in ()).throw(v) if isinstance(v := next(answers), Exception) else v)), \
+         patch("agents.comfyui_client.time.sleep"), \
+         patch("agents.comfyui_client.forget"):
+        assert submit_and_wait("http://x", {}, "save", "images", timeout=60)["content"] == b"png"
+
+
+@patch("agents.comfyui_client.time.sleep", lambda s: None)
+@patch("agents.comfyui_client.requests.post")
+@patch("agents.comfyui_client.requests.get")
+def test_a_job_that_ends_between_looking_at_history_and_queue_is_not_cancelled(mock_get, mock_post):
+    """2026-10-07: una ampliacion ESRGAN de 17 s salio bien, pero termino justo
+    entre mirar /history (aun no estaba) y /queue (ya no estaba) y se dio por
+    cancelada: la edicion entera fallaba con "Generacion cancelada"."""
+    done = {"fake-id": {"status": {"status_str": "success", "messages": []},
+                        "outputs": {"save_image": {"images": [{"filename": "x.png", "type": "output"}]}}}}
+    fake = _mock_responses([{}, done, done])  # 1: en marcha; 2 y 3: ya terminado
+
+    class Img:
+        content = b"png"
+
+        def raise_for_status(self):
+            pass
+
+    def get(url, **kw):
+        return Img() if url.endswith("/view") else fake("GET", url, **kw)
+
+    mock_get.side_effect = get
+    mock_post.side_effect = lambda url, **kw: fake("POST", url, **kw)
+    clock = iter(range(0, 10_000, 3))
+    with patch("agents.comfyui_client.time.time", lambda: next(clock)):
+        result = submit_and_wait("http://fake", {}, "save_image", "images", timeout=600)
+    assert result["content"] == b"png"

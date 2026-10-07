@@ -7,6 +7,7 @@ Cada test limpia los datos que crea (sesiones, documentos, personas) para no
 dejar basura en los datos reales del usuario.
 """
 
+import base64
 import json
 import sqlite3
 import threading
@@ -883,13 +884,55 @@ def test_chat_with_a_photo_and_a_change_request_edits_the_photo():
          patch.object(main, "_edit_photo", return_value=(b"fake-jpg", "He hecho esto: os pongo en una playa.")) as mock_edit, \
          patch.object(main.vision_agent, "respond_with_image_stream") as mock_vision:
         with client.stream("POST", "/chat/stream", json={"message": "ponnos en una playa",
-                                                         "image_base64": "eA=="}) as resp:
+                                                         "image_base64": _tiny_jpeg_b64()}) as resp:
             lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     assert lines[0]["agent_used"] == "image_edit"
     assert lines[-1]["file_url"].endswith(".jpg")
     assert lines[-1]["response"] == "He hecho esto: os pongo en una playa."
-    mock_edit.assert_called_once_with("ponnos en una playa", b"x", None, "")
+    assert mock_edit.call_args.args[0] == "ponnos en una playa"
     mock_vision.assert_not_called()
+
+
+def _tiny_jpeg_b64(color=(120, 90, 60)):
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), color).save(buf, format="JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_a_whole_photo_conversation_keeps_editing_the_same_photo():
+    """Sergio, 2026-10-06: hablar normal con el chat editando una foto: subirla,
+    pedir un cambio, otro encima, deshacer... y que el historial la enseñe."""
+    calls = []
+
+    def fake_edit(request, photo, face, earlier):
+        calls.append((request, photo, face, list(earlier or [])))
+        return photo + b"|" + request.encode(), f"He hecho esto: {request}."
+
+    def say(text, **extra):
+        with client.stream("POST", "/chat/stream", json={"message": text, "session_id": sid, **extra}) as resp:
+            return [json.loads(line) for line in resp.iter_lines() if line.strip()][-1]
+
+    sid = None
+    with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
+         patch.object(main, "_edit_photo", side_effect=fake_edit), \
+         patch.object(main.ollama, "chat", return_value="editar"):
+        first = say("ponme en la playa", image_base64=_tiny_jpeg_b64())
+        sid = first["session_id"]
+        second = say("ahora con un sombrero de paja")
+        assert second["agent_used"] == "image_edit"
+        # el segundo cambio parte del resultado del primero, con la cara de la original
+        assert calls[1][1].endswith(b"|ponme en la playa") and calls[1][2] is not None
+        assert calls[1][3] == ["ponme en la playa"]
+        undone = say("deshaz eso")
+        assert undone["file_path"] == first["file_path"] and "anterior" in undone["response"]
+        third = say("mejor con gafas de sol")
+        assert calls[2][1].endswith(b"|ponme en la playa")  # tras deshacer, desde la de la playa
+    history = client.get(f"/sessions/{sid}").json()
+    assert history[0]["media"] is not None  # la foto subida
+    assert all(m["media"] for m in history if m["role"] == "assistant")  # cada resultado
+    assert history[-1]["media"] == third["file_path"]
 
 
 def test_chat_with_a_photo_and_a_question_still_comments_it():
@@ -925,10 +968,13 @@ def test_edit_photo_chains_plan_kontext_and_composition():
     plan = main.photo_edit.EditPlan("Change the t-shirt to green. Keep everything else the same.", "local",
                                     "te pongo la camiseta verde")
     with patch.object(main.photo_edit, "plan_edit", return_value=[plan]) as mock_plan, \
+         patch.object(main.photo_edit, "describe_photo", return_value="a man"), \
+         patch.object(main.photo_edit, "verify_edit", return_value=None), \
+         patch.object(main, "_free_comfyui"), \
          patch.object(main.image_agent, "edit_with_kontext", return_value=photo) as mock_kontext, \
          patch.object(main.image_agent, "upscale_bytes") as mock_upscale:
         out, done = main._edit_photo("la camiseta verde", photo)
-    assert done == "He hecho esto: te pongo la camiseta verde."
+    assert done == "Listo: te pongo la camiseta verde."
     assert mock_plan.call_args.args[2] == "la camiseta verde"
     assert mock_kontext.call_args.args[0] == plan.instruction
     mock_upscale.assert_not_called()
@@ -1191,6 +1237,7 @@ def _prepare_and_collect_unloads(body, loaded, busy=()):
          patch.object(main.ollama, "preload"), \
          patch.object(main.opencode_client, "busy_session_ids", return_value=list(busy)), \
          patch.object(main.comfyui_client, "free_memory") as mock_free, \
+         patch.object(main.comfyui_client, "user_queue", return_value=(0, 0)), \
          patch.object(main.image_agent, "generate", return_value=b"png"), \
          patch.object(main.video_agent, "generate", return_value=b"mp4"):
         client.post("/models/prepare", json=body)
@@ -1710,3 +1757,146 @@ def test_upscaling_an_already_huge_image_is_refused_before_reaching_comfyui():
         resp = client.post("/image/upscale", files={"image": ("grande.png", buf.getvalue(), "image/png")})
     assert "muy grande" in resp.json()["response"]
     mock_upscale.assert_not_called()
+
+
+def test_an_edit_that_misses_part_of_the_request_is_retried_insisting_on_it():
+    # Sergio, 2026-10-05: "ha hecho la mitad de lo que he pedido"
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), (10, 20, 30)).save(buf, format="PNG")
+    photo = buf.getvalue()
+    plan = main.photo_edit.EditPlan("Put her in a bikini holding a cocktail on a beach. Keep her face.", "local",
+                                    "te he puesto un bikini y un coctel en la playa")
+    Verdict = main.photo_edit.Verdict
+    bad = Verdict(False, "She is not holding a cocktail", "no tiene el coctel en la mano")
+    with patch.object(main.photo_edit, "plan_edit", return_value=[plan]), \
+         patch.object(main.photo_edit, "describe_photo", return_value="a woman"), \
+         patch.object(main.photo_edit, "verify_edit", side_effect=[bad, Verdict(True)]) as mock_verify, \
+         patch.object(main, "_free_comfyui"), \
+         patch.object(main.image_agent, "edit_with_kontext", return_value=photo) as mock_kontext:
+        _, done = main._edit_photo("ponla en bikini en la playa con un coctel", photo)
+    assert mock_kontext.call_count == 2
+    assert "She is not holding a cocktail" in mock_kontext.call_args.args[0]
+    # se juzga contra lo que pidio el usuario y lo que se le dice que se hizo
+    assert mock_verify.call_args.args[3] == ("ponla en bikini en la playa con un coctel "
+                                             "(te he puesto un bikini y un coctel en la playa)")
+    assert "Ojo" not in done
+
+    with patch.object(main.photo_edit, "plan_edit", return_value=[plan]), \
+         patch.object(main.photo_edit, "describe_photo", return_value="a woman"), \
+         patch.object(main.photo_edit, "verify_edit", side_effect=[bad, bad]), \
+         patch.object(main, "_free_comfyui"), \
+         patch.object(main.image_agent, "edit_with_kontext", return_value=photo):
+        _, done = main._edit_photo("ponla en bikini en la playa con un coctel", photo)
+    assert "no me ha salido del todo: no tiene el coctel en la mano" in done  # se dice, no se da por hecho
+
+
+def test_a_long_photo_edit_tells_what_it_is_doing_while_it_works():
+    def fake_edit(request, photo, face, earlier):
+        main._report("Editando la foto (2-3 minutos)…")
+        return photo, "Listo: hecho."
+    with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
+         patch.object(main.photo_edit, "wants_edit", return_value=True), \
+         patch.object(main, "_edit_photo", side_effect=fake_edit):
+        with client.stream("POST", "/chat/stream", json={"message": "ponme en la playa",
+                                                         "image_base64": _tiny_jpeg_b64()}) as resp:
+            events = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    assert [e["type"] for e in events] == ["start", "status", "done"]
+    assert events[1]["text"].startswith("Editando") and events[2]["response"] == "Listo: hecho."
+
+
+def test_the_face_comes_from_the_last_approved_version_after_a_face_change():
+    # 2026-10-06: tras "ponte gafas", cada edicion dejaba la cara de Kontext y se iba pareciendo menos
+    plan = main.photo_edit.EditPlan("Make it sunset.", "local", "atardecer")
+    used = []
+    with patch.object(main.image_agent, "edit_with_kontext", return_value=b"kontext"), \
+         patch.object(main.photo_edit, "load_rgb", side_effect=lambda b: b), \
+         patch.object(main.photo_edit, "prepare_for_kontext", side_effect=lambda x: x), \
+         patch.object(main.photo_edit, "needs_upscale", return_value=False), \
+         patch.object(main.photo_edit, "finish", side_effect=lambda cur, ed, mode: ed), \
+         patch.object(main.photo_edit, "to_jpeg", side_effect=lambda x: x), \
+         patch.object(main.photo_edit, "restore_faces", side_effect=lambda src, cur, keep_hair, face_only=False: used.append(src) or cur):
+        main._apply_edit([plan], b"base", b"original", "que sea al atardecer", ["ponme en la playa"])
+        main._apply_edit([plan], b"base", b"original", "que sea al atardecer", ["ponte gafas de sol"])
+        main._apply_edit([plan], b"base", b"original", "ponle barba", [])
+    assert used == [b"original", b"base"]  # y con "ponle barba" (cambio de cara) no se toca
+
+
+def test_a_photo_in_image_mode_is_always_edited_and_streams_its_progress():
+    def fake_edit(request, photo, face, earlier):
+        main._report("Mirando la foto…")
+        return photo, "Listo: te he puesto en Paris."
+    with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
+         patch.object(main.photo_edit, "wants_edit", return_value=False) as mock_wants, \
+         patch.object(main, "_edit_photo", side_effect=fake_edit):
+        with client.stream("POST", "/chat/stream", json={"message": "Paris", "agent": "image",
+                                                         "image_base64": _tiny_jpeg_b64()}) as resp:
+            events = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    assert [e["type"] for e in events] == ["start", "status", "done"]
+    assert events[-1]["agent_used"] == "image_edit" and events[-1]["file_url"]
+    mock_wants.assert_not_called()  # en modo Imagen una foto siempre es para editarla
+
+
+def test_a_photo_in_image_mode_without_the_editor_still_makes_an_image():
+    with patch.object(main.model_registry, "get_edit_model", return_value=None), \
+         patch.object(main.face_detect, "has_face", return_value=True), \
+         patch.object(main.image_agent, "generate_with_face", return_value=b"png") as mock_faceid:
+        data = client.post("/chat", json={"message": "en la playa", "agent": "image",
+                                          "image_base64": _tiny_jpeg_b64()}).json()
+    assert data["agent_used"] == "image_faceid" and data["file_url"].endswith(".png")
+    mock_faceid.assert_called_once()
+
+
+def test_group_photos_keep_clothes_and_background_in_two_passes():
+    # 2026-10-06: en una sola pasada, con tres personas Kontext las recolocaba y cambiaba caras
+    plans = [main.photo_edit.EditPlan("Dress them in winter coats.", "local", "abrigos"),
+             main.photo_edit.EditPlan("Change the background to snow.", "fondo", "nieve")]
+    for faces, passes in ((["izquierda", "centro", "derecha"], 2), (["centro"], 1)):
+        with patch.object(main.photo_edit, "plan_edit", return_value=list(plans)), \
+             patch.object(main.photo_edit, "describe_photo", return_value="people"), \
+             patch.object(main.face_detect, "face_positions", return_value=faces), \
+             patch.object(main.photo_edit, "verify_edit", return_value=None), \
+             patch.object(main, "_free_comfyui"), \
+             patch.object(main, "_apply_edit", return_value=b"jpg") as mock_apply:
+            main._edit_photo("ponnos en la nieve con abrigos", b"foto")
+        assert len(mock_apply.call_args.args[0]) == passes, faces
+
+
+def test_deleting_a_conversation_deletes_its_photos_too():
+    with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
+         patch.object(main.photo_edit, "wants_edit", return_value=True), \
+         patch.object(main, "_edit_photo", return_value=(b"editada", "Listo: hecho.")):
+        data = client.post("/chat", json={"message": "ponme en la playa", "image_base64": _tiny_jpeg_b64()}).json()
+    sid = data["session_id"]
+    names = [m["media"] for m in client.get(f"/sessions/{sid}").json() if m["media"]]
+    assert len(names) == 2 and all((main.media_store.media_dir() / (n + ".enc")).exists() for n in names)
+    assert client.delete(f"/sessions/{sid}").json()["ok"]
+    assert not any((main.media_store.media_dir() / (n + ".enc")).exists() for n in names)
+
+
+def test_removals_are_not_second_guessed_by_the_vision_check():
+    # 2026-10-06: decia "no se ha quitado" con la persona del fondo y el gorro ya quitados
+    plan = main.photo_edit.EditPlan("Remove the other people in the background. Keep the man the same.", "local",
+                                    "he quitado a la gente del fondo")
+    with patch.object(main.photo_edit, "plan_edit", return_value=[plan]), \
+         patch.object(main.photo_edit, "describe_photo", return_value="a man"), \
+         patch.object(main.photo_edit, "verify_edit") as mock_verify, \
+         patch.object(main, "_free_comfyui"), \
+         patch.object(main, "_apply_edit", return_value=b"jpg") as mock_apply:
+        _, done = main._edit_photo("quita a la gente del fondo", b"foto")
+    mock_verify.assert_not_called()
+    assert mock_apply.call_count == 1 and "Ojo" not in done
+
+
+def test_without_people_a_background_change_is_not_cut_out_as_a_person():
+    # 2026-10-06: el recorte de personas (MODNet) teñia de amarillo al perro en la playa
+    plans = [main.photo_edit.EditPlan("Change the background to a beach. Keep the dog.", "fondo", "playa")]
+    with patch.object(main.photo_edit, "plan_edit", return_value=plans), \
+         patch.object(main.photo_edit, "describe_photo", return_value="one dog"), \
+         patch.object(main.face_detect, "face_positions", return_value=[]), \
+         patch.object(main.photo_edit, "verify_edit", return_value=None), \
+         patch.object(main, "_free_comfyui"), \
+         patch.object(main, "_apply_edit", return_value=b"jpg") as mock_apply:
+        main._edit_photo("que el parque sea una playa", b"foto")
+    assert [s.mode for s in mock_apply.call_args.args[0]] == ["local"]

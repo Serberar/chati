@@ -200,3 +200,171 @@ def test_huge_photos_are_reduced_on_load():
     rgb = photo_edit.load_rgb(buf.getvalue())
     assert rgb.shape[0] * rgb.shape[1] <= photo_edit.MAX_PIXELS
     assert abs(rgb.shape[1] / rgb.shape[0] - 1.5) < 0.01
+
+
+def test_the_vision_verdict_is_read_from_its_answer():
+    ollama = MagicMock()
+    jpg = photo_edit.to_jpeg(_textured(64, 64))
+    ollama.chat.return_value = "yes"
+    assert photo_edit.verify_edit(ollama, "vision", jpg, "Put a hat on him.").ok
+    ollama.chat.return_value = "No | She is holding two phones, not one. | Sostiene dos moviles."
+    verdict = photo_edit.verify_edit(ollama, "vision", jpg, "Give her a red dress.")
+    assert (verdict.ok, verdict.problem_en, verdict.problem_es) == (False, "She is holding two phones, not one",
+                                                                     "Sostiene dos moviles")
+    ollama.chat.return_value = "I think it looks nice"  # ilegible: se da por buena, no estropea la edicion
+    assert photo_edit.verify_edit(ollama, "vision", jpg, "x") is None
+    assert photo_edit.verify_edit(ollama, None, jpg, "x") is None
+    assert "two phones" in photo_edit.insist("Give her a red dress.", "two phones")
+    steps = [photo_edit.EditPlan("Give her a red dress. Keep her face exactly the same.", "local")]
+    assert photo_edit.change_requested(steps) == "Give her a red dress."
+
+
+@pytest.mark.parametrize("message,intent", [
+    # Sergio, 2026-10-05/06: hablar normal con una foto en marcha
+    ("ahora haz que este sentado", "editar"), ("que sea al atardecer", "editar"),
+    ("como quedaria de noche?", "editar"), ("¿puedes quitarle las gafas?", "editar"),
+    ("el pelo mas corto", "editar"), ("mas grande", "editar"), ("el coctel que sea una cerveza", "editar"),
+    ("deshaz eso", "deshacer"), ("vuelve a como estaba", "deshacer"), ("vuelve a la original", "original"),
+    ("otra vez", "repetir"), ("no me gusta, otra", "repetir"),
+    ("hazme una imagen de un perro en la luna", "nueva"),
+    ("¿qué lleva puesto?", "preguntar"), ("¿de qué color es el bañador?", "preguntar"),
+    ("que tal?", "otra"), ("gracias!", "otra"), ("perfecto, gracias", "otra"),
+    ("agente: arregla el bug del login", "otra"),
+])
+def test_what_the_user_wants_with_a_photo_in_the_conversation(message, intent):
+    ollama = MagicMock()
+    ollama.chat.return_value = "otra"  # el modelo solo decide lo que las reglas no saben
+    assert photo_edit.photo_intent(ollama, "m", message) == intent
+
+
+def test_the_planner_sees_what_was_already_done_to_the_photo():
+    ollama = MagicMock()
+    ollama.chat.return_value = '{"pasos": [{"instruction": "Make the hat bigger.", "mode": "local"}]}'
+    photo_edit.plan_edit(ollama, "m", "mas grande", ["centro"], "a man", ["ponme en la playa", "con un sombrero"])
+    prompt = ollama.chat.call_args.args[1][0]["content"]
+    assert "- ponme en la playa\n- con un sombrero" in prompt and '"mas grande"' in prompt
+    photo_edit.plan_edit(ollama, "m", "ponme en la playa", ["centro"], "a man")
+    assert "Esta foto ya es el resultado" not in ollama.chat.call_args.args[1][0]["content"]
+
+
+def test_pose_changes_use_the_whole_kontext_result():
+    # 2026-10-06: al recomponer quedaba un fantasma del brazo levantado de antes
+    assert photo_edit.is_pose_change("Make him kneel, zoomed out. Keep his face and pose.")
+    assert photo_edit.is_pose_change("Make the man and the woman hold hands. Keep their faces.")
+    assert not photo_edit.is_pose_change("Put a hat on him. Keep his face, pose and framing exactly the same.")
+    orig, kontext = _textured(seed=1), _textured(seed=2)
+    assert np.array_equal(photo_edit.finish(orig, kontext, "entera"), kontext)
+
+
+@pytest.mark.parametrize("request_text,wrong,right", [
+    # 2026-10-07: qwen3:8b traducia lo contrario y Kontext lo hacia tal cual
+    ("ponme un vestido rojo de tirantes", "a red strapless dress", "spaghetti-strap"),
+    ("ponme una chaqueta vaquera", "a leather jacket", "denim jacket"),
+])
+def test_known_wrong_clothing_translations_are_fixed(request_text, wrong, right):
+    ollama = MagicMock()
+    ollama.chat.return_value = (f'{{"pasos": [{{"instruction": "Replace her sweater with {wrong}. Keep her face. '
+                                f'Do not add any other people.", "mode": "local", "resumen": "te he puesto"}}]}}')
+    (plan,) = photo_edit.plan_edit(ollama, "m", request_text, ["centro"], "a woman")
+    assert right in plan.instruction
+    prompt = ollama.chat.call_args.args[1][0]["content"]
+    assert "Traducciones OBLIGATORIAS" in prompt and right in prompt
+
+
+def test_the_glossary_does_not_fire_on_other_meanings():
+    import clothing_terms
+    assert clothing_terms.find("que lo haga a medias") == []
+    assert clothing_terms.find("disfrázame de vaquera") == []
+    assert [en for _, en, _ in clothing_terms.find("un vestido sin tirantes")] == ["strapless"]
+
+
+def test_clothing_changes_keep_the_body_shape():
+    ollama = MagicMock()
+    ollama.chat.return_value = ('{"pasos": [{"instruction": "Replace the woman\'s sweater with a white shirt. Keep her '
+                                'face. Do not add any other people.", "mode": "local"}]}')
+    (plan,) = photo_edit.plan_edit(ollama, "m", "con una camisa blanca", ["centro"], "a woman")
+    assert "Keep her body shape and proportions exactly the same. Do not add" in plan.instruction
+    # ni en un cambio de fondo ni en uno de postura
+    assert "body shape" not in photo_edit._keep_body("Change the background to a beach. Keep his clothes.")
+    assert "body shape" not in photo_edit._keep_body("Make him kneel in his shirt, zoomed out.")
+
+
+def test_the_summary_talks_to_the_user_about_their_own_photo():
+    ollama = MagicMock()
+    ollama.chat.return_value = ('{"pasos": [{"instruction": "Replace her sweater with a white shirt.", '
+                                '"mode": "local", "resumen": "le he puesto una camisa blanca"}]}')
+    (plan,) = photo_edit.plan_edit(ollama, "m", "ahora con una camisa blanca", ["centro"], "a woman",
+                                   ["ponme un vestido rojo"])
+    assert plan.summary == "te he puesto una camisa blanca"
+    (plan,) = photo_edit.plan_edit(ollama, "m", "ahora con una camisa blanca", ["centro"], "a woman",
+                                   ["ponla en la playa"])
+    assert plan.summary == "le he puesto una camisa blanca"
+
+
+def test_compose_local_keeps_the_original_after_a_big_clothing_change():
+    """2026-10-07: jersey negro -> camisa blanca en media foto hundia la
+    alineacion (cc 0,30) y se tiraba la original entera, fondo incluido."""
+    orig = _textured(seed=3)
+    orig[150:, 150:500] = (15, 15, 15)  # jersey negro
+    edited = cv2.GaussianBlur(orig, (3, 3), 0)
+    edited[150:, 150:500] = (245, 245, 245)  # camisa blanca
+    out = photo_edit.compose_local(orig, edited)
+    assert np.abs(out[:100, :100].astype(int) - orig[:100, :100]).max() < 3  # el fondo es el original
+    assert out[300:400, 250:400].mean() > 230
+
+
+def test_kontext_gets_the_grain_of_the_photo():
+    rng = np.random.default_rng(0)
+    smooth = cv2.GaussianBlur(_textured(seed=4), (0, 0), 2)
+    grainy = (smooth.astype(np.float32) + rng.normal(0, 4, smooth.shape[:2])[..., None]).clip(0, 255).astype(np.uint8)
+    target = photo_edit.grain_sigma(grainy)
+    assert photo_edit.grain_sigma(smooth) < 0.5 * target
+    assert abs(photo_edit.grain_sigma(photo_edit.add_grain(smooth, target)) - target) < 0.25 * target
+
+
+def test_esrgan_only_for_big_upscales():
+    small = np.zeros((1088, 816, 3), np.uint8)
+    assert not photo_edit.needs_upscale(np.zeros((1536, 1152, 3), np.uint8), small)  # foto de Sergio, 1,4x
+    assert photo_edit.needs_upscale(np.zeros((4032, 3024, 3), np.uint8), small)
+
+
+def test_compose_local_keeps_the_original_when_kontext_also_zooms_in():
+    """2026-10-07: Kontext amplio la foto un 10% ademas de cambiar media foto
+    (camisa), y se usaba su version entera con el fondo redibujado."""
+    orig = _textured(seed=5)
+    orig[200:, 200:450] = (15, 15, 15)
+    h, w = orig.shape[:2]
+    zoom = cv2.getRotationMatrix2D((w / 2, h / 2), 0, 1.1)
+    edited = cv2.warpAffine(orig, zoom, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    big = cv2.transform(np.float32([[[200, 200], [450, 480]]]), zoom)[0].astype(int)
+    edited[big[0, 1]:, big[0, 0]:big[1, 0]] = (245, 245, 245)
+    out = photo_edit.compose_local(orig, edited)
+    # el fondo es el de la original (puede venir recortado: la camisa llega al borde)
+    patch = out[60:140, 60:140]
+    best = cv2.matchTemplate(orig, patch, cv2.TM_SQDIFF)
+    y, x = np.unravel_index(best.argmin(), best.shape)
+    assert np.abs(orig[y:y + 80, x:x + 80].astype(int) - patch).mean() < 3
+
+
+def test_keeping_the_pose_is_not_a_pose_change():
+    # 2026-10-07: con ", keeping ... pose" se usaba la de Kontext entera
+    assert not photo_edit.is_pose_change("Replace his grey wool sweater with a red plaid button-up shirt, keeping "
+                                         "his face, facial features, expression, beard, hair, pose and framing "
+                                         "exactly the same. Do not add any other people.")
+    assert photo_edit.is_pose_change("Make him kneel on the ground, keeping his face and clothes.")
+
+
+def test_no_old_clothes_left_in_the_border_kontext_did_not_generate():
+    """2026-10-07: Kontext amplio la foto; en la franja del borde que no genero
+    seguia la manga del jersey gris junto a la camisa nueva."""
+    orig = _textured(seed=6)
+    orig[150:, :300] = (128, 128, 128)  # jersey gris hasta el borde izquierdo
+    h, w = orig.shape[:2]
+    zoom = cv2.getRotationMatrix2D((w / 2, h / 2), 0, 1.08)
+    edited = cv2.warpAffine(orig, zoom, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    corner = cv2.transform(np.float32([[[300, 150]]]), zoom)[0, 0].astype(int)
+    edited[corner[1]:, :corner[0]] = (200, 30, 30)  # camisa roja
+    out = photo_edit.compose_local(orig, edited)
+    assert out.shape[0] < h and abs(out.shape[1] / out.shape[0] - w / h) < 0.01  # recortada, misma proporcion
+    left = out[out.shape[0] // 2:, :8].reshape(-1, 3).astype(int)
+    assert np.abs(left - (128, 128, 128)).max(axis=1).min() > 40  # ni rastro del gris

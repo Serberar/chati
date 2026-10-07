@@ -77,6 +77,11 @@ def load(name: str, dek: bytes) -> bytes | None:
         return None
 
 
+def delete(name: str) -> None:
+    if valid_name(name):
+        (media_dir() / (name + ".enc")).unlink(missing_ok=True)
+
+
 def media_type(name: str) -> str:
     return MEDIA_TYPES.get(Path(name).suffix.lower(), "application/octet-stream")
 

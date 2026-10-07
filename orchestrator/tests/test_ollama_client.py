@@ -128,3 +128,23 @@ def test_models_in_the_no_think_list_never_think_unless_asked(monkeypatch):
     assert ollama_client._think("qwen3:8b", None) is False
     assert ollama_client._think("qwen3:8b", True) is True  # quien llama manda
     assert ollama_client._think("qwen2.5:7b", None) is None
+
+
+def test_while_an_image_is_generating_the_models_run_on_the_cpu():
+    # 2026-10-06: un chat a la vez que Kontext le quitaba la GPU y la edicion se atascaba 15 min
+    from agents.ollama_client import OllamaClient
+    client = OllamaClient("http://x")
+    try:
+        OllamaClient.gpu_busy = staticmethod(lambda: True)
+        with patch("agents.ollama_client.requests.post", return_value=_fake_chat_response()) as mock_post:
+            client.chat("qwen3:8b", [{"role": "user", "content": "hola"}])
+        assert mock_post.call_args.kwargs["json"]["options"]["num_gpu"] == 0
+        with patch("agents.ollama_client.requests.post") as mock_post:
+            client.preload("qwen3:8b")
+        mock_post.assert_not_called()
+        OllamaClient.gpu_busy = staticmethod(lambda: False)
+        with patch("agents.ollama_client.requests.post", return_value=_fake_chat_response()) as mock_post:
+            client.chat("qwen3:8b", [{"role": "user", "content": "hola"}])
+        assert "num_gpu" not in mock_post.call_args.kwargs["json"]["options"]
+    finally:
+        OllamaClient.gpu_busy = None

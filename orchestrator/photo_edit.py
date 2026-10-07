@@ -18,6 +18,7 @@ se devuelve lo que hizo Kontext tal cual, que sigue siendo una buena edicion."""
 import base64
 import io
 import json
+import logging
 import re
 
 import cv2
@@ -26,7 +27,10 @@ import onnxruntime as ort
 import pillow_heif
 from PIL import Image, ImageOps
 
+import clothing_terms
 from paths import MODELS_DIR
+
+log = logging.getLogger("chati")
 
 pillow_heif.register_heif_opener()
 
@@ -45,9 +49,9 @@ pide un cambio sobre SU foto; el editor solo entiende instrucciones en ingles.
 
 Lo que se ve en la foto: {scene}
 Personas con la cara visible, de izquierda a derecha: {faces} ({count}).
-
+{history}
 Peticion del usuario: "{request}"
-
+{glossary}
 Reglas que no se pueden saltar (con fallos reales, 2026-10-05):
 - Nombra a cada persona como es ("the man", "the woman with long hair") y la
   prenda u objeto CONCRETO que cambia tal como sale en la descripcion ("his
@@ -57,13 +61,70 @@ Reglas que no se pueden saltar (con fallos reales, 2026-10-05):
 - Cambia SOLO lo que pide. Si no menciona la ropa, la ropa se queda tal cual
   aunque el sitio nuevo sea una playa ("ponme en la playa" = mismo jersey,
   solo cambia el fondo: un paso "fondo").
+- Si la peticion se refiere a algo de un cambio anterior ("quitale el gorro",
+  "el coctel mas grande"), usa ese cambio para saber QUE es y a QUIEN: "the red
+  wool hat of the person on the left". Con la descripcion sola el editor tocaba
+  otra cosa (cambio el abrigo de otro en vez de quitar el gorro, 2026-10-06).
+- Una peticion corta sin decir de que ("mas grande", "mas oscuro", "en rojo",
+  "mas a la izquierda") habla de lo ULTIMO que se cambio: tras "con un sombrero
+  de paja", "mas grande" es el sombrero, no la persona.
+- Cambiar SOLO una parte del fondo (el cielo, el mar, la pared, el suelo) es
+  "local", no "fondo": nombra lo que se queda ("replace only the sky; keep the
+  mountains, trees, path and the man exactly the same"). Con "fondo" el editor
+  rehacia el paisaje entero y desaparecian las montañas (2026-10-06).
+- Sin personas en la foto, habla del sujeto que diga la descripcion ("the dog")
+  y en singular si es uno: nunca "the person on the left", "them" ni "both".
+  Termina con "Do not add any other animals or people." (con "them" salian dos
+  perros, 2026-10-06).
+- De noche, al atardecer o con poca luz: que la escena se siga viendo bien y,
+  si hay lamparas o luces, encendidas dando luz calida ("at night, the lamps
+  switched on casting warm light, the room cozy and clearly visible"). Sin eso
+  salia casi negro (2026-10-06).
+- Posturas e interacciones (de pie, tumbado, de rodillas, inclinado, la mano
+  arriba, abrazarse, bailar, ir de la mano, un beso): UNA frase natural y clara,
+  como se describiria una foto real ("the man and the woman hug each other
+  warmly, her head resting on his shoulder"). NO coreografia brazo por brazo ni
+  dedo por dedo: con eso salian brazos y manos raros (2026-10-06). Solo di que
+  mano o brazo si el usuario lo dice ("la mano derecha"). Las caras siguen
+  visibles hacia la camara. En un cambio de postura NUNCA "same pose" ni "same
+  framing"; si hace falta ver mas cuerpo (manos en la cintura, piernas, de
+  rodillas, tumbado, bailando), "zoomed out to show <lo que haga falta>".
+- Mejor una accion concreta y visual que una abstracta: "bailar" -> "he twirls
+  her under his raised arm like a salsa couple" (con "dance together" salian
+  quietos de la mano). Si la accion pasa en las manos o el cuerpo, "zoomed out"
+  para que se vea (ir de la mano sin abrir el plano dejaba las manos cortadas y
+  el editor no las juntaba, 2026-10-06).
+- Si la postura nueva sustituye a una de un cambio anterior (estaban bailando
+  y ahora "de la mano mirando a camara"), dilo: "they stop dancing and now
+  stand still side by side, facing the camera, holding hands". Sin eso el
+  editor dejaba la postura de antes (2026-10-06).
+- Una postura nueva sustituye ENTERA a la anterior, brazos incluidos ("tumbada
+  en un sofa" tras "con los brazos cruzados" no lleva los brazos cruzados),
+  salvo que el usuario diga mantener algo.
+- Tumbado/tumbada es horizontal: "lying down stretched out on her side along
+  the sofa, her head on a cushion, her whole body horizontal, zoomed out to
+  show her whole body". Con menos, el editor la dejaba sentada (2026-10-06).
+- De pie desde una foto sentada o de medio cuerpo: "standing up, zoomed out to
+  show her whole body from head to feet".
+- "Darse la mano" es ir de la mano, uno junto al otro ("holding hands"), no
+  un apreton de manos (salvo que diga "estrecharse la mano").
 - No añadas personas que el usuario no pide. Termina siempre con "Do not add
   any other people."
 - Incluye TODO lo que pide, cada cosa: si pide bañador y un coctel, las dos
   (el coctel en la mano: "holding a cocktail glass in his hand").
+- Un objeto en la mano: UNO, en una mano concreta, y la otra como estaba
+  ("holding a single cocktail glass in his right hand, his left arm relaxed
+  and empty"). Si no, el editor ponia uno en cada mano (2026-10-06).
+- Lo que ya tiene en las manos y no se pide cambiar (un movil, una taza...)
+  se nombra en lo que se mantiene: "still holding her single smartphone in her
+  right hand" (el editor lo duplicaba en la otra mano).
 - El sitio o el fondo va SOLO en el paso "fondo", nunca en el paso "local".
 - Ropa de baño: para un hombre "swim trunks, bare chest"; para una mujer el
   bañador o bikini que pida (si no dice, "a one-piece swimsuit").
+- Al cambiar ropa, describe la prenda nueva con TODO lo que diga el usuario
+  (color, tirantes, mangas, largo, tejido, estampado) y mantén el cuerpo:
+  "Keep her body shape and proportions exactly the same." (el editor le
+  cambiaba la figura y el escote, foto real de Sergio, 2026-10-07).
 
 Devuelve SOLO un JSON con "pasos": una lista con uno o dos pasos.
 DOS pasos solo si pide cambiar el lugar o el fondo Y ADEMAS algo de las
@@ -84,8 +145,11 @@ Cada paso lleva:
     pose and framing." QUITA de esa lista lo que el usuario SI quiere cambiar
     (si cambia la postura de alguien, no pongas "same pose" para esa persona;
     si cambia la ropa, no pongas "same clothes").
-- "resumen": en español, corto y para el usuario, lo que hace ESE paso
-  ("te cambio el jersey por un bañador", "te pongo en una playa").
+- "resumen": en español, corto y en pasado, lo que se ha hecho en ESE paso, con
+  la misma persona que use el usuario: "ponme..." -> "te he puesto...",
+  "ponla..." -> "la he puesto...", "ponnos..." -> "os he puesto..." ("te he
+  cambiado el jersey por un bañador", "la he puesto de pie", "le he quitado el
+  gorro").
 - "mode":
   "fondo" SOLO si pide cambiar el lugar, el fondo o el escenario y no toca
           nada de las personas: ni ropa, ni accesorios, ni pose, ni quitar o
@@ -94,13 +158,22 @@ Cada paso lleva:
           o a alguien, luz, estilo, expresion...).
 
 Ejemplos:
-"ponme en bañador en la playa con un coctel" (una persona: a man with a beard wearing a grey wool sweater over a collared shirt) -> {{"pasos": [{{"instruction": "Replace the man's grey wool sweater and collared shirt with swim trunks, leaving his chest bare, and put a cocktail glass in his right hand. Keep his face, facial features, expression, hair, pose and framing exactly the same. Do not add any other people.", "mode": "local", "resumen": "te cambio el jersey y la camisa por un bañador y te pongo un cóctel en la mano"}}, {{"instruction": "Change the background to a sunny beach with the sea behind him. Keep the man exactly the same: same face, facial features, expression, hair, swim trunks, cocktail, pose and framing. Do not add any other people.", "mode": "fondo", "resumen": "te pongo en una playa soleada"}}]}}
-"ponme en la playa" (una persona: a man with a beard wearing a grey wool sweater over a collared shirt) -> {{"pasos": [{{"instruction": "Change the background to a sunny beach with the sea behind him. Keep the man exactly the same: same face, facial features, expression, hair, grey wool sweater and collared shirt, pose and framing. Do not add any other people.", "mode": "fondo", "resumen": "te pongo en una playa soleada, con la misma ropa"}}]}}
-"ponnos en una playa" (izquierda, derecha) -> {{"pasos": [{{"instruction": "Change the background to a sunny beach with the sea behind them. Keep both people exactly the same: same faces, facial features, expressions, hair, clothes, pose and framing.", "mode": "fondo", "resumen": "os pongo en una playa soleada"}}]}}
-"ponnos en la nieve con abrigos" (izquierda, derecha) -> {{"pasos": [{{"instruction": "Dress both people in warm winter coats. Keep their faces, facial features, expressions, hair, pose, the background and the framing exactly the same.", "mode": "local", "resumen": "os pongo abrigos de invierno"}}, {{"instruction": "Change the background to a snowy mountain landscape. Keep both people exactly the same: same faces, facial features, expressions, hair, clothes, pose and framing.", "mode": "fondo", "resumen": "os pongo en un paisaje nevado"}}]}}
-"quita a la gente del fondo" (centro) -> {{"pasos": [{{"instruction": "Remove the other people in the background. Keep the main person and everything else exactly the same: same face, facial features, expression, hair, clothes, pose, lighting and framing.", "mode": "local", "resumen": "quito a la gente del fondo"}}]}}
-"ponla a ella tumbada en la hierba" (izquierda, derecha) -> {{"pasos": [{{"instruction": "Make the woman on the right lie down on her back on the grass next to the man, her body stretched out and her head resting on the ground. Keep her face, facial features, expression, hair and clothes exactly the same, and keep the man exactly as he is.", "mode": "local", "resumen": "la tumbo a ella en la hierba"}}]}}
-"que la camiseta sea verde en lugar de negra" (izquierda, derecha) -> {{"pasos": [{{"instruction": "Change the color of every black t-shirt to green, on both people. Keep everything else exactly the same: same faces, facial features, expressions, hair, pose, background, lighting and framing.", "mode": "local", "resumen": "cambio las camisetas negras a verde"}}]}}"""
+"ponme en bañador en la playa con un coctel" (una persona: a man with a beard wearing a grey wool sweater over a collared shirt) -> {{"pasos": [{{"instruction": "Replace the man's grey wool sweater and collared shirt with swim trunks, leaving his chest bare, and put a single cocktail glass in his right hand, his left arm relaxed and empty. Keep his face, facial features, expression, hair, pose and framing exactly the same. Do not add any other people.", "mode": "local", "resumen": "te he cambiado el jersey y la camisa por un bañador y te he puesto un cóctel en la mano"}}, {{"instruction": "Change the background to a sunny beach with the sea behind him. Keep the man exactly the same: same face, facial features, expression, hair, swim trunks, cocktail, pose and framing. Do not add any other people.", "mode": "fondo", "resumen": "te he puesto en una playa soleada"}}]}}
+"ponme en la playa" (una persona: a man with a beard wearing a grey wool sweater over a collared shirt) -> {{"pasos": [{{"instruction": "Change the background to a sunny beach with the sea behind him. Keep the man exactly the same: same face, facial features, expression, hair, grey wool sweater and collared shirt, pose and framing. Do not add any other people.", "mode": "fondo", "resumen": "te he puesto en una playa soleada, con la misma ropa"}}]}}
+"ponnos en una playa" (izquierda, derecha) -> {{"pasos": [{{"instruction": "Change the background to a sunny beach with the sea behind them. Keep both people exactly the same: same faces, facial features, expressions, hair, clothes, pose and framing.", "mode": "fondo", "resumen": "os he puesto en una playa soleada"}}]}}
+"ponnos en la nieve con abrigos" (izquierda, derecha) -> {{"pasos": [{{"instruction": "Dress both people in warm winter coats. Keep their faces, facial features, expressions, hair, pose, the background and the framing exactly the same.", "mode": "local", "resumen": "os he puesto abrigos de invierno"}}, {{"instruction": "Change the background to a snowy mountain landscape. Keep both people exactly the same: same faces, facial features, expressions, hair, clothes, pose and framing.", "mode": "fondo", "resumen": "os he puesto en un paisaje nevado"}}]}}
+"quitale el gorro" (cambios anteriores: "que el de la izquierda lleve un gorro de lana rojo") -> {{"pasos": [{{"instruction": "Remove the red wool hat from the person on the left, showing their hair as it was. Keep everything else exactly the same: same faces, facial features, expressions, clothes, pose, background and framing.", "mode": "local", "resumen": "le he quitado el gorro rojo al de la izquierda"}}]}}
+"mas grande" (cambios anteriores: "ponme en la playa", "con un sombrero de paja") -> {{"pasos": [{{"instruction": "Make the man's straw hat noticeably bigger, with a wider brim. Keep everything else exactly the same: same face, facial features, expression, hair, clothes, pose, background and framing.", "mode": "local", "resumen": "te he puesto el sombrero mas grande"}}]}}
+"cambia el cielo por un atardecer naranja" (una persona: a man on a mountain trail, snowy peaks and pine trees behind) -> {{"pasos": [{{"instruction": "Replace only the sky with a warm orange sunset sky. Keep the snowy mountains, the pine trees, the trail and the man exactly the same: same face, facial features, expression, hair, clothes, pose and framing. Do not add any other people.", "mode": "local", "resumen": "te he cambiado el cielo por un atardecer naranja"}}]}}
+"ponme de rodillas" (una persona: a man in a sweater, upper body photo) -> {{"pasos": [{{"instruction": "Make the man kneel on the ground, zoomed out to show his full body, looking at the camera. Keep his face, hair, clothes and the background exactly the same. Do not add any other people.", "mode": "local", "resumen": "te he puesto de rodillas"}}]}}
+"con la mano derecha levantada saludando" (una persona: a woman) -> {{"pasos": [{{"instruction": "Make the woman wave at the camera with her right hand raised. Keep her face, hair, clothes, background and framing exactly the same. Do not add any other people.", "mode": "local", "resumen": "te he puesto saludando con la mano derecha"}}]}}
+"que nos abracemos" (izquierda, derecha: a man and a woman) -> {{"pasos": [{{"instruction": "Make the man and the woman hug each other warmly, side by side, her head resting on his shoulder, both smiling at the camera with their faces visible. Keep their faces, hair, clothes and the background exactly the same. Do not add any other people.", "mode": "local", "resumen": "os he puesto abrazados"}}]}}
+"que el le de un beso en la mejilla" (izquierda, derecha: a man and a woman) -> {{"pasos": [{{"instruction": "Make the man kiss the woman on her cheek while she smiles at the camera. Keep their faces, hair, clothes and the background exactly the same. Do not add any other people.", "mode": "local", "resumen": "le he puesto dandote un beso en la mejilla"}}]}}
+"que estemos bailando" (izquierda, derecha: a man and a woman) -> {{"pasos": [{{"instruction": "Make the man and the woman dance together like a salsa couple: he twirls her under his raised arm, her dress swirling, both smiling, zoomed out to show their full bodies. Keep their faces, hair, clothes and the background exactly the same. Do not add any other people.", "mode": "local", "resumen": "os he puesto bailando juntos"}}]}}
+"que nos demos la mano" (izquierda, derecha: a man and a woman) -> {{"pasos": [{{"instruction": "Make the man and the woman hold hands: his left hand and her right hand are clasped together between them, zoomed out to show their full bodies and their joined hands clearly, both smiling at the camera. Keep their faces, hair, clothes and the background exactly the same. Do not add any other people.", "mode": "local", "resumen": "os he puesto de la mano"}}]}}
+"quita a la gente del fondo" (centro) -> {{"pasos": [{{"instruction": "Remove the other people in the background. Keep the main person and everything else exactly the same: same face, facial features, expression, hair, clothes, pose, lighting and framing.", "mode": "local", "resumen": "he quitado a la gente del fondo"}}]}}
+"ponla a ella tumbada en la hierba" (izquierda, derecha) -> {{"pasos": [{{"instruction": "Make the woman on the right lie down on her back on the grass next to the man, her body stretched out and her head resting on the ground. Keep her face, facial features, expression, hair and clothes exactly the same, and keep the man exactly as he is.", "mode": "local", "resumen": "la he tumbado a ella en la hierba"}}]}}
+"que la camiseta sea verde en lugar de negra" (izquierda, derecha) -> {{"pasos": [{{"instruction": "Change the color of every black t-shirt to green, on both people. Keep everything else exactly the same: same faces, facial features, expressions, hair, pose, background, lighting and framing.", "mode": "local", "resumen": "he cambiado las camisetas negras a verde"}}]}}"""
 
 
 WANTS_EDIT_PROMPT = """El usuario adjunta una foto y escribe: "{request}"
@@ -140,6 +213,106 @@ def wants_edit(ollama, model: str, request: str) -> bool:
     return "editar" in raw.lower()
 
 
+# ---------- que quiere el usuario cuando ya hay una foto en la conversacion ----------
+
+_UNDO = re.compile(
+    r"\b(deshaz\w*|deshacer|vuelve (a como estaba|atr[aá]s|a la (de antes|anterior))|volver atr[aá]s|"
+    r"como estaba (antes)?|la (foto|imagen|versi[oó]n) (anterior|de antes)|"
+    r"quita(le)? (el|ese) ([uú]ltimo )?cambio|no,? (as[ií] )?no,? (vuelve|d[eé]jala))\b", re.IGNORECASE)
+_TO_ORIGINAL = re.compile(
+    r"\b((vuelve|volver|vuelvo) a la (foto |imagen )?original|la (foto|imagen) original|"
+    r"empieza(mos)? (otra vez |de nuevo )?(con|desde) la original|desde la original)\b", re.IGNORECASE)
+# reintento puro (sin cambiar lo pedido): se repite el ultimo cambio desde la version anterior
+_RETRY = re.compile(
+    r"^\W*(no me gusta[\s,.!]*|no[\s,.!]+|mal[\s,.!]+)?(otra vez|int[eé]nta(lo)? (otra vez|de nuevo)|"
+    r"prueba (otra vez|de nuevo)|rep[ií]te(lo)?|hazlo (otra vez|de nuevo)|otra (versi[oó]n|opci[oó]n|distinta)|"
+    r"dame otra|otra)\W*$", re.IGNORECASE)
+# claramente no es la foto (va al chat normal o al agente)
+_NOT_THE_PHOTO = re.compile(
+    r"\b(agente|bug|error del|fallo del|login|archivo|carpeta|documento|programa\w*|c[oó]digo|script|"
+    r"instala\w*|ordenador|correo|e-?mail|excel|word|pdf)\b", re.IGNORECASE)
+_NEW_IMAGE = re.compile(
+    r"\b(otra (imagen|foto) (de|con)|imagen nueva|foto nueva|desde cero|"
+    r"(hazme|genera(me)?|crea(me)?|dib[uú]ja(me)?) (una|un) (imagen|foto|dibujo|ilustraci[oó]n) (de|con))\b",
+    re.IGNORECASE)
+# arreglos y ajustes tipicos de una conversacion editando ("mas grande", "que sonria")
+_TWEAK = re.compile(
+    r"\b(corrig\w*|arregl\w*|que no (salga|haya|lleve|tenga|aparezca|se vea)|sin (la|el|los|las|esa|ese|esos|esas) |"
+    r"sobra\w*|deja(me|la|lo)? (solo|igual)|mant[eé]n\w*|igual que antes|m[aá]s (grande|peque[nñ]|claro|oscur|"
+    r"alto|bajo|largo|corto|cerca|lejos|real|natural|bonit|delgad|gord|joven|mayor|serio|feliz|brillante|"
+    r"saturad|color|luz|sol|nubes|gente)\w*|menos \w+|que (sonr[ií]a|mire|est[eé]|parezca|se vea|salga|tenga|lleve|sea|haya|se|vaya|brille|"
+    r"use|coja|sujete|beba|coma|baile|salte|corra|vuele|nieve|llueva)|"
+    r"m[aá]s a la (izquierda|derecha)|en vez de|en lugar de|cambia\w*|ahora (con|sin|en|de|que|ponle|ponme|ponla)|"
+    r"que (nos|se|os|me|te|le|les) \w+|"
+    r"tambi[eé]n|y (ahora|tambi[eé]n|que)|el (pelo|fondo|cielo|color|sombrero|vestido|ba[nñ]ador|coctel|c[oó]ctel)|"
+    r"la (cara|ropa|luz|mano|camiseta|chaqueta|gorra|playa|monta[nñ]a))\b", re.IGNORECASE)
+
+_REFERS_TO_PHOTO = re.compile(r"\b(me|nos|conmigo|yo|mi|esta foto|esa foto|la foto|la misma|el mismo)\b",
+                              re.IGNORECASE)
+# cortesia: nunca es un cambio ("gracias" no puede lanzar otra edicion)
+_THANKS = re.compile(
+    r"^\W*(muchas |mil )?(gracias|perfecto|genial|vale|ok|okay|guay|me encanta|bien|est[aá] bien|as[ií] s[ií]|"
+    r"ya est[aá]|estupendo|chulo|precioso|bonito|qu[eé] bien|de lujo|brutal)([\s,.!]+(gracias|as[ií]|me gusta))?\W*$",
+    re.IGNORECASE)
+_ABOUT_PHOTO = re.compile(
+    r"\b(foto|imagen|lleva|llevo|sale|salgo|sal[ei]mos|aparece|ves|hay|color|qui[eé]n|d[oó]nde|ropa|fondo|"
+    r"se ve|parece|parezco|queda|quedo|est[aá]|estoy|tiene|tengo|mano|cara|pelo)\b", re.IGNORECASE)
+_SHOW_ME = re.compile(
+    r"\b(c[oó]mo (quedar[ií]a|ser[ií]a|estar[ií]a|saldr[ií]a)|qu[eé] tal (si|con|en)|y si |a ver (c[oó]mo|si|qu[eé])|"
+    r"mu[eé]stra(me)?|ens[eé][nñ]a(me)?|pru[eé]ba(lo)? (con|en|sin)|podr[ií]as (poner|quitar|cambiar|hacer|a[nñ]adir)|"
+    r"puedes (poner|quitar|cambiar|hacer|a[nñ]adir))", re.IGNORECASE)
+
+INTENT_PROMPT = """El usuario esta editando una foto con un asistente. Lo ultimo que se le pidio a la foto: "{last}".
+Nuevo mensaje del usuario: "{message}"
+
+¿Que quiere? Responde con UNA sola palabra:
+- editar: cualquier cambio, ajuste, correccion o queja sobre ESA foto, aunque sea corto o vago ("mas", "mas grande", "el pelo esta raro", "que sonria", "sin eso", "mejor de noche", "no me gusta el color", "ponle algo en la mano").
+- nueva: quiere una imagen distinta desde cero, que no parte de esa foto ("ahora hazme un perro en la luna").
+- otra: una pregunta o comentario que no pide cambiar nada, o algo que no tiene nada que ver con imagenes.
+Si dudas entre editar y otra cosa, responde editar."""
+
+
+def photo_intent(ollama, model: str, message: str, last_request: str = "") -> str:
+    """Con una foto ya en la conversacion: "deshacer", "original", "repetir",
+    "editar", "nueva" u "otra". Primero reglas; el modelo solo para lo dudoso,
+    y sabiendo que hay una foto en marcha (antes no lo sabia: "haz que..."
+    acababa en el agente, Sergio 2026-10-05)."""
+    text = (message or "").strip()
+    if not text:
+        return "otra"
+    if _TO_ORIGINAL.search(text):
+        return "original"
+    if _UNDO.search(text):
+        return "deshacer"
+    if _RETRY.match(text):
+        return "repetir"
+    if _NOT_THE_PHOTO.search(text):
+        return "otra"
+    if _THANKS.match(text):
+        return "otra"
+    if _NEW_IMAGE.search(text) and not _REFERS_TO_PHOTO.search(text):
+        return "nueva"
+    if _EDIT_WORDS.search(text) or _SHOW_ME.search(text):
+        # _SHOW_ME: "¿como quedaria de noche?" quiere verlo, no que se lo cuenten
+        return "editar"
+    # pregunta de verdad: "¿de que color es el bañador?". "que sea de noche" no
+    # lo es (iba al chat de texto, que contestaba "he hecho esto" sin tocar la foto)
+    if _QUESTION_WORDS.match(text.lstrip("¿")) and ("?" in text or text.startswith("¿")):
+        # sobre la foto: la contesta el modelo de vision mirandola (el de texto no la ve y se la inventaba)
+        return "preguntar" if _ABOUT_PHOTO.search(text) else "otra"
+    if _TWEAK.search(text):
+        return "editar"
+    if "?" in text and _ABOUT_PHOTO.search(text):
+        return "preguntar"
+    raw = ollama.chat(model, [{"role": "user", "content": INTENT_PROMPT.format(last=last_request or "(nada aun)",
+                                                                            message=text)}],
+                      temperature=0.0, think=False, num_predict=10).lower()
+    for answer in ("nueva", "otra", "editar"):
+        if answer in raw:
+            return answer
+    return "editar"
+
+
 class EditPlan:
     def __init__(self, instruction: str, mode: str, summary: str = ""):
         self.instruction = instruction
@@ -147,10 +320,14 @@ class EditPlan:
         self.summary = summary  # en español, para decirle al usuario que se ha hecho
 
 
-DESCRIBE_PROMPT = ("Describe the people in this photo in ONE short English sentence for a photo editor: "
-                   "how many, man or woman, and exactly what each one is wearing and holding. "
-                   "Example: \"one man with a short beard wearing a grey wool sweater over a collared shirt\". "
-                   "Only that sentence.")
+# Personas, animales u objetos: solo con "describe the people", en la foto de un
+# perro el planificador no sabia que habia y escribia "the person on the left" o
+# "them" (salian dos perros en la playa, 2026-10-06)
+DESCRIBE_PROMPT = ("Describe the main subject of this photo in ONE short English sentence for a photo editor: "
+                   "how many people or animals there are and what they are (man, woman, dog...), exactly what each "
+                   "one is wearing and holding, and if there are none, the main object. "
+                   "Examples: \"one man with a short beard wearing a grey wool sweater over a collared shirt\", "
+                   "\"one yellow labrador dog sitting on grass, no people\". Only that sentence.")
 
 
 def describe_photo(ollama, vision_model: str | None, image_bytes: bytes) -> str:
@@ -173,13 +350,92 @@ def describe_photo(ollama, vision_model: str | None, image_bytes: bytes) -> str:
         return "(sin descripcion)"
 
 
-def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "(sin descripcion)") -> list[EditPlan]:
+# ---------- comprobar que se hizo TODO lo pedido ----------
+# Sergio, 2026-10-05: "ha hecho la mitad de lo que he pedido" (bikini y coctel
+# en la playa: salio en la playa con la misma ropa). Kontext a veces se salta
+# una parte; ahora el modelo de vision mira el resultado y, si falta algo, se
+# repite una vez insistiendo en eso.
+
+# Antes eran preguntas sueltas que escribia qwen3:8b ("¿lleva exactamente una
+# blusa?" cuando la blusa se habia quitado, "¿hay exactamente una nieve?"): daban
+# avisos falsos y repeticiones de 3,5 min sin motivo. Mejor que el modelo de
+# vision juzgue directamente con la orden delante (probado el 2026-10-06 con
+# resultados conocidos: detecta los dos moviles y el gorro sin quitar, y no
+# protesta en los buenos).
+VERIFY_PROMPT = """A photo editor was asked by the user (in Spanish) to do this to a photo:
+"{instruction}"
+
+Look carefully at the resulting photo below and judge it strictly:
+- Is every requested change clearly visible?
+- Is anything duplicated that should be single (for example a person holding the same object in both hands, or two drinks when one was asked)?
+
+Answer on ONE line, exactly in one of these two forms:
+yes
+no | <what is wrong, in English, a few words> | <lo mismo en español>"""
+
+
+class Verdict:
+    def __init__(self, ok: bool, problem_en: str = "", problem_es: str = ""):
+        self.ok, self.problem_en, self.problem_es = ok, problem_en, problem_es
+
+
+def change_requested(steps) -> str:
+    """Lo que se pidio a Kontext, sin la coletilla de lo que se mantiene."""
+    return " ".join(_KEEP.sub("", s.instruction).strip() for s in steps).strip()
+
+
+def verify_edit(ollama, vision_model: str | None, image_bytes: bytes, instruction: str) -> Verdict | None:
+    """¿Se ve todo lo pedido? None si no se pudo comprobar (sin modelo de
+    vision o respuesta ilegible): entonces se da por buena, comprobar nunca
+    debe estropear una edicion."""
+    if not vision_model or not instruction:
+        return None
+    try:
+        rgb = load_rgb(image_bytes)
+        scale = 768 / max(rgb.shape[:2])
+        if scale < 1:
+            rgb = cv2.resize(rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        b64 = base64.b64encode(to_jpeg(rgb)).decode("ascii")
+        raw = ollama.chat(vision_model, [{"role": "user", "content": VERIFY_PROMPT.format(instruction=instruction),
+                                          "images": [b64]}], temperature=0.0)
+    except Exception:  # noqa: BLE001
+        return None
+    line = " ".join(raw.split())
+    if re.match(r"^\W*yes\b", line, re.IGNORECASE):
+        return Verdict(True)
+    if not re.match(r"^\W*no\b", line, re.IGNORECASE):
+        return None
+    parts = [p.strip(" .") for p in line.split("|")]
+    return Verdict(False, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
+
+
+def insist(instruction: str, problem_en: str) -> str:
+    """La misma instruccion, recalcando lo que salio mal la primera vez."""
+    if not problem_en:
+        return f"{instruction} Important: make sure every requested change is clearly visible."
+    return f"{instruction} Important, the previous attempt failed because: {problem_en}. Fix exactly that."
+
+
+HISTORY_BLOCK = """
+Esta foto ya es el resultado de cambios anteriores que el usuario pidio, en orden:
+{items}
+La peticion nueva puede referirse a ellos ("mas grande", "quitale eso", "no, el
+otro", "mejor rojo"): entiendela con ese contexto y cambia SOLO lo nuevo; lo de
+antes ya esta hecho en la foto y se queda como esta.
+"""
+
+
+def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "(sin descripcion)",
+              history: list[str] | None = None) -> list[EditPlan]:
     """faces: posiciones de face_detect.face_positions(); scene: describe_photo().
     Uno o dos pasos: "ponla en la montaña con la ropa roja" en uno solo no
     salia - al cambiar el fondo Kontext recoloca a la persona, la ropa nueva
-    impide pegar la original encima y la cara quedaba redibujada (2026-10-01)."""
+    impide pegar la original encima y la cara quedaba redibujada (2026-10-01).
+    history: lo pedido antes sobre esta foto, en orden (conversacion)."""
     count = "una persona" if len(faces) == 1 else f"{len(faces)} personas" if faces else "ninguna persona"
-    content = PLAN_PROMPT.format(request=request, faces=", ".join(faces) or "ninguna", count=count, scene=scene)
+    past = HISTORY_BLOCK.format(items="\n".join(f"- {h}" for h in history[-6:])) if history else ""
+    content = PLAN_PROMPT.format(request=request, faces=", ".join(faces) or "ninguna", count=count, scene=scene,
+                                 history=past, glossary=clothing_terms.glossary_block(request))
     raw = ollama.chat(model, [{"role": "user", "content": content}], temperature=0.0, think=False)
     try:
         data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
@@ -200,11 +456,56 @@ def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "
     # no nombra nada de la persona, se queda solo el paso del fondo.
     if len(plans) == 2 and plans[1].mode == "fondo" and not _PERSON_CHANGE.search(request):
         plans = plans[1:]
+    for plan in plans:
+        plan.instruction = _keep_body(clothing_terms.fix_instruction(request, plan.instruction))
+        plan.summary = _same_person(plan.summary, [*(history or []), request])
     # sin instruccion en ingles Kontext entiende peor, pero entiende algo
     return plans or [EditPlan(request, "local")]
 
 
-_KEEP = re.compile(r"\s*\b(Keep|Do not)\b.*$", re.IGNORECASE | re.DOTALL)
+_CLOTHES_EN = re.compile(
+    r"\b(sweater|shirt|t-shirt|blouse|dress|gown|jacket|coat|blazer|suit|tuxedo|hoodie|sweatshirt|cardigan|vest|"
+    r"skirt|trousers|pants|jeans|shorts|swimsuit|swim trunks|bikini|outfit|clothes|top|tank top|jumpsuit|uniform)\b",
+    re.IGNORECASE)
+
+
+def _keep_body(instruction: str) -> str:
+    """Al cambiar la ropa, Kontext cambiaba tambien la figura (mas pecho, otro
+    escote) en la foto real de Sergio (2026-10-07); qwen3:8b no lo añadia
+    aunque la regla se lo pedia. No en cambios de postura: ahi el cuerpo se
+    mueve a proposito."""
+    if not _CLOTHES_EN.search(_KEEP.sub("", instruction)) or "body shape" in instruction.lower() \
+            or is_pose_change(instruction):
+        return instruction
+    low = instruction.lower()
+    who = "her" if re.search(r"\b(woman|her|she|girl)\b", low) else \
+        "his" if re.search(r"\b(man|his|he|boy)\b", low) else "their"
+    keep = f"Keep {who} body shape and proportions exactly the same."
+    m = re.search(r"\s*Do not add any other", instruction)
+    if m:
+        return f"{instruction[:m.start()].rstrip()} {keep} {instruction[m.start():].lstrip()}"
+    return f"{instruction.rstrip()} {keep}"
+
+
+_FIRST_PERSON = re.compile(r"\b(me|ponme|mi|mis|yo|conmigo|hazme|quítame|quitame|cámbiame|cambiame)\b", re.IGNORECASE)
+_THIRD_PERSON = re.compile(r"\b(ella|él|ellos|ellas|el de|la de|los dos|ponla|ponle|ponlo|ponles|quítale|quitale|"
+                           r"cámbiale|cambiale|vístela|vistela|vístelo|vistelo)\b", re.IGNORECASE)
+
+
+def _same_person(summary: str, requests: list[str]) -> str:
+    """"ahora con una camisa blanca" tras "ponme un vestido" es la misma
+    persona, el usuario: "te he puesto", no "le he puesto" (2026-10-07). Solo
+    si la conversacion habla en primera persona y nunca de otro."""
+    said = " ".join(requests)
+    if not _FIRST_PERSON.search(said) or _THIRD_PERSON.search(said):
+        return summary
+    return re.sub(r"^le he\b", "te he", summary, flags=re.IGNORECASE)
+
+
+# Desde donde empieza "lo que no cambia". Tambien ", keeping ...": sin eso el
+# "pose" de "keeping his face, pose and framing" contaba como cambio de postura
+# y se usaba la de Kontext entera, sin la foto original (2026-10-07)
+_KEEP = re.compile(r"[\s,]*\b(while keeping|keeping|Keep|Do not)\b.*$", re.IGNORECASE | re.DOTALL)
 
 
 def merge_steps(plans: list[EditPlan]) -> list[EditPlan]:
@@ -228,12 +529,18 @@ def merge_steps(plans: list[EditPlan]) -> list[EditPlan]:
 
 
 _REMOVAL = re.compile(r"\b(remove|erase|delete|get rid of)\b", re.IGNORECASE)
+
+
+def is_removal(instruction: str) -> bool:
+    return bool(_REMOVAL.search(instruction or ""))
 _REMOVAL_ES = re.compile(r"\b(quita\w*|borra\w*|elimina\w*|saca\w*)\b", re.IGNORECASE)
 # algo de la persona en la peticion: ropa, objetos, postura, "con ...", "vestido de ..."
 _PERSON_CHANGE = re.compile(
     r"\b(con|sin|lleva\w*|llevando|vest\w*|viste\w*|ropa|bañador|bikini|traje|camis\w*|jersey|abrigo|"
     r"chaqueta|pantal\w*|falda|vestido|zapat\w*|gafas|gorr[ao]|sombrero|tumbad\w*|sentad\w*|de pie|"
-    r"levant\w*|bail\w*|corr\w*|salt\w*|sujet\w*|cogi\w*|tomando|bebiendo|disfraz\w*|disfrazad\w*)\b",
+    r"levant\w*|bail\w*|corr\w*|salt\w*|sujet\w*|cogi\w*|tomando|bebiendo|disfraz\w*|disfrazad\w*|"
+    r"rodillas|inclinad\w*|agachad\w*|abraz\w*|bes\w*|mano|manos|brazo\w*|cruzad\w*|salud\w*|apoyad\w*|"
+    r"postura|pose|posando|mirando|toc\w*)\b",
     re.IGNORECASE)
 
 
@@ -380,14 +687,69 @@ def _silhouette_init(a_template: np.ndarray, a_moving: np.ndarray) -> np.ndarray
     return np.array([[s, 0, mx - s * tx], [0, s, my - s * ty]], np.float32)
 
 
+def _feature_align(orig: np.ndarray, edited: np.ndarray) -> np.ndarray | None:
+    """Giro + zoom + desplazamiento (orig -> edited, como la de _align) con
+    los puntos que coinciden en las dos (ORB + RANSAC): lo que cambio no
+    tiene puntos parecidos y no cuenta. None si no hay bastantes."""
+    f = min(1.0, 1024 / max(orig.shape[:2]))
+    g1 = cv2.cvtColor(cv2.resize(orig, None, fx=f, fy=f, interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY)
+    g2 = cv2.cvtColor(cv2.resize(edited, None, fx=f, fy=f, interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY)
+    orb = cv2.ORB_create(4000)
+    k1, d1 = orb.detectAndCompute(g1, None)
+    k2, d2 = orb.detectAndCompute(g2, None)
+    if d1 is None or d2 is None or len(k1) < 20 or len(k2) < 20:
+        return None
+    matches = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(d1, d2)
+    if len(matches) < 20:
+        return None
+    p1 = np.float32([k1[m.queryIdx].pt for m in matches])
+    p2 = np.float32([k2[m.trainIdx].pt for m in matches])
+    m, inliers = cv2.estimateAffinePartial2D(p1, p2, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+    if m is None or inliers is None or inliers.sum() < 15:
+        return None
+    m[:, 2] /= f
+    return m.astype(np.float32)
+
+
+def _unchanged(orig: np.ndarray, edited: np.ndarray) -> np.ndarray | None:
+    """Mascara (uint8) de lo que se parece en las dos sin moverlas, a grandes
+    rasgos (desenfocado: Kontext desplaza unos pixeles). None si casi todo
+    cambio: entonces no hay en que apoyarse."""
+    f = min(1.0, 512 / max(orig.shape[:2]))
+    a = cv2.resize(orig, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    b = cv2.resize(edited, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA)
+    lab_a = cv2.cvtColor(cv2.GaussianBlur(a, (0, 0), 3), cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab_b = cv2.cvtColor(cv2.GaussianBlur(b, (0, 0), 3), cv2.COLOR_RGB2LAB).astype(np.float32)
+    same = (np.linalg.norm(lab_a - lab_b, axis=2) < _WEAK_CHANGE).astype(np.uint8)
+    same = cv2.erode(same, np.ones((5, 5), np.uint8))
+    if same.mean() < 0.2:
+        return None
+    return cv2.resize(same * 255, (orig.shape[1], orig.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+
 def compose_local(orig: np.ndarray, edited: np.ndarray) -> np.ndarray:
     """`edited` ya a la resolucion de `orig`."""
     h, w = orig.shape[:2]
     cc, warp = _align(orig, edited, None, np.eye(2, 3))
+    first = cc
+    if cc < _MIN_ALIGN_CC:
+        # un cambio grande (jersey negro -> camisa blanca en media foto) hunde la
+        # correlacion aunque el encuadre sea el mismo, y se tiraba la original
+        # entera: fondo y cara de Kontext (cc 0,30 con la foto de Sergio,
+        # 2026-10-07). Se alinea otra vez solo con lo que no cambio, partiendo
+        # de los puntos que coinciden (aguanta que Kontext amplie la foto).
+        init = _feature_align(orig, edited)
+        moved = edited if init is None else cv2.warpAffine(
+            edited, init, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
+        keep = _unchanged(orig, moved)
+        if keep is not None:
+            cc, warp = _align(orig, edited, keep, np.eye(2, 3) if init is None else init)
+    log.info("Componer: alineacion %.2f (sin mascara %.2f)", cc, first)
     if cc < _MIN_ALIGN_CC:
         return edited
     flags = cv2.INTER_LANCZOS4 | cv2.WARP_INVERSE_MAP
     ed = cv2.warpAffine(edited, warp, (w, h), flags=flags, borderMode=cv2.BORDER_REPLICATE)
+    rigid = ed
     valid = cv2.warpAffine(np.ones((h, w), np.float32), warp, (w, h), flags=flags, borderValue=0)
     map_x, map_y = _flow_maps(orig, ed)
     followed = cv2.remap(ed, map_x, map_y, cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
@@ -413,6 +775,7 @@ def compose_local(orig: np.ndarray, edited: np.ndarray) -> np.ndarray:
             changed[labels == i] = 1
     changed = cv2.morphologyEx(changed, cv2.MORPH_CLOSE, np.ones((u * 3, u * 3), np.uint8))
     area = changed.mean()
+    log.info("Componer: cambiado %.0f%% de la foto", 100 * area)
     # Kontext no cambio nada de verdad: su version es la misma foto con las
     # caras sutilmente redibujadas (similitud 0,96 en vez de 0,998), mejor la
     # original
@@ -423,9 +786,57 @@ def compose_local(orig: np.ndarray, edited: np.ndarray) -> np.ndarray:
     if area > _MAX_LOCAL_AREA:
         return edited
     changed = cv2.dilate(changed, np.ones((u * 2, u * 2), np.uint8))
-    changed = (changed * cv2.erode(valid.astype(np.uint8), np.ones((u, u), np.uint8))).astype(np.float32)
-    alpha = cv2.GaussianBlur(changed, (0, 0), u)[..., None]
-    return (orig * (1 - alpha) + ed * alpha).clip(0, 255).astype(np.uint8)
+    # Dentro de lo nuevo (la camisa) va Kontext sin el flujo: el flujo intenta
+    # encajarlo en la forma de lo viejo (el jersey) y doblaba la tira de
+    # botones y ondulaba los cuadros (2026-10-07). El flujo solo cerca del
+    # borde, para que empalme con la original.
+    core = cv2.GaussianBlur(cv2.erode(changed, np.ones((u * 4, u * 4), np.uint8)).astype(np.float32), (0, 0), u * 2)
+    ed = (rigid * core[..., None] + ed * (1 - core[..., None])).astype(np.uint8)
+    # Si Kontext amplio la foto, en el borde queda una franja que no genero:
+    # alli seguia la ropa vieja (una manga gris junto a la camisa nueva). Si
+    # lo nuevo llega a esa franja, mejor recortarla.
+    crop = _valid_crop(valid, changed, (h, w))
+    if crop is None:
+        changed = changed * cv2.erode(valid.astype(np.uint8), np.ones((u, u), np.uint8))
+    alpha = cv2.GaussianBlur(changed.astype(np.float32), (0, 0), u)[..., None]
+    out = (orig * (1 - alpha) + ed * alpha).clip(0, 255).astype(np.uint8)
+    if crop is not None:
+        y0, y1, x0, x1 = crop
+        out = out[y0:y1, x0:x1]
+    return out
+
+
+def _valid_crop(valid: np.ndarray, changed: np.ndarray, shape: tuple[int, int]) -> tuple[int, int, int, int] | None:
+    """(y0, y1, x0, x1): lo mas grande que genero Kontext, con la proporcion
+    de la foto, si lo cambiado llega a la franja del borde que no genero.
+    None si no hace falta o si habria que recortar demasiado (>12% por lado)."""
+    h, w = shape
+    missing = ~valid
+    if not missing.any() or (changed.astype(bool) & missing).sum() < 0.002 * h * w:
+        return None
+    # con un zoom lo que falta es un marco por los cuatro lados: el rectangulo
+    # de dentro, medido desde el centro y encogido hasta que todo sea valido
+    rows = np.nonzero(valid[:, w // 2])[0]
+    cols = np.nonzero(valid[h // 2, :])[0]
+    if not len(rows) or not len(cols):
+        return None
+    y0, y1, x0, x1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+    while (y1 - y0) >= 0.76 * h and (x1 - x0) >= 0.76 * w and not valid[y0:y1, x0:x1].all():
+        dy, dx = max(1, h // 200), max(1, w // 200)
+        y0, y1, x0, x1 = y0 + dy, y1 - dy, x0 + dx, x1 - dx
+    if (y1 - y0) < 0.76 * h or (x1 - x0) < 0.76 * w:
+        return None
+    # la proporcion de la foto, centrado en lo valido
+    ch, cw = y1 - y0, x1 - x0
+    if cw / ch > w / h:
+        nw = int(round(ch * w / h))
+        x0 += (cw - nw) // 2
+        x1 = x0 + nw
+    else:
+        nh = int(round(cw * h / w))
+        y0 += (ch - nh) // 2
+        y1 = y0 + nh
+    return int(y0), int(y1), int(x0), int(x1)
 
 
 def compose_background(orig: np.ndarray, edited: np.ndarray) -> np.ndarray:
@@ -470,20 +881,31 @@ def _relight(people: np.ndarray, edited: np.ndarray, mask: np.ndarray) -> np.nda
     sombras de la cara de Kontext y la similitud bajaba hasta 0,035. El
     desenfoque es normalizado por la mascara para que el fondo (distinto en
     cada imagen) no se cuele en el borde."""
-    sigma = 0.06 * min(people.shape[:2])
-    weight = cv2.GaussianBlur(mask, (0, 0), sigma)[..., None] + 1e-3
+    # Es luz de baja frecuencia: se calcula reducida y se amplia. A tamaño
+    # completo, en una foto de 12 MP, el desenfoque de 165 px tardaba 30 s
+    # (2026-10-07).
+    h, w = people.shape[:2]
+    f = min(1.0, 512 / min(h, w))
+    size = (max(1, round(w * f)), max(1, round(h * f)))
+    small_mask = cv2.resize(mask.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+    sigma = 0.06 * min(size[1], size[0])
+    weight = cv2.GaussianBlur(small_mask, (0, 0), sigma)[..., None] + 1e-3
 
     def low(img):
-        return cv2.GaussianBlur(img.astype(np.float32) * mask[..., None], (0, 0), sigma) / weight
+        small = cv2.resize(img.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+        return cv2.GaussianBlur(small * small_mask[..., None], (0, 0), sigma) / weight
 
     gain = np.clip((low(edited) + 8) / (low(people) + 8), 0.3, 3.0)
+    if f < 1.0:
+        gain = cv2.resize(gain, (w, h), interpolation=cv2.INTER_LINEAR)
     return people.astype(np.float32) * gain
 
 
 # Peticiones que cambian la cara a proposito: ahi no se vuelve a poner la original
 _FACE_EDIT = re.compile(
     r"\b(gafas|lentes|cara|rostro|ojos|boca|nariz|labios|barba|bigote|afeitad\w*|maquilla\w*|sonri\w*|serio|"
-    r"seria|triste|enfadad\w*|expresion|expresión|gesto|guiñ\w*|joven|mayor|viej\w*|envejec\w*|rejuvenec\w*|"
+    r"seria|triste|enfadad\w*|expresion|expresión|gesto|guiñ\w*|ri[eé]nd\w*|re[ií]r\w*|r[ií]e\w*|"
+    r"carcajada\w*|llor\w*|grit\w*|sorprend\w*|asustad\w*|boca abierta|ojos cerrados|bostez\w*|joven|mayor|viej\w*|envejec\w*|rejuvenec\w*|"
     r"arrugas|pecas|tatuaje en la cara|piercing|pelo|peinado|calvo|rubi\w*|morena?|pelirroj\w*|"
     r"mascarilla|careta|disfraz de cara)\b", re.IGNORECASE)
 
@@ -506,42 +928,78 @@ def wants_hair_kept(request: str) -> bool:
 def _faces(rgb: np.ndarray) -> list[np.ndarray]:
     """Caras con sus 5 puntos (ojos, nariz, comisuras), del detector YuNet."""
     import face_detect
-    h, w = rgb.shape[:2]
-    det = face_detect._get_detector()
-    det.setInputSize((w, h))
-    _, faces = det.detect(np.ascontiguousarray(rgb[:, :, ::-1]))
-    return [] if faces is None else [f for f in faces if f[14] >= 0.7]
+    return face_detect.detect(rgb, 0.7)  # imagen rara o muy pequeña: sin caras, la edicion sigue
 
 
-def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True) -> np.ndarray:
+def _background_fill(source: np.ndarray, out: np.ndarray, hole: np.ndarray, k: int) -> np.ndarray | None:
+    """El fondo de la original para tapar el pelo sobrante de Kontext, si
+    alrededor del hueco la original y el resultado tienen el mismo fondo (se
+    cambio la ropa, no el sitio). El relleno inventado (inpaint) dejaba un
+    borron en las hojas de detras de la cabeza que delataba el recorte
+    (Sergio, foto real, 2026-10-07). None si el fondo es otro."""
+    ring = cv2.dilate(hole, np.ones((3 * k, 3 * k), np.uint8)).astype(bool) & ~hole.astype(bool)
+    if ring.sum() < 50:
+        return None
+    if source.shape != out.shape:
+        return None
+    lab_w = cv2.cvtColor(source, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab_o = cv2.cvtColor(out.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
+    # la mayoria del anillo debe coincidir (alli puede asomar algo de pelo)
+    if np.median(np.linalg.norm(lab_w[ring] - lab_o[ring], axis=1)) > 12:
+        return None
+    return source.astype(np.float32)
+
+
+def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
+                  face_only: bool = False) -> np.ndarray:
     """Vuelve a poner cada cara ORIGINAL encima de la del resultado, alineada
     por ojos, nariz y boca y con la luz del sitio nuevo. Sin esto, al cambiar
     mucha ropa (jersey -> bañador) el paso "local" se quedaba entero con lo de
     Kontext, cara redibujada incluida: parecida, no la misma (similitud 0,69
     en la prueba del 2026-10-05). Si una cara cambio de postura (no encaja),
-    se deja la de Kontext."""
+    se deja la de Kontext.
+    face_only (cambios de postura): solo de las cejas a la barbilla, con borde
+    suave; el pelo y el contorno de la cabeza son los de Kontext. Con la cabeza
+    entera, la original (recta, con su pelo) quedaba "pegada encima" de una
+    persona tumbada, con halo alrededor (Sergio, 2026-10-06)."""
     faces_o, faces_r = _faces(orig), _faces(result)
     if not faces_o or not faces_r:
         return result
     h, w = result.shape[:2]
     out = result.astype(np.float32)
     used = set()
-    for f in faces_o:
+    # Mismas personas antes y despues: se emparejan por orden de izquierda a
+    # derecha, que no cambia al abrazarse, bailar o cambiar de postura (y la
+    # cabeza si se mueve). Con una sola persona, eso es "la de siempre".
+    same_people = len(faces_o) == len(faces_r)
+    order_o = sorted(range(len(faces_o)), key=lambda i: faces_o[i][0] + faces_o[i][2] / 2)
+    order_r = sorted(range(len(faces_r)), key=lambda i: faces_r[i][0] + faces_r[i][2] / 2)
+    partner = {o: r for o, r in zip(order_o, order_r)} if same_people else {}
+    for i, f in enumerate(faces_o):
         pts_o = f[4:14].reshape(5, 2).astype(np.float32)
         best = None
         for j, g in enumerate(faces_r):
-            if j in used:
+            if j in used or (same_people and j != partner[i]):
                 continue
             pts_r = g[4:14].reshape(5, 2).astype(np.float32)
+            # si no son las mismas personas, la cara va donde sigue estando esa
+            # persona: dos caras siempre "encajan" de forma y en un grupo se podia
+            # pegar la cara de una sobre otra (2026-10-06)
+            moved = np.linalg.norm(pts_o.mean(axis=0) - pts_r.mean(axis=0)) / max(float(f[2]), 1.0)
+            if moved > 0.6 and not same_people:
+                continue
             m, _ = cv2.estimateAffinePartial2D(pts_o, pts_r)
             if m is None:
                 continue
             err = np.linalg.norm(pts_o @ m[:, :2].T + m[:, 2] - pts_r, axis=1).mean() / max(float(g[2]), 1.0)
-            if best is None or err < best[0]:
-                best = (err, j, m)
-        if best is None or best[0] > 0.08:
+            score = err + 0.05 * moved
+            if best is None or score < best[0]:
+                best = (score, j, m, err)
+        # en un cambio de postura, solo si la cara esta casi de frente como la
+        # original: girada en 3D no encaja y se notaba pegada
+        if best is None or best[3] > (0.05 if face_only else 0.08):
             continue
-        _, j, m = best
+        _, j, m, _ = best
         used.add(j)
         warped = cv2.warpAffine(orig, m, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
         x, y, fw, fh = (float(v) for v in f[:4])
@@ -550,6 +1008,8 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True) 
         # el contorno de Kontext seguia sin ser la misma persona
         zone = np.zeros(orig.shape[:2], np.float32)
         cx = int(x + fw / 2)
+        if face_only:
+            keep_hair = False
         if keep_hair:
             cv2.ellipse(zone, (cx, int(y + fh * 0.35)), (int(fw * 0.85), int(fh * 0.95)), 0, 0, 360, 1, -1)
             # de la boca para abajo solo la mandibula: a los lados ya asoma la
@@ -562,7 +1022,7 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True) 
         if not keep_hair:
             zone[:int(y + fh * 0.15)] = 0
         zone_w = cv2.warpAffine(zone, m, (w, h), flags=cv2.INTER_LINEAR)
-        zone_w = cv2.GaussianBlur(zone_w, (0, 0), max(2.0, fw * scale * 0.05))
+        zone_w = cv2.GaussianBlur(zone_w, (0, 0), max(2.0, fw * scale * (0.09 if face_only else 0.05)))
         # recortada por la silueta de la persona, para no traerse el fondo viejo
         head = matte(warped) * zone_w
         # el pelo de Kontext que asome por fuera de la cabeza original se borra
@@ -575,7 +1035,13 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True) 
             # la cabeza entra tambien en el hueco: que se rellene solo con fondo y
             # no con la piel de la cabeza de Kontext de al lado (va encima despues)
             hole = grown | cv2.dilate((head > 0.05).astype(np.uint8), np.ones((k, k), np.uint8))
-            filled = cv2.inpaint(out.clip(0, 255).astype(np.uint8), hole, 9, cv2.INPAINT_TELEA).astype(np.float32)
+            # la original tal cual (en un cambio de ropa el resultado ya esta en su
+            # encuadre) o movida como la cara
+            filled = _background_fill(orig, out, hole, k)
+            if filled is None:
+                filled = _background_fill(warped, out, hole, k)
+            if filled is None:
+                filled = cv2.inpaint(out.clip(0, 255).astype(np.uint8), hole, 9, cv2.INPAINT_TELEA).astype(np.float32)
             out = np.where(grown[..., None] > 0, filled, out)
         lit = _relight(warped, result, (head > 0.5).astype(np.float32))
         alpha = head[..., None]
@@ -588,11 +1054,60 @@ def finish(orig: np.ndarray, edited_small: np.ndarray, mode: str) -> np.ndarray:
     resolucion de la original antes de componer."""
     h, w = orig.shape[:2]
     edited = cv2.resize(edited_small, (w, h), interpolation=cv2.INTER_LANCZOS4)
+    # lo de Kontext sale liso; junto a la original con su grano (o con la cara
+    # original encima) se notaba pegado (Sergio, 2026-10-07)
+    edited = add_grain(edited, grain_sigma(orig))
+    if mode == "entera":
+        return edited  # cambio de postura: ver is_pose_change
     if mode == "fondo":
         return compose_background(orig, edited)
     return compose_local(orig, edited)
 
 
+_POSE = re.compile(
+    r"\b(zoom(ed)? out|kneel\w*|lie|lying|lies|lay\w*|sit\w*|seated|stand\w*|lean\w*|bend\w*|crouch\w*|squat\w*|"
+    r"hug\w*|embrac\w*|danc\w*|twirl\w*|hold(s|ing)? hands|hand in hand|kiss\w*|wav\w*|rais\w*|jump\w*|walk\w*|"
+    r"arms? crossed|cross(es|ed)? (his|her|their) arms|hands? on (his|her|their) (hips|waist)|pose|posing)\b",
+    re.IGNORECASE)
+
+
+def is_pose_change(instruction: str) -> bool:
+    """La instruccion cambia la postura (solo la parte que pide, no el "Keep
+    ... pose" del final). Ahi no se vuelve a pegar la foto de partida en lo que
+    parece igual: quedaba un fantasma translucido del brazo levantado de antes
+    en el cielo (2026-10-06). Se usa la de Kontext entera y luego la cara."""
+    return bool(_POSE.search(_KEEP.sub("", instruction or "")))
+
+
 def needs_upscale(orig: np.ndarray, edited_small: np.ndarray) -> bool:
-    return max(orig.shape[:2]) > 1.4 * max(edited_small.shape[:2])
+    """ESRGAN solo si hay que ampliar mas del doble: deja la piel como de
+    plastico y el pelo crujiente, y hasta 2x el reescalado normal (con el
+    grano de la foto, ver finish) se integra mejor (2026-10-07; antes 1,4x)."""
+    return max(orig.shape[:2]) > 2.0 * max(edited_small.shape[:2])
+
+
+def grain_sigma(rgb: np.ndarray) -> float:
+    """Ruido de la foto (desviacion tipica, niveles 0-255) en las zonas lisas:
+    el residuo tras un desenfoque fino, con la mediana para que los bordes y
+    la textura no cuenten."""
+    h, w = rgb.shape[:2]
+    if max(h, w) > 2000:  # mas rapido con un trozo del centro, a la misma escala
+        y, x = max(0, (h - 2000) // 2), max(0, (w - 2000) // 2)
+        rgb = rgb[y:y + 2000, x:x + 2000]
+    g = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    res = g - cv2.GaussianBlur(g, (0, 0), 1.2)
+    grad = cv2.GaussianBlur(np.abs(cv2.Sobel(cv2.GaussianBlur(g, (0, 0), 2), cv2.CV_32F, 1, 1)), (0, 0), 3)
+    flat = grad < np.percentile(grad, 40)
+    return float(1.4826 * np.median(np.abs(res[flat])))
+
+
+def add_grain(img: np.ndarray, target: float, seed: int = 0) -> np.ndarray:
+    """Añade el grano que le falta a `img` para llegar a `target`."""
+    need = np.sqrt(max(0.0, target ** 2 - grain_sigma(img) ** 2))
+    if need < 0.5:
+        return img
+    h, w = img.shape[:2]
+    noise = cv2.GaussianBlur(np.random.default_rng(seed).normal(0, 1, (h, w)).astype(np.float32), (0, 0), 0.6)
+    measured = 1.4826 * np.median(np.abs(noise - cv2.GaussianBlur(noise, (0, 0), 1.2)))
+    return (img.astype(np.float32) + (noise * (need / measured))[..., None]).clip(0, 255).astype(np.uint8)
 

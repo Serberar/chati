@@ -31,6 +31,19 @@ _owners: dict[str, str] = {}
 _owners_lock = threading.Lock()
 
 
+# Generaciones en marcha (de cualquiera, tambien los calentamientos). Mientras
+# haya alguna, Ollama no debe meter modelos en la GPU: con 8 GB, un chat a la vez
+# que Kontext lo dejaba sin memoria y una edicion de 2,5 min se atascaba 15
+# (2026-10-06). Ver OllamaClient.gpu_busy en main.py.
+_active = 0
+_active_lock = threading.Lock()
+
+
+def generation_running() -> bool:
+    with _active_lock:
+        return _active > 0
+
+
 def owner_of(prompt_id: str) -> str | None:
     with _owners_lock:
         return _owners.get(prompt_id)
@@ -55,9 +68,21 @@ FREED_VRAM_BYTES = 512 * 1024 * 1024
 
 
 def _is_still_queued(base_url: str, prompt_id: str) -> bool:
-    queue = requests.get(f"{base_url}/queue", timeout=10).json()
+    try:
+        queue = requests.get(f"{base_url}/queue", timeout=10).json()
+    except (requests.RequestException, ValueError):
+        return True  # no contesta (ocupado): no se da por cancelada
+    if not isinstance(queue, dict):
+        return True
     items = queue.get("queue_running", []) + queue.get("queue_pending", [])
     return any(item[1] == prompt_id for item in items)
+
+
+def _in_history(base_url: str, prompt_id: str) -> bool:
+    try:
+        return prompt_id in requests.get(f"{base_url}/history/{prompt_id}", timeout=10).json()
+    except (requests.RequestException, ValueError):
+        return True  # no contesta: mejor seguir esperando que darla por cancelada
 
 
 def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: list[str] | str,
@@ -78,8 +103,20 @@ def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: 
     segundos en frio), cancelar tarda lo que tarde esa carga, no es instantaneo."""
     if isinstance(output_keys, str):
         output_keys = [output_keys]
+    global _active
     if before_submit is not None:
         before_submit()
+    with _active_lock:
+        _active += 1
+    try:
+        return _submit_and_wait(base_url, workflow, save_node, output_keys, timeout)
+    finally:
+        with _active_lock:
+            _active -= 1
+
+
+def _submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: list[str],
+                     timeout: int) -> dict:
 
     client_id = str(uuid.uuid4())
     resp = requests.post(
@@ -98,7 +135,14 @@ def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: 
     grace_deadline = time.time() + 5  # margen inicial: no comprobar la cola nada mas enviar (posible carrera)
 
     while time.time() < deadline:
-        hist = requests.get(f"{base_url}/history/{prompt_id}", timeout=10).json()
+        try:
+            hist = requests.get(f"{base_url}/history/{prompt_id}", timeout=10).json()
+        except (requests.RequestException, ValueError):
+            # ComfyUI ocupado (cargando el modelo) tarda en contestar: no es un
+            # fallo de la generacion. Antes una consulta lenta tiraba una
+            # edicion de 4 minutos ("Read timed out", 2026-10-06)
+            time.sleep(2)
+            continue
         if prompt_id in hist:
             status = hist[prompt_id].get("status", {})
             if status.get("status_str") == "error":
@@ -129,11 +173,23 @@ def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: 
             return {"content": file_resp.content, "prompt_id": prompt_id}
 
         if time.time() > grace_deadline and not _is_still_queued(base_url, prompt_id):
+            # pudo terminar justo entre mirar el historial y mirar la cola: ya
+            # no esta en la cola pero si en el historial. Sin volver a mirar,
+            # una ampliacion de 17 s que salio bien se daba por cancelada y la
+            # edicion entera fallaba (2026-10-07)
+            if _in_history(base_url, prompt_id):
+                continue
             forget(base_url, prompt_id, workflow)
             raise GenerationCancelled(f"Generacion cancelada (prompt_id={prompt_id})")
 
         time.sleep(1)
 
+    # y se para en ComfyUI: si no, seguia trabajando "zombi" y la siguiente
+    # edicion iba a paso de tortuga peleando por la GPU (2026-10-06)
+    try:
+        stop_job(base_url, prompt_id)
+    except requests.RequestException:
+        pass
     # tambien aqui: si no, la foto subida se quedaba en claro en input/ (auditoria 2026-10-05)
     forget(base_url, prompt_id, workflow)
     raise TimeoutError(f"Generacion no termino en {timeout}s (prompt_id={prompt_id})")

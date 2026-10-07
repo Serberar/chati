@@ -56,3 +56,36 @@ def test_count_faces_zero_for_corrupt_image_data():
 
 def test_face_positions_says_where_each_face_is():
     assert face_detect.face_positions((FIXTURES_DIR / "sample_face.png").read_bytes()) in (["centro"], ["izquierda"], ["derecha"])
+
+
+def _sample_face_scaled(factor: float, exif_orientation: int | None = None) -> bytes:
+    img = Image.open(FIXTURES_DIR / "sample_face.png").convert("RGB")
+    img = img.resize((int(img.width * factor), int(img.height * factor)))
+    exif = None
+    if exif_orientation is not None:
+        # guardada tumbada, como la saca el movil, con la marca de como girarla
+        img = img.rotate(90, expand=True)
+        exif = img.getexif()
+        exif[274] = exif_orientation
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=92, **({"exif": exif.tobytes()} if exif is not None else {}))
+    return buf.getvalue()
+
+
+def test_a_huge_face_from_a_phone_photo_is_found():
+    """2026-10-07: en una foto de 12 MP la cara (900 px) no se encontraba y el
+    editor no volvia a poner la original."""
+    img_bytes = _sample_face_scaled(4032 / max(Image.open(FIXTURES_DIR / "sample_face.png").size))
+    assert face_detect.has_face(img_bytes) is True
+
+
+def test_a_phone_photo_stored_sideways_is_turned_before_detecting():
+    assert face_detect.has_face(_sample_face_scaled(1.0, exif_orientation=6)) is True
+
+
+def test_detect_returns_coordinates_of_the_full_size_image():
+    import numpy as np
+    small = np.array(Image.open(FIXTURES_DIR / "sample_face.png").convert("RGB"))
+    big = np.array(Image.fromarray(small).resize((small.shape[1] * 4, small.shape[0] * 4)))
+    (a,), (b,) = face_detect.detect(small), face_detect.detect(big)
+    assert abs(b[0] / 4 - a[0]) < 0.05 * a[2] and abs(b[2] / 4 - a[2]) < 0.1 * a[2]

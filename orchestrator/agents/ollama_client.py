@@ -1,5 +1,5 @@
 import json
-from typing import Iterator
+from typing import Callable, Iterator
 
 import requests
 
@@ -48,6 +48,16 @@ def _think(model: str, think: bool | None) -> bool | None:
 
 
 class OllamaClient:
+    # Lo pone main.py: True mientras ComfyUI genera una imagen o un video. Entonces
+    # los modelos se ejecutan en la CPU (num_gpu 0) y no se precargan: en la GPU
+    # le quitaban la memoria a la imagen y la atascaban (2026-10-06).
+    gpu_busy: Callable[[], bool] | None = None
+
+    def _gpu_options(self, options: dict) -> dict:
+        if self.gpu_busy is not None and self.gpu_busy():
+            options["num_gpu"] = 0
+        return options
+
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
 
@@ -63,7 +73,7 @@ class OllamaClient:
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": options,
+            "options": self._gpu_options(options),
             "keep_alive": keep_alive,
         }
         think = _think(model, think)
@@ -80,7 +90,7 @@ class OllamaClient:
             "model": model,
             "messages": messages,
             "stream": True,
-            "options": {"temperature": temperature},
+            "options": self._gpu_options({"temperature": temperature}),
             "keep_alive": keep_alive,
         }
         think = _think(model, think)
@@ -109,7 +119,7 @@ class OllamaClient:
             "messages": messages,
             "tools": tools,
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": self._gpu_options({"temperature": temperature}),
             "keep_alive": keep_alive,
         }
         think = _think(model, think)
@@ -150,7 +160,7 @@ class OllamaClient:
             "messages": messages,
             "tools": tools,
             "stream": True,
-            "options": {"temperature": temperature},
+            "options": self._gpu_options({"temperature": temperature}),
             "keep_alive": keep_alive,
         }
         think = _think(model, think)
@@ -174,6 +184,8 @@ class OllamaClient:
         """Carga el modelo en memoria sin generar nada (peticion sin prompt),
         para que el primer mensaje no tenga que esperar la carga. Puede tardar
         minutos con un modelo grande en CPU. Lanza si Ollama falla."""
+        if self.gpu_busy is not None and self.gpu_busy():
+            return  # generando una imagen: precargar en la GPU la atascaria
         resp = requests.post(f"{self.base_url}/api/generate",
                              json={"model": model, "keep_alive": keep_alive}, timeout=900)
         _raise_with_body(resp)

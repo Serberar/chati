@@ -39,20 +39,40 @@ def test_if_the_rewrite_fails_the_original_answer_is_kept():
 
 def test_a_correction_after_a_photo_edit_edits_that_photo_again():
     # Sergio, 2026-10-05: "corrige..." iba al chat normal y generaba otra imagen
-    session = {"last_photo": {"last": "a.jpg", "original": "b.jpg", "chat": "conv-1",
-                              "time": __import__("time").time()}}
+    session = {"user_id": None}  # invitado: la foto de la conversacion vive en la sesion
+    main.photo_session.start(session, "conv-1", "a" * 32 + ".jpg", "subida")
+
+    def intent(msg, override=None, chat="conv-1"):
+        found = main._photo_followup(session, msg, override, chat)
+        return found[0] if found else None
+
     with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
-            patch.object(main.photo_edit, "wants_edit", return_value=False):
+            patch.object(main.ollama, "chat", return_value="otra"):
         for msg in ("corrige la cara", "que no salga nadie mas", "quita a la otra persona",
-                    "ponme unas gafas de sol", "vuelve a hacerla pero sin la toalla"):
-            assert main._wants_followup_edit(session, msg, None, "conv-1"), msg
-        assert main._wants_followup_edit(session, "corrige la cara", "image")  # modo Imagen: siempre
-        for msg in ("que tiempo hace hoy", "hazme una imagen de un perro", "explicame este codigo",
-                    "agente: arregla el bug del login", "arregla el error del archivo"):
-            assert not main._wants_followup_edit(session, msg, None, "conv-1"), msg
+                    "ponme unas gafas de sol", "vuelve a hacerla pero sin la toalla", "ahora haz que este sentado"):
+            assert intent(msg) == "editar", msg
+        assert intent("corrige la cara", "image") == "editar"
+        assert intent("deshaz eso") == "deshacer" and intent("vuelve a la original") == "original"
+        assert intent("otra vez") == "repetir"
+        assert intent("hazme una imagen de un perro en la luna") == "nueva"
+        for msg in ("que tiempo hace hoy?", "explicame este codigo", "agente: arregla el bug del login",
+                    "arregla el error del archivo", "gracias!"):
+            assert intent(msg) is None, msg
         # auditoria 2026-10-05: en OTRA conversacion "arregla..." no es la foto
-        assert not main._wants_followup_edit(session, "corrige la cara", None, "conv-2")
-        assert not main._wants_followup_edit(session, "corrige la cara", "code", "conv-1")
-        assert not main._wants_followup_edit({}, "corrige la cara", None, "conv-1")
-        old = {"last_photo": {**session["last_photo"], "time": 0}}
-        assert not main._wants_followup_edit(old, "corrige la cara", None, "conv-1")
+        assert intent("corrige la cara", chat="conv-2") is None
+        assert intent("corrige la cara", "code") is None
+
+
+def test_undo_and_back_to_the_original_move_between_versions():
+    session = {"user_id": None}
+    ps = main.photo_session
+    ps.start(session, "c", "v0", "subida")
+    ps.push(session, "c", "v1", "ponme en la playa")
+    ps.push(session, "c", "v2", "con un sombrero")
+    state = ps.load(session, "c")
+    assert ps.requests_so_far(state) == ["ponme en la playa", "con un sombrero"]
+    assert ps.move(session, "c", "anterior") == "v1"
+    ps.push(session, "c", "v3", "con gafas")  # lo deshecho (v2) se descarta
+    assert ps.load(session, "c")["versions"] == ["v0", "v1", "v3"]
+    assert ps.move(session, "c", "original") == "v0"
+    assert ps.move(session, "c", "original") is None
