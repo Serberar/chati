@@ -1441,6 +1441,11 @@ async function send(retry = null) {
       note.textContent = "(detenido)";
       bubble.appendChild(note);
       if (currentAbortIsMedia) appendRetry(bubble);
+    } else if (currentAbortIsMedia && getSessionId()) {
+      // imagen o edicion: el ordenador la termina igual aunque se corte la
+      // conexion (el movil se bloquea): se espera y se enseña al volver
+      reportClientError("Conexion cortada durante una generacion (se recupera): " + err, "modo " + modeKey, "");
+      await waitForResult(bubble, getSessionId(), text);
     } else {
       bubble.className = "bubble error";
       bubble.textContent = "Error de conexion: " + err;
@@ -3448,6 +3453,14 @@ async function streamChatInto(bubble, endpoint, text, agentOverride, imageBase64
     }
   }
 
+  // la conexion se cerro sin llegar el final (el movil se bloqueo) en una
+  // imagen o edicion: el ordenador la termina; se espera y se enseña
+  if (!finalData && currentAbortIsMedia && getSessionId()) {
+    reportClientError("Conexion cerrada sin resultado durante una generacion (se recupera)", "", "");
+    await waitForResult(bubble, getSessionId(), text);
+    return;
+  }
+
   if (!textNode) {
     bubble.innerHTML = "";
     textNode = document.createElement("div");
@@ -3507,6 +3520,47 @@ function renderResult(bubble, data) {
     if (data.agent_used === "image_edit") appendEditShortcuts(bubble);
   } else if (isRetryable(data.response)) {
     appendRetry(bubble);
+  }
+}
+
+// Se corto la conexion a mitad de una imagen o edicion (el movil se bloqueo,
+// cambio de red...): el ordenador la termina y la guarda en la conversacion.
+// Se pregunta cada pocos segundos y, en cuanto esta, se pinta en la misma
+// burbuja como si nada (2026-10-07). Con el movil bloqueado los temporizadores
+// se paran y siguen al desbloquearlo.
+async function waitForResult(bubble, sid, text) {
+  bubble.className = "bubble";
+  bubble.textContent = "generando...";
+  const stopTyping = startTypingIndicator(bubble);
+  const until = Date.now() + 40 * 60 * 1000;
+  try {
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 4000));
+      let messages;
+      try { messages = await (await fetch(`/sessions/${sid}`)).json(); } catch (e) { continue; }  // aun sin red
+      if (!Array.isArray(messages)) continue;
+      let i = messages.length - 1;
+      while (i >= 0 && !(messages[i].role === "user" && messages[i].content === text)) i--;
+      const answer = i >= 0 ? messages.slice(i + 1).find((m) => m.role === "assistant") : null;
+      if (!answer) continue;
+      stopTyping();
+      bubble.innerHTML = "";
+      const textNode = document.createElement("div");
+      renderMarkdownInto(textNode, answer.content, { highlight: true });
+      bubble.appendChild(textNode);
+      if (answer.media && /^[0-9a-f]{32}\.(png|jpg|webp|mp4)$/.test(answer.media)) {
+        appendMediaWithActions(bubble, "/media/" + answer.media, answer.media);
+        if (answer.agent === "image_edit") appendEditShortcuts(bubble);
+      } else if (isRetryable(answer.content)) {
+        appendRetry(bubble);
+      }
+      refreshPlan();
+      return;
+    }
+    bubble.textContent = "No ha llegado el resultado. Mira la conversación en un rato.";
+    appendRetry(bubble);
+  } finally {
+    stopTyping();
   }
 }
 
