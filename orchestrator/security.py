@@ -13,7 +13,11 @@
   (devices.py). Sin llave, lo unico que existe es la pagina para vincularlo.
 """
 
+import logging
+
 import devices
+
+log = logging.getLogger("chati")
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, RedirectResponse
@@ -22,7 +26,7 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 # las del ordenador en Tailscale (p.ej. "msi.tailcdce77.ts.net"); las pone main.py
 REMOTE_HOSTS: set[str] = set()
 # lo unico que ve un dispositivo sin vincular
-PAIR_PATHS = {"/pair", "/pair/claim", "/static/js/pair.js", "/favicon.ico"}
+PAIR_PATHS = {"/pair", "/pair/claim", "/static/js/pair.js", "/favicon.ico", "/client-log"}
 # ninguna peticion legitima pasa de esto (10 adjuntos del agente de 20 MB);
 # sin tope, un cuerpo de varios GB se leia entero en memoria
 MAX_BODY_BYTES = 250 * 1024 * 1024
@@ -81,25 +85,44 @@ def origin_allowed(origin: str | None, host_header: str) -> bool:
     return origin in (f"http://{host}",) and is_local_host(host_header)
 
 
+def _rejected(request, status: int, why: str, where: str) -> JSONResponse:
+    log.warning("Rechazada %s %s (%d, %s) desde %s", request.method, request.url.path, status, why, where)
+    return JSONResponse({"detail": why}, status_code=status)
+
+
+# respuestas de error que no merecen ir a errores.log: sesion caducada (la
+# interfaz vuelve a pedir entrar) y lo que no existe
+_QUIET_STATUSES = {401, 404}
+
+
 class LocalOnlyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         host = request.headers.get("host", "")
         request.state.device = None
         if is_remote_host(host):
             device = devices.verify(request.cookies.get(devices.COOKIE_NAME))
+            where = f"fuera ({device['name']})" if device else "fuera (sin vincular)"
             if device is None and request.url.path not in PAIR_PATHS:
                 if request.method == "GET" and request.url.path == "/":
                     return RedirectResponse("/pair", status_code=303)
-                return JSONResponse({"detail": "Este dispositivo no esta vinculado a Chati."}, status_code=403)
+                return _rejected(request, 403, "Este dispositivo no esta vinculado a Chati.", where)
             request.state.device = device
         elif not is_local_host(host):
-            return JSONResponse({"detail": "Solo se aceptan conexiones a localhost."}, status_code=400)
+            return _rejected(request, 400, "Solo se aceptan conexiones a localhost.", f"host {host_name(host)!r}")
+        else:
+            where = "el ordenador"
         if request.method not in SAFE_METHODS and not origin_allowed(request.headers.get("origin"), host):
-            return JSONResponse({"detail": "Origen no permitido."}, status_code=403)
+            return _rejected(request, 403, "Origen no permitido.", where)
         length = request.headers.get("content-length")
         if length and (not length.isdigit() or int(length) > MAX_BODY_BYTES):
-            return JSONResponse({"detail": "Peticion demasiado grande."}, status_code=413)
+            return _rejected(request, 413, "Peticion demasiado grande.", where)
         response = await call_next(request)
+        # toda respuesta de error queda apuntada: antes muchas se le decian al
+        # usuario y no quedaban en ningun sitio (2026-10-07)
+        if response.status_code >= 400:
+            level = logging.INFO if response.status_code in _QUIET_STATUSES else logging.WARNING
+            log.log(level, "Respuesta %d a %s %s desde %s", response.status_code, request.method,
+                    request.url.path, where)
         for name, value in SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
         # la pagina y su JS/CSS: que el navegador pregunte siempre si hay version

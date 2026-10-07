@@ -410,7 +410,13 @@ def _with_bytes(resp: ChatResponse, data: bytes, ext: str, session: dict) -> Cha
 def _generation_error_message(action: str, exc: Exception) -> str:
     """Lo que se le dice cuando una imagen o un video no sale. La interfaz
     reconoce estos comienzos y pone un boton para reintentar lo mismo sin
-    volver a escribirlo (Sergio, 2026-10-07) - ver RETRYABLE en app.js."""
+    volver a escribirlo (Sergio, 2026-10-07) - ver RETRYABLE en app.js.
+    Todo fallo queda en el registro: antes se le decia al usuario y no se
+    apuntaba en ningun sitio ("buscar un error a ciegas", 2026-10-07)."""
+    if isinstance(exc, GenerationCancelled):
+        log.warning("Generacion cancelada (%s): %s", action, exc)
+    else:
+        log.error("Fallo %s: %s", action, exc, exc_info=exc)
     if isinstance(exc, GenerationCancelled):
         return "Se ha cancelado la generación. Puedes reintentarlo con el botón."
     if "no termino" in str(exc):
@@ -569,8 +575,17 @@ def cancel_generation(request: Request):
     """Para las generaciones de imagen/video de quien lo pide (en marcha o en
     cola). Antes cortaba lo que estuviera corriendo en ComfyUI, fuera de quien
     fuera: un invitado podia parar las de los demas (auditoria 2026-10-05)."""
-    comfyui_client.stop_owned(CONFIG["comfyui"]["base_url"], _owner_of(request.state.session))
+    n = comfyui_client.stop_owned(CONFIG["comfyui"]["base_url"], _owner_of(request.state.session))
+    log.info("Detener: %d generacion(es) paradas, pedido desde %s", n, _where(request))
     return {"ok": True}
+
+
+def _where(request: Request) -> str:
+    """Desde donde llega una peticion, para el registro: el ordenador o el
+    dispositivo vinculado. Sin esto no se podia saber quien paraba las
+    ediciones (dos cortadas por "interrumpir", 2026-10-07)."""
+    device = getattr(request.state, "device", None)
+    return f"el dispositivo vinculado '{device['name']}'" if device else "el ordenador"
 
 
 # --- Modo "Agente": interfaz propia encima de OpenCode (ver opencode_client.py) ---
@@ -1140,6 +1155,57 @@ def image_inpaint(request: Request, prompt: str = Form(...), mask: UploadFile = 
 @app.get("/")
 def index():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
+
+
+@app.get("/admin/errors")
+def admin_errors(request: Request):
+    """Los ultimos avisos y errores (errores.log), lo mas nuevo primero, para
+    verlos desde Opciones sin abrir archivos. Solo administradores."""
+    if request.state.session["role"] != "admin":
+        return JSONResponse({"detail": "Solo para administradores."}, status_code=403)
+    path = logging_setup.ERROR_FILE
+    if not path.exists():
+        return {"entries": []}
+    text = path.read_text(encoding="utf-8", errors="replace")[-200_000:]
+    # una entrada por linea que empieza con fecha; las trazas van con la suya
+    entries: list[str] = []
+    for line in text.splitlines():
+        if re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", line) or not entries:
+            entries.append(line)
+        else:
+            entries[-1] += "\n" + line
+    return {"entries": entries[::-1][:300]}
+
+
+# --- Errores de la pantalla (el navegador, tambien el del movil) ---
+
+class ClientLog(BaseModel):
+    message: str = Field("", max_length=2000)
+    source: str = Field("", max_length=300)
+    stack: str = Field("", max_length=4000)
+    page: str = Field("", max_length=300)
+
+
+_client_log_times: list[float] = []
+
+
+@app.post("/client-log")
+def client_log(body: ClientLog, request: Request):
+    """Un error que ha pasado en la pantalla (JavaScript, una conexion que se
+    corta...). Sin esto, lo que fallaba en Safari del iPhone no llegaba a
+    ningun registro ("TypeError: Load failed", 2026-10-07). Sin sesion: puede
+    fallar antes de entrar. Limitado a 30 por minuto."""
+    now = time.time()
+    while _client_log_times and _client_log_times[0] < now - 60:
+        _client_log_times.pop(0)
+    if len(_client_log_times) >= 30:
+        return {"ok": False}
+    _client_log_times.append(now)
+    device = getattr(request.state, "device", None)
+    where = f"el dispositivo '{device['name']}'" if device else "el ordenador"
+    log.warning("Error en la pantalla (%s, %s): %s | %s%s", where, body.page or "?", body.message,
+                body.source, f"\n{body.stack}" if body.stack else "")
+    return {"ok": True}
 
 
 # --- Dispositivos vinculados: usar Chati desde el movil (devices.py) ---
@@ -2327,6 +2393,7 @@ def stop_generation(prompt_id: str, request: Request):
         comfyui_client.stop_job(CONFIG["comfyui"]["base_url"], prompt_id)
     except requests.RequestException as exc:
         return JSONResponse({"detail": f"ComfyUI no responde: {exc}"}, status_code=502)
+    log.info("Detener (tareas en segundo plano): generacion %s, pedido desde %s", prompt_id, _where(request))
     return {"ok": True}
 
 
@@ -2343,7 +2410,8 @@ def stop_work(request: Request):
         except requests.RequestException:
             pass
     try:  # solo lo propio: antes vaciaba la cola de ComfyUI entera, de todos
-        comfyui_client.stop_owned(CONFIG["comfyui"]["base_url"], _owner_of(request.state.session))
+        n = comfyui_client.stop_owned(CONFIG["comfyui"]["base_url"], _owner_of(request.state.session))
+        log.info("Detener todo: %d generacion(es) paradas, pedido desde %s", n, _where(request))
     except requests.RequestException:
         pass
     return {"ok": True}
@@ -2827,6 +2895,9 @@ def _report(text: str) -> None:
         callback(text)
 
 
+STREAM_HEARTBEAT_SECONDS = 10
+
+
 def _stream_with_progress(work, agent_used: str, session_id: str):
     """Ejecuta work() (que devuelve un ChatResponse) en un hilo y va mandando
     sus avisos de _report como eventos "status" del streaming."""
@@ -2845,11 +2916,19 @@ def _stream_with_progress(work, agent_used: str, session_id: str):
     # copy_context: el hilo hereda el dueño de las generaciones (comfyui_client.current_owner)
     thread = threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True)
     thread.start()
+    last_sent = time.monotonic()
     while thread.is_alive() or not events.empty():
         try:
             yield json.dumps({"type": "status", "text": events.get(timeout=1)}) + "\n"
+            last_sent = time.monotonic()
         except queue.Empty:
-            pass
+            # latido: durante los 2-3 min de Kontext no habia nada que mandar y
+            # Safari en el iPhone (o el proxy de Tailscale) cortaba la conexion
+            # a los ~60 s en silencio: "TypeError: Load failed" (2026-10-07).
+            # La interfaz ignora este tipo de evento.
+            if time.monotonic() - last_sent >= STREAM_HEARTBEAT_SECONDS:
+                yield json.dumps({"type": "ping"}) + "\n"
+                last_sent = time.monotonic()
     thread.join()
     if "error" in result:
         yield json.dumps({"type": "done", "response": _generation_error_message("editando la foto", result["error"]),

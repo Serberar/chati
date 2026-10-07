@@ -1,3 +1,26 @@
+// --- Errores de la pantalla al registro del ordenador (errores.log) ---
+// Lo que fallaba en Safari del iPhone no llegaba a ningun sitio y habia que
+// buscar el error a ciegas (2026-10-07). Va primero para cubrir todo lo demas.
+function reportClientError(message, source, stack) {
+  try {
+    const body = JSON.stringify({
+      message: String(message || "").slice(0, 2000),
+      source: String(source || "").slice(0, 300),
+      stack: String(stack || "").slice(0, 4000),
+      page: (location.pathname + " · " + navigator.userAgent).slice(0, 300),
+    });
+    fetch("/client-log", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true })
+      .catch(() => {});
+  } catch (e) { /* informar de un error no puede romper nada */ }
+}
+window.addEventListener("error", (e) => {
+  reportClientError(e.message, `${e.filename || ""}:${e.lineno || ""}:${e.colno || ""}`, e.error && e.error.stack);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason || {};
+  reportClientError("Promesa sin capturar: " + (r.message || r), "", r.stack);
+});
+
 // --- Tema claro/oscuro ---
 function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);

@@ -81,3 +81,20 @@ def test_codes_are_only_made_on_the_computer():
     # aunque tuviera sesion, desde el movil no se puede vincular otro
     resp = client.post("/devices/pair", headers={"X-Session-Token": "x"})
     assert resp.status_code in (401, 403)
+
+
+def test_errors_on_the_screen_reach_the_log(caplog):
+    """2026-10-07: lo que fallaba en Safari del iPhone no llegaba al registro."""
+    client = TestClient(main.app)
+    with caplog.at_level("WARNING", logger="chati"):
+        resp = client.post("/client-log", json={"message": "TypeError: Load failed", "page": "/"})
+    assert resp.status_code == 200
+    assert any("TypeError: Load failed" in r.getMessage() for r in caplog.records)
+
+
+def test_error_responses_are_logged(caplog):
+    client = TestClient(main.app)
+    with caplog.at_level("WARNING", logger="chati"):
+        client.get("/sessions", headers={"Host": REMOTE})          # movil sin vincular
+    assert any("no esta vinculado" in r.getMessage() and "fuera (sin vincular)" in r.getMessage()
+               for r in caplog.records)

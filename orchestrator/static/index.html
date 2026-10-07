@@ -116,6 +116,10 @@
   .app-tile.soon { cursor: default; opacity: .55; border-style: dashed; }
   .app-tile.soon:hover { border-color: var(--border); }
 
+  .errors-list { overflow-y: auto; padding: 0 16px 16px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .errors-list .err { white-space: pre-wrap; word-break: break-word; padding: 8px 10px; margin-bottom: 6px;
+    border-left: 3px solid var(--warn); background: var(--panel-2); border-radius: 6px; }
+  .errors-list .err.error { border-left-color: var(--error); }
   .pair-box { text-align: center; padding: 10px; margin-bottom: 10px; border-radius: var(--radius-sm); background: var(--panel-2); }
   .pair-box img { background: white; border-radius: 8px; padding: 6px; }
   .pair-code-label { font-size: 12px; color: var(--muted); margin-top: 8px; }
@@ -1434,6 +1438,7 @@
       <button class="options-row" id="profileBtn"><span class="ic">&#128100;</span>Mi perfil</button>
       <button class="options-row" id="optDevicesBtn"><span class="ic">&#128241;</span>Dispositivos (usar desde el móvil)</button>
       <button class="options-row" id="adminBtn" style="display:none;"><span class="ic">&#128273;</span>Administracion</button>
+      <button class="options-row" id="optErrorsBtn" style="display:none;"><span class="ic">&#9888;</span>Registro de errores</button>
       <div class="options-divider"></div>
       <div class="options-section-label">Herramientas</div>
       <button class="options-row" id="knowledgeBtn"><span class="ic">&#128218;</span>Mis documentos</button>
@@ -1447,6 +1452,21 @@
       <div class="options-divider"></div>
       <button class="options-row danger" id="logoutBtn"><span class="ic">&#128682;</span>Cerrar sesion</button>
     </div>
+  </div>
+</div>
+
+<div id="errorsModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:860px; margin:40px auto; max-height:86vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Registro de errores</strong>
+      <button id="closeErrorsBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:10px 16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <span class="personas-intro" style="margin:0; flex:1;">Avisos y errores de Chati, lo más nuevo arriba
+        (archivo <code>data/logs/errores.log</code>).</span>
+      <button class="personas-primary" id="errorsRefreshBtn">Actualizar</button>
+    </div>
+    <div id="errorsList" class="errors-list"></div>
   </div>
 </div>
 
@@ -1612,7 +1632,7 @@
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/js/theme.js?v=20261007b"></script>
+<script src="/static/js/theme.js?v=20261007c"></script>
 <style>
   html[data-theme="light"] {
     --bg: #f5f6f8;
@@ -1627,6 +1647,6 @@
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
 </style>
-<script src="/static/js/app.js?v=20261007b"></script>
+<script src="/static/js/app.js?v=20261007c"></script>
 </body>
 </html>

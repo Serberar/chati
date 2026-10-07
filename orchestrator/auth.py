@@ -28,6 +28,8 @@ PUBLIC_PATHS = {
     "/auth/login", "/auth/guest", "/auth/register", "/auth/reset-password",
     # vincular un dispositivo (el movil): se llega sin sesion, con el codigo
     "/pair", "/pair/claim",
+    # errores de la pantalla: pueden pasar antes de iniciar sesion
+    "/client-log",
 }
 # /llm/: pasarela de OpenCode hacia Ollama (main.py) - no lleva sesion de usuario
 PUBLIC_PATH_PREFIXES = ("/auth/security-question/", "/static/", "/llm/")

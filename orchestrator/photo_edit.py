@@ -54,8 +54,10 @@ Peticion del usuario: "{request}"
 {glossary}
 Reglas que no se pueden saltar (con fallos reales, 2026-10-05):
 - Nombra a cada persona como es ("the man", "the woman with long hair") y la
-  prenda u objeto CONCRETO que cambia tal como sale en la descripcion ("his
-  grey wool sweater and collared shirt"). Si hay UNA sola persona, NUNCA
+  prenda u objeto CONCRETO que cambia tal como sale en "Lo que se ve en la
+  foto" de ARRIBA, nunca la de los ejemplos de abajo (si la foto dice "a white
+  t-shirt", es "his white t-shirt"; copiar "grey wool sweater" de un ejemplo
+  dejaba la ropa sin cambiar, 2026-10-07). Si hay UNA sola persona, NUNCA
   escribas "all the people" ni "everyone": con eso el editor se inventaba
   gente nueva en bañador alrededor.
 - Cambia SOLO lo que pide. Si no menciona la ropa, la ropa se queda tal cual
@@ -458,9 +460,39 @@ def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "
         plans = plans[1:]
     for plan in plans:
         plan.instruction = _keep_body(clothing_terms.fix_instruction(request, plan.instruction))
+        plan.instruction = _real_clothes(plan.instruction, scene)
         plan.summary = _same_person(plan.summary, [*(history or []), request])
     # sin instruccion en ingles Kontext entiende peor, pero entiende algo
     return plans or [EditPlan(request, "local")]
+
+
+_REPLACE_OBJ = re.compile(r"\bReplace\s+(the man's|the woman's|the person's|his|her|their)\s+(.+?)\s+with\s+",
+                          re.IGNORECASE | re.DOTALL)
+_SCENE_GARMENT = re.compile(
+    r"((?:[a-z-]+\s+){0,2}(?:t-shirt|shirt|blouse|sweater|jumper|hoodie|sweatshirt|jacket|coat|blazer|dress|top|"
+    r"tank top|polo shirt|cardigan|vest|suit|uniform|turtleneck(?: sweater)?))\b", re.IGNORECASE)
+_NOT_ADJ = {"a", "an", "the", "wearing", "in", "with", "and", "his", "her", "their", "over", "under"}
+
+
+def _real_clothes(instruction: str, scene: str) -> str:
+    """Si la instruccion cambia prendas que la foto no tiene, se nombran las
+    que si tiene. qwen3:8b copiaba la del ejemplo ("his grey wool sweater and
+    collared shirt") con una camiseta blanca: Kontext no encontraba ningun
+    jersey, no cambiaba nada y la edicion se repetia para nada (5 min,
+    Sergio, 2026-10-07)."""
+    m = _REPLACE_OBJ.search(instruction or "")
+    if not m or not scene:
+        return instruction
+    named = {g.lower() for g in _CLOTHES_EN.findall(m.group(2))}
+    scene_l = scene.lower()
+    # la prenda entera: "shirt" no esta en "t-shirt"
+    if not named or any(re.search(rf"(?<![\w-]){re.escape(g)}\b", scene_l) for g in named):
+        return instruction
+    found = _SCENE_GARMENT.search(scene)
+    if not found:
+        return instruction
+    words = [w for w in found.group(1).split() if w.lower() not in _NOT_ADJ]
+    return instruction[:m.start(2)] + " ".join(words) + instruction[m.end(2):]
 
 
 _CLOTHES_EN = re.compile(

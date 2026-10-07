@@ -241,6 +241,7 @@ async function initSessionUI() {
   currentMe = me;
   loadAvatar();
   if (me.role === "admin") document.getElementById("adminBtn").style.display = "block";
+  if (me.role === "admin") document.getElementById("optErrorsBtn").style.display = "block";
   // las metricas son de todo el sistema: solo el administrador
   if (me.role !== "admin") document.getElementById("optMetricsBtn").style.display = "none";
   if (me.role === "admin") {
@@ -1295,6 +1296,7 @@ async function sendVoice(blob) {
   } catch (err) {
     bubble.className = "bubble error";
     bubble.textContent = "Error de conexion: " + err;
+    reportClientError("Error de conexion (voz): " + err, "", err && err.stack);
   } finally {
     stopTyping();
   }
@@ -1442,6 +1444,7 @@ async function send(retry = null) {
     } else {
       bubble.className = "bubble error";
       bubble.textContent = "Error de conexion: " + err;
+      reportClientError("Error de conexion al enviar: " + err, "modo " + modeKey, err && err.stack);
       appendRetry(bubble);
     }
   } finally {
@@ -1825,6 +1828,34 @@ document.getElementById("optCreditsBtn").addEventListener("click", () => {
 });
 document.getElementById("closeCreditsBtn").addEventListener("click", () => { creditsModal.style.display = "none"; });
 creditsModal.addEventListener("click", (e) => { if (e.target === creditsModal) creditsModal.style.display = "none"; });
+
+// --- Registro de errores (errores.log): verlos sin abrir archivos ---
+const errorsModal = document.getElementById("errorsModal");
+
+async function loadErrors() {
+  const list = document.getElementById("errorsList");
+  list.textContent = "Cargando…";
+  let data;
+  try { data = await (await fetch("/admin/errors")).json(); } catch (e) { list.textContent = "No se ha podido leer."; return; }
+  list.textContent = "";
+  const entries = data.entries || [];
+  if (!entries.length) { list.textContent = "Sin errores registrados."; return; }
+  for (const text of entries) {
+    const row = document.createElement("div");
+    row.className = "err" + (/ (ERROR|CRITICAL) /.test(text) ? " error" : "");
+    row.textContent = text;
+    list.appendChild(row);
+  }
+}
+
+document.getElementById("optErrorsBtn").addEventListener("click", () => {
+  optionsModal.style.display = "none";
+  errorsModal.style.display = "block";
+  loadErrors();
+});
+document.getElementById("errorsRefreshBtn").addEventListener("click", loadErrors);
+document.getElementById("closeErrorsBtn").addEventListener("click", () => { errorsModal.style.display = "none"; });
+errorsModal.addEventListener("click", (e) => { if (e.target === errorsModal) errorsModal.style.display = "none"; });
 
 // --- Dispositivos vinculados: usar Chati desde el movil (devices.py) ---
 const devicesModal = document.getElementById("devicesModal");

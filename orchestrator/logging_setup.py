@@ -15,6 +15,10 @@ import paths
 
 LOG_DIR = paths.DATA_DIR / "logs"
 LOG_FILE = LOG_DIR / "chati.log"
+# solo avisos y errores, con su traza: para ir directo a lo que falla sin
+# buscar en todo el registro (Sergio, 2026-10-07: "no me mola buscar un
+# error a ciegas"). Se ve en Opciones > Registro de errores.
+ERROR_FILE = LOG_DIR / "errores.log"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
@@ -27,6 +31,12 @@ def setup() -> logging.Logger:
     handler.setFormatter(logging.Formatter(_FORMAT))
     handler._chati = True
     root.addHandler(handler)
+    errors = RotatingFileHandler(ERROR_FILE, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    errors.setLevel(logging.WARNING)
+    errors.setFormatter(logging.Formatter(_FORMAT))
+    errors._chati = True
+    errors.addFilter(_skip_client_disconnects)
+    root.addHandler(errors)
     if sys.stderr is not None:  # en el .exe sin consola no hay stderr
         console = logging.StreamHandler()
         console.setFormatter(logging.Formatter(_FORMAT))
