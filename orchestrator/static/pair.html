@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vincular con Chati</title>
+<style>
+  :root { --bg: #0f1115; --panel: #181b22; --text: #e8e8ea; --muted: #9aa0aa; --accent: #6c8cff; --error: #ff6b6b; --ok: #4cd18a; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f6f8; --panel: #ffffff; --text: #1d1f24; --muted: #646a75; --accent: #3d5afe; --error: #d32f2f; --ok: #1b8a4a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 16px; }
+  .card { width: 100%; max-width: 380px; background: var(--panel); border-radius: 16px; padding: 28px 22px; text-align: center; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p { color: var(--muted); margin: 0 0 18px; font-size: 15px; }
+  input { width: 100%; font-size: 22px; letter-spacing: 0.15em; text-align: center; text-transform: uppercase;
+          padding: 12px; border-radius: 10px; border: 1px solid var(--muted); background: transparent; color: var(--text); }
+  button { width: 100%; margin-top: 12px; padding: 13px; font-size: 16px; border: none; border-radius: 10px;
+           background: var(--accent); color: white; cursor: pointer; }
+  button:disabled { opacity: 0.5; }
+  #msg { min-height: 24px; margin-top: 14px; font-size: 15px; }
+  #msg.error { color: var(--error); }
+  #msg.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>Vincular con Chati</h1>
+  <p id="intro">Escribe el código que aparece en el ordenador (Opciones &gt; Dispositivos).</p>
+  <form id="form">
+    <input id="code" autocomplete="one-time-code" autocapitalize="characters" maxlength="12" placeholder="XXXXXXXX">
+    <button id="go" type="submit">Vincular este dispositivo</button>
+  </form>
+  <div id="msg"></div>
+</main>
+<script src="/static/js/pair.js"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Chati IA</title>
 <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
 <link rel="stylesheet" href="/static/vendor/highlight-dark.min.css">
@@ -116,6 +116,14 @@
   .app-tile.soon { cursor: default; opacity: .55; border-style: dashed; }
   .app-tile.soon:hover { border-color: var(--border); }
 
+  .pair-box { text-align: center; padding: 10px; margin-bottom: 10px; border-radius: var(--radius-sm); background: var(--panel-2); }
+  .pair-box img { background: white; border-radius: 8px; padding: 6px; }
+  .pair-code-label { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .pair-code { font-size: 26px; letter-spacing: 0.18em; font-weight: 700; margin: 4px 0; }
+  .pair-timer { font-size: 12px; color: var(--muted); }
+  .device-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--border); }
+  .device-row .dname { flex: 1; min-width: 0; }
+  .device-row .dmeta { font-size: 12px; color: var(--muted); }
   #convSectionLabel {
     padding: 4px 20px 6px; font-size: 11px; letter-spacing: 0.05em;
     text-transform: uppercase; color: var(--muted); font-weight: 600;
@@ -870,6 +878,73 @@
   .profile-cv-icon { font-size: 26px; }
   .profile-cv-info { flex: 1; min-width: 0; }
   .profile-cv-name { font-weight: 600; font-size: 13px; word-break: break-all; }
+
+  /* ---------- Movil (Sergio, 2026-10-07: "la interfaz para movil es un cacho
+     de mierda"): el chat a pantalla completa y la barra lateral como menu que
+     se desliza (☰); nada se sale de lado; ventanas a pantalla completa. ---------- */
+  #mobileBackdrop { display: none; }
+  @media (max-width: 760px) {
+    html, body { height: 100%; overflow: hidden; }
+    body { height: 100dvh; }
+    /* la barra lateral: menu deslizante por encima del chat */
+    #sidebar, body.sidebar-hidden #sidebar {
+      display: flex; position: fixed; top: 0; left: 0; z-index: 90;
+      width: min(86vw, 320px); height: 100dvh;
+      transform: translateX(-102%); transition: transform 0.22s ease;
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.45);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    body.mobile-menu-open #sidebar { transform: none; }
+    #mobileBackdrop { position: fixed; inset: 0; z-index: 89; background: rgba(0, 0, 0, 0.5); }
+    body.mobile-menu-open #mobileBackdrop { display: block; }
+    #sidebarShowBtn, body.sidebar-hidden #sidebarShowBtn {
+      display: flex; position: fixed; top: calc(8px + env(safe-area-inset-top)); left: 8px; z-index: 50;
+      width: 40px; height: 40px; font-size: 19px;
+    }
+    #main { width: 100%; height: 100dvh; padding-top: env(safe-area-inset-top); }
+    /* barra de arriba: en una linea, sin etiquetas, deslizable si no cabe */
+    #topbar, body.sidebar-hidden #topbar {
+      padding: 8px 10px 8px 56px; gap: 8px; min-height: 56px; box-sizing: border-box;
+      overflow-x: auto; white-space: nowrap; scrollbar-width: none;
+    }
+    #topbar::-webkit-scrollbar { display: none; }
+    #profileSelectLabel, #modelSelectLabel, #personaSelectLabel { display: none !important; }
+    #topbar:not(.show) + #planPanel, #topbar:not(.show) ~ #log { padding-top: 56px; }
+    #log { padding: 12px 12px 8px; }
+    #emptyState { margin-top: 6vh; padding: 0 8px; }
+    .msg { margin-bottom: 16px; }
+    .msg .bubble { overflow-wrap: anywhere; }
+    .msg .bubble img, .msg .bubble video, .msg img, .msg video { max-width: 100%; height: auto; }
+    .msg .bubble pre { max-width: 100%; overflow-x: auto; }
+    .msg .bubble table { display: block; max-width: 100%; overflow-x: auto; }
+    /* sin raton no hay "pasar por encima": los botones de cada mensaje, siempre */
+    .msg .msg-actions { display: flex; }
+    /* escribir: abajo, a lo ancho, comodo para el pulgar */
+    #inputbar { padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); }
+    #row { gap: 6px; }
+    #prompt { font-size: 16px; }  /* con menos de 16 px el iPhone hace zoom al tocar */
+    #send, #cancelBtn, #micBtn { padding-left: 12px; padding-right: 12px; min-height: 44px; }
+    #inputFooter { flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; }
+    #inputFooter .hint { display: none; }
+    #codeBar { flex-wrap: wrap; }
+    input, select, textarea { font-size: 16px; }
+    #topbar select { font-size: 14px; }
+    /* ventanas: a pantalla completa (muchas llevan margenes en linea) */
+    .modal-box {
+      width: 100% !important; max-width: 100% !important; margin: 0 !important;
+      height: 100dvh !important; max-height: 100dvh !important; border-radius: 0 !important;
+      display: flex; flex-direction: column; overflow-y: auto; box-sizing: border-box;
+      padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+    }
+    .modal-header { position: sticky; top: 0; z-index: 2; background: var(--panel); }
+    .modal-close { min-width: 44px; min-height: 44px; font-size: 26px; }
+    /* avisos centrados ("Cargando el modelo..."): dentro de la pantalla */
+    .prep-card { max-width: calc(100vw - 32px); padding: 22px 18px; box-sizing: border-box; }
+    #loginBox { width: calc(100vw - 32px); max-width: 400px; box-sizing: border-box; }
+    .conv-row { padding-top: 12px; padding-bottom: 12px; }
+    /* las acciones de cada conversacion (renombrar, borrar), siempre visibles */
+    .conv-row .conv-rename, .conv-row .conv-del { opacity: 1; display: flex; }
+  }
 </style>
 </head>
 <body>
@@ -1079,7 +1154,7 @@
     <div id="emptyState">
       <img src="/static/logo.svg" alt="" width="52" height="52">
       <h2>Empieza una conversacion</h2>
-      <p>Elige un modo a la izquierda y escribe abajo. Todo corre en local: nada sale de este ordenador.</p>
+      <p>Elige un modo en el menú y escribe abajo. Todo corre en tu ordenador: nada sale de él.</p>
     </div>
   </div>
   <div id="inputbar">
@@ -1357,6 +1432,7 @@
     <div style="padding:10px;">
       <div class="options-section-label">Cuenta</div>
       <button class="options-row" id="profileBtn"><span class="ic">&#128100;</span>Mi perfil</button>
+      <button class="options-row" id="optDevicesBtn"><span class="ic">&#128241;</span>Dispositivos (usar desde el móvil)</button>
       <button class="options-row" id="adminBtn" style="display:none;"><span class="ic">&#128273;</span>Administracion</button>
       <div class="options-divider"></div>
       <div class="options-section-label">Herramientas</div>
@@ -1370,6 +1446,31 @@
       <button class="options-row" id="optCreditsBtn"><span class="ic">&#128220;</span>Créditos</button>
       <div class="options-divider"></div>
       <button class="options-row danger" id="logoutBtn"><span class="ic">&#128682;</span>Cerrar sesion</button>
+    </div>
+  </div>
+</div>
+
+<div id="devicesModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:440px; margin:50px auto; max-height:86vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Dispositivos</strong>
+      <button id="closeDevicesBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:14px 16px; overflow-y:auto;">
+      <p class="personas-intro">Para usar Chati desde el móvil: con Tailscale activo en el móvil, escanea el código
+        con la cámara. Solo los dispositivos vinculados aquí pueden entrar, y además tienen que iniciar sesión.</p>
+      <div id="pairBox" class="pair-box" style="display:none;">
+        <img id="pairQr" alt="Código QR para vincular" width="220" height="220">
+        <div class="pair-code-label">o abre <strong id="pairUrl"></strong> y escribe:</div>
+        <div class="pair-code" id="pairCode"></div>
+        <div class="pair-timer" id="pairTimer"></div>
+      </div>
+      <div class="profile-actions" style="justify-content:flex-start;">
+        <button class="personas-primary" id="pairStartBtn">Vincular un dispositivo</button>
+        <span class="profile-msg" id="devicesMsg"></span>
+      </div>
+      <div class="profile-section-title" style="margin-top:18px;">Vinculados</div>
+      <div id="devicesList"></div>
     </div>
   </div>
 </div>

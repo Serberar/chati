@@ -8,12 +8,21 @@
 - Las peticiones que cambian algo (POST, PUT, DELETE...) con cabecera Origin
   tienen que venir de la propia pagina de Chati (mismo host y puerto).
 - Cabeceras de seguridad en cada respuesta (CSP, no incrustar en iframes...).
+- Desde fuera (el movil por Tailscale, 2026-10-07): solo por las direcciones
+  de REMOTE_HOSTS (config.yaml, remote.hosts) y solo un dispositivo vinculado
+  (devices.py). Sin llave, lo unico que existe es la pagina para vincularlo.
 """
 
+import devices
+
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+# las del ordenador en Tailscale (p.ej. "msi.tailcdce77.ts.net"); las pone main.py
+REMOTE_HOSTS: set[str] = set()
+# lo unico que ve un dispositivo sin vincular
+PAIR_PATHS = {"/pair", "/pair/claim", "/static/js/pair.js", "/favicon.ico"}
 # ninguna peticion legitima pasa de esto (10 adjuntos del agente de 20 MB);
 # sin tope, un cuerpo de varios GB se leia entero en memoria
 MAX_BODY_BYTES = 250 * 1024 * 1024
@@ -55,20 +64,35 @@ def is_local_host(host_header: str) -> bool:
     return host_name(host_header) in LOCAL_HOSTS
 
 
+def is_remote_host(host_header: str) -> bool:
+    return host_name(host_header) in REMOTE_HOSTS
+
+
 def origin_allowed(origin: str | None, host_header: str) -> bool:
     """Sin Origin (curl, OpenCode, el vigilante) vale: el navegador siempre lo
     manda en peticiones que cambian algo. Con Origin, tiene que ser la propia
-    pagina: mismo host y puerto que la peticion."""
+    pagina: mismo host y puerto que la peticion (por https si es de fuera)."""
     if origin is None:
         return True
     origin = origin.strip().lower()
-    return origin in (f"http://{host_header.strip().lower()}",) and is_local_host(host_header)
+    host = host_header.strip().lower()
+    if is_remote_host(host_header):
+        return origin in (f"https://{host}", f"https://{host_name(host_header)}")
+    return origin in (f"http://{host}",) and is_local_host(host_header)
 
 
 class LocalOnlyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         host = request.headers.get("host", "")
-        if not is_local_host(host):
+        request.state.device = None
+        if is_remote_host(host):
+            device = devices.verify(request.cookies.get(devices.COOKIE_NAME))
+            if device is None and request.url.path not in PAIR_PATHS:
+                if request.method == "GET" and request.url.path == "/":
+                    return RedirectResponse("/pair", status_code=303)
+                return JSONResponse({"detail": "Este dispositivo no esta vinculado a Chati."}, status_code=403)
+            request.state.device = device
+        elif not is_local_host(host):
             return JSONResponse({"detail": "Solo se aceptan conexiones a localhost."}, status_code=400)
         if request.method not in SAFE_METHODS and not origin_allowed(request.headers.get("origin"), host):
             return JSONResponse({"detail": "Origen no permitido."}, status_code=403)

@@ -12,6 +12,7 @@ cryptography
 opencv-python-headless
 pillow
 pillow-heif
+segno
 numpy
 # lectura de documentos (PDF y Word) en rag.py; antes llegaban de rebote con
 # browser-use, que no se usa y arrastraba ~35 paquetes (auditoria 2026-09-29)

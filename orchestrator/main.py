@@ -26,6 +26,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import auth
+import devices
 import auth_sessions
 import face_detect
 import access
@@ -292,6 +293,11 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
         session = auth_sessions.get_session(token) if token else None
         if session is None:
             return JSONResponse({"detail": "No autorizado. Inicia sesion."}, status_code=401)
+        # un dispositivo vinculado solo lo usa la persona que lo vinculo (ni
+        # otro usuario ni un invitado con ese movil)
+        device = getattr(request.state, "device", None)
+        if device is not None and device["user_id"] != session.get("user_id"):
+            return JSONResponse({"detail": "Este dispositivo esta vinculado a otro usuario."}, status_code=403)
         path = request.url.path
         if session["role"] == "guest" and not access.guest_may_use(path):
             return access.guest_blocked()
@@ -309,6 +315,19 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SessionAuthMiddleware)
 # la ultima en añadirse es la primera en ejecutarse: Host/Origin antes que nada
 app.add_middleware(security.LocalOnlyMiddleware)
+
+
+def _remote_hosts() -> set[str]:
+    """Las direcciones por las que se puede entrar desde fuera (Tailscale):
+    las de config.yaml y las de este equipo en data/remote_hosts.txt."""
+    hosts = set((CONFIG.get("remote") or {}).get("hosts") or [])
+    extra = paths.DATA_DIR / "remote_hosts.txt"
+    if extra.exists():
+        hosts |= {line.strip() for line in extra.read_text(encoding="utf-8").splitlines() if line.strip()}
+    return {h.lower().rstrip(".") for h in hosts}
+
+
+security.REMOTE_HOSTS |= _remote_hosts()
 
 
 # --- Sistema de usuarios (rutas en routes_auth.py, politica en access.py) ---
@@ -1121,6 +1140,76 @@ def image_inpaint(request: Request, prompt: str = Form(...), mask: UploadFile = 
 @app.get("/")
 def index():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
+
+
+# --- Dispositivos vinculados: usar Chati desde el movil (devices.py) ---
+
+@app.get("/pair")
+def pair_page():
+    return FileResponse(Path(__file__).parent / "static" / "pair.html")
+
+
+class PairClaim(BaseModel):
+    code: str
+    name: str = "Dispositivo"
+
+
+@app.post("/pair/claim")
+def pair_claim(body: PairClaim, request: Request):
+    """El movil presenta el codigo que enseña el ordenador y recibe su llave
+    (cookie). Solo tiene sentido llegando por la direccion de fuera."""
+    if not security.is_remote_host(request.headers.get("host", "")):
+        return JSONResponse({"detail": "Abre esta pagina desde el dispositivo que quieres vincular."},
+                            status_code=400)
+    token = devices.claim(body.code, body.name)
+    if token is None:
+        return JSONResponse({"detail": "Codigo no valido o caducado. Pide otro en el ordenador."},
+                            status_code=403)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(devices.COOKIE_NAME, token, max_age=400 * 24 * 3600, httponly=True, secure=True,
+                    samesite="strict", path="/")
+    return resp
+
+
+@app.post("/devices/pair")
+def devices_pair(request: Request):
+    """Codigo para vincular un dispositivo nuevo: solo desde el propio
+    ordenador y con la sesion de un usuario (no un invitado)."""
+    session = request.state.session
+    if getattr(request.state, "device", None) is not None:
+        return JSONResponse({"detail": "Los dispositivos se vinculan desde el ordenador."}, status_code=403)
+    if not session.get("user_id"):
+        return JSONResponse({"detail": "Hay que iniciar sesion."}, status_code=403)
+    if not security.REMOTE_HOSTS:
+        return JSONResponse({"detail": "Falta la direccion de Tailscale de este ordenador (data/remote_hosts.txt)."},
+                            status_code=400)
+    import segno
+    pairing = devices.start_pairing(session["user_id"])
+    host = sorted(security.REMOTE_HOSTS)[0]
+    # el secreto va tras "#": el navegador no lo manda al servidor ni queda
+    # en ningun registro; pair.js lo lee y lo envia en el cuerpo
+    url = f"https://{host}/pair#{pairing['secret']}"
+    qr = segno.make(url, error="m").svg_data_uri(scale=6, border=2)
+    return {"url": f"https://{host}/pair", "qr": qr, "code": pairing["short"],
+            "expires_in": pairing["expires_in"]}
+
+
+@app.get("/devices")
+def devices_list(request: Request):
+    session = request.state.session
+    if not session.get("user_id"):
+        return []
+    current = getattr(request.state, "device", None)
+    return [dict(d, current=bool(current and current["id"] == d["id"]))
+            for d in devices.list_for(session["user_id"])]
+
+
+@app.delete("/devices/{device_id}")
+def devices_revoke(device_id: str, request: Request):
+    session = request.state.session
+    if not session.get("user_id") or not devices.revoke(device_id, session["user_id"]):
+        return JSONResponse({"detail": "No existe ese dispositivo."}, status_code=404)
+    return {"ok": True}
 
 
 @app.get("/media/{name}")

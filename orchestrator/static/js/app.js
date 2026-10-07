@@ -1826,6 +1826,96 @@ document.getElementById("optCreditsBtn").addEventListener("click", () => {
 document.getElementById("closeCreditsBtn").addEventListener("click", () => { creditsModal.style.display = "none"; });
 creditsModal.addEventListener("click", (e) => { if (e.target === creditsModal) creditsModal.style.display = "none"; });
 
+// --- Dispositivos vinculados: usar Chati desde el movil (devices.py) ---
+const devicesModal = document.getElementById("devicesModal");
+let pairTimer = null;
+
+function stopPairing() {
+  if (pairTimer) clearInterval(pairTimer);
+  pairTimer = null;
+  document.getElementById("pairBox").style.display = "none";
+}
+
+async function loadDevices() {
+  const list = document.getElementById("devicesList");
+  list.textContent = "";
+  let items = [];
+  try { items = await (await fetch("/devices")).json(); } catch (e) { /* sin lista */ }
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "personas-intro";
+    empty.textContent = "Ninguno todavía.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const d of items) {
+    const row = document.createElement("div");
+    row.className = "device-row";
+    const info = document.createElement("div");
+    info.className = "dname";
+    const name = document.createElement("div");
+    name.textContent = d.name + (d.current ? " (este)" : "");
+    const meta = document.createElement("div");
+    meta.className = "dmeta";
+    meta.textContent = "Vinculado " + formatRelativeTime(new Date(d.created * 1000).toISOString()) + " · usado " + formatRelativeTime(new Date(d.last_seen * 1000).toISOString());
+    info.append(name, meta);
+    const btn = document.createElement("button");
+    btn.className = "profile-link danger";
+    btn.textContent = "Desconectar";
+    btn.addEventListener("click", async () => {
+      if (!confirm(`¿Desconectar "${d.name}"? Para volver a usarlo habrá que vincularlo otra vez.`)) return;
+      await fetch(`/devices/${encodeURIComponent(d.id)}`, { method: "DELETE" });
+      loadDevices();
+    });
+    row.append(info, btn);
+    list.appendChild(row);
+  }
+}
+
+document.getElementById("optDevicesBtn").addEventListener("click", () => {
+  optionsModal.style.display = "none";
+  stopPairing();
+  document.getElementById("devicesMsg").textContent = "";
+  devicesModal.style.display = "block";
+  loadDevices();
+});
+
+document.getElementById("pairStartBtn").addEventListener("click", async () => {
+  const msgEl = document.getElementById("devicesMsg");
+  msgEl.textContent = "";
+  let data;
+  try {
+    const resp = await fetch("/devices/pair", { method: "POST" });
+    data = await resp.json();
+    if (!resp.ok) { msgEl.textContent = data.detail || "No se ha podido."; return; }
+  } catch (e) { msgEl.textContent = "No se ha podido."; return; }
+  stopPairing();
+  document.getElementById("pairQr").src = data.qr;
+  document.getElementById("pairUrl").textContent = data.url;
+  document.getElementById("pairCode").textContent = data.code;
+  document.getElementById("pairBox").style.display = "";
+  const ends = Date.now() + data.expires_in * 1000;
+  const timerEl = document.getElementById("pairTimer");
+  const before = new Set();
+  try { (await (await fetch("/devices")).json()).forEach((d) => before.add(d.id)); } catch (e) { /* nada */ }
+  const tick = async () => {
+    const left = Math.round((ends - Date.now()) / 1000);
+    if (left <= 0) { stopPairing(); msgEl.textContent = "El código ha caducado. Pide otro."; return; }
+    timerEl.textContent = `Válido ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+    if (left % 3 === 0) {  // ¿se ha vinculado ya? entonces se cierra el codigo
+      try {
+        const now = await (await fetch("/devices")).json();
+        if (now.some((d) => !before.has(d.id))) { stopPairing(); msgEl.textContent = "¡Vinculado!"; loadDevices(); }
+      } catch (e) { /* sigue */ }
+    }
+  };
+  tick();
+  pairTimer = setInterval(tick, 1000);
+});
+
+document.getElementById("closeDevicesBtn").addEventListener("click", () => { stopPairing(); devicesModal.style.display = "none"; });
+devicesModal.addEventListener("click", (e) => { if (e.target === devicesModal) { stopPairing(); devicesModal.style.display = "none"; } });
+
 // --- Busqueda profunda (Mis apps, ver deep_search.py) ---
 const deepModal = document.getElementById("deepModal");
 let deepData = { history: [], status: { running: false } };

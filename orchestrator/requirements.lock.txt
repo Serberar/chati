@@ -95,6 +95,7 @@ requests-oauthlib==2.0.0
 requests==2.34.2
 rich==15.0.0
 rpds-py==2026.6.3
+segno==1.6.6
 shellingham==1.5.4
 six==1.17.0
 starlette==1.7.0

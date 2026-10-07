@@ -114,3 +114,12 @@ verifier:
   # en vez de solo avisar. Sin RAG/busqueda todavia conectada, esto es lo mas
   # honesto (Fase 1 no tiene fuentes reales que consultar todavia).
   strict: true
+
+remote:
+  # Usar Chati desde fuera del ordenador (el movil por Tailscale, 2026-10-07):
+  # el nombre del ordenador en la red de Tailscale. Solo por estas direcciones
+  # y solo desde un dispositivo vinculado (Opciones > Dispositivos). Vacio:
+  # nadie de fuera. Hace falta "tailscale serve" apuntando a este puerto.
+  # Las de cada equipo van en <datos>/data/remote_hosts.txt (una por linea),
+  # no aqui: este archivo va en el instalador.
+  hosts: []
