@@ -1326,8 +1326,55 @@ def compose_masked(orig: np.ndarray, edited_small: np.ndarray, mask: np.ndarray)
     h, w = orig.shape[:2]
     edited = cv2.resize(edited_small, (w, h), interpolation=cv2.INTER_LANCZOS4)
     edited = add_grain(edited, grain_sigma(orig))
+    for face in _faces(orig):
+        edited = _junction_tone(orig, edited, mask, face)
     alpha = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), max(1.5, min(h, w) * 0.004))[..., None]
     return (orig * (1 - alpha) + edited * alpha).clip(0, 255).astype(np.uint8)
+
+
+def _junction_tone(orig: np.ndarray, edited: np.ndarray, mask: np.ndarray, face: np.ndarray) -> np.ndarray:
+    """Solo COLOR, ni forma ni textura: la piel generada (cuello, escote)
+    toma el tono de la piel original justo encima de la union (la barbilla),
+    del todo pegado a ella y cada vez menos al alejarse. El cuello generado
+    empezaba mas claro y rosado que la barbilla y se notaba el salto (Sergio,
+    2026-10-07; un degradado de la mascara le borraba el cuello)."""
+    h, w = orig.shape[:2]
+    x, y, fw, fh = (float(v) for v in face[:4])
+    chin = int(min(h, y + fh))
+    d = max(4, int(fh * 0.1))
+    x0, x1 = int(max(0, x - fw * 0.2)), int(min(w, x + fw * 1.2))
+    if chin - d < 0 or chin + d > h or x1 <= x0:
+        return edited
+    lab_o = cv2.cvtColor(orig, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab_e = cv2.cvtColor(edited, cv2.COLOR_RGB2LAB).astype(np.float32)
+    skin = _cheeks(lab_o, face)
+
+    def skin_like(lab):
+        return (np.linalg.norm(lab[..., 1:] - skin[1:], axis=2) < 18) & (np.abs(lab[..., 0] - skin[0]) < 45)
+
+    above = np.zeros((h, w), bool)
+    above[chin - d:chin, x0:x1] = True
+    above &= (mask < 0.1) & skin_like(lab_o)
+    below = np.zeros((h, w), bool)
+    below[chin:chin + d, x0:x1] = True
+    below &= (mask > 0.9) & skin_like(lab_e)
+    if above.sum() < 30 or below.sum() < 30:
+        return edited
+    neck = np.median(lab_e[below], axis=0)
+    shift = np.clip(np.median(lab_o[above], axis=0) - neck, [-30, -15, -15], [30, 15, 15])
+    if np.abs(shift).max() < 1.5:
+        return edited
+    # la piel generada con el color de ese cuello (no la ropa, el pelo...)
+    weight = (np.clip(1.5 - np.linalg.norm(lab_e[..., 1:] - neck[1:], axis=2) / 10, 0, 1)
+              * np.clip(1.5 - np.abs(lab_e[..., 0] - neck[0]) / 35, 0, 1) * (mask > 0.5))
+    # entera junto a la union y menos al alejarse (a un alto de cara, la mitad)
+    yy = np.arange(h, dtype=np.float32)[:, None]
+    fade = np.where(yy < chin, 1.0, np.exp(-(yy - chin) / (fh * 1.44)))
+    weight = cv2.GaussianBlur((weight * fade).astype(np.float32), (0, 0), max(1.5, fw * 0.03))
+    lab_e = lab_e + weight[..., None] * shift
+    out = cv2.cvtColor(lab_e.clip(0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    touched = np.clip(weight * 20, 0, 1)[..., None]
+    return (out * touched + edited * (1 - touched)).astype(np.uint8)
 
 
 def finish(orig: np.ndarray, edited_small: np.ndarray, mode: str) -> np.ndarray:
