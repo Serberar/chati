@@ -102,4 +102,10 @@ class LocalOnlyMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         for name, value in SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
+        # la pagina y su JS/CSS: que el navegador pregunte siempre si hay version
+        # nueva (si no la hay, 304 y usa la suya). Sin esto Safari en el iPhone
+        # se quedo con el JS viejo y el menu ☰ no abria (2026-10-07)
+        path = request.url.path
+        if path in ("/", "/pair") or path.startswith("/static/"):
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
