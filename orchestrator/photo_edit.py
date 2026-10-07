@@ -1399,7 +1399,12 @@ def clothes_mask(rgb: np.ndarray, instruction: str = "") -> np.ndarray | None:
         if change.mean() > 0.005:
             k = max(3, int(min(h, w) * 0.03)) | 1
             mask = cv2.dilate(change, np.ones((k, k), np.uint8))
-            mask[np.isin(labels, [FACE, HAIR, SUNGLASSES, HAT, BAG])] = 0
+            # la cara y el pelo, encogidos un poco por el borde: en el limite el
+            # modelo se lleva unos pixeles de la prenda vieja (el borde del cuello
+            # de la camiseta) y quedaban como un hilo sobre la piel nueva
+            keep = np.isin(labels, [FACE, HAIR, SUNGLASSES, HAT, BAG]).astype(np.uint8)
+            e = max(3, int(min(h, w) * 0.008)) | 1
+            mask[cv2.erode(keep, np.ones((e, e), np.uint8)) > 0] = 0
             # brazos y manos: nunca, ni por el margen. Al cambiar una camisa se
             # redibujaba la mano con el vaso (Sergio, 2026-10-07). Solo con
             # manga larga entra el brazo pegado a la prenda, sin la punta.
