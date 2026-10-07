@@ -1336,13 +1336,31 @@ def clothes_mask(rgb: np.ndarray) -> np.ndarray | None:
     k = max(3, int(min(h, w) * 0.04)) | 1
     mask = cv2.dilate(people, np.ones((k, k), np.uint8)).astype(np.float32)
     for f in faces:
-        x, y, fw, fh = (float(v) for v in f[:4])
-        chin = int(min(h, y + fh * 1.0))
-        x0, x1 = int(max(0, x - fw * 0.9)), int(min(w, x + fw * 1.9))
-        mask[:chin, x0:x1] = 0  # la cabeza entera, pelo incluido
+        mask[_head_shape(f, h, w) > 0] = 0  # la cabeza entera, pelo incluido
     if mask.mean() < 0.01:
         return None
     return mask
+
+
+def _head_shape(face: np.ndarray, h: int, w: int) -> np.ndarray:
+    """La cabeza (con el pelo de arriba y de los lados) con su forma: la cara
+    hasta la barbilla y, por encima de la frente, el pelo. Antes era un
+    rectangulo a lo ancho de la foto hasta la altura de la barbilla: en un
+    primer plano la barbilla queda a la altura de los hombros y estos se
+    quedaban sin cambiar: media camisa hawaiana y media camiseta (Sergio,
+    2026-10-07)."""
+    x, y, fw, fh = (float(v) for v in face[:4])
+    cx = int(x + fw / 2)
+    head = np.zeros((h, w), np.uint8)
+    # la cara hasta la barbilla. Aproximado: con la cabeza muy ladeada puede
+    # quedar un trozo de ropa junto al cuello sin cambiar (pendiente de un
+    # modelo que reconozca la ropa)
+    cv2.ellipse(head, (cx, int(y + fh * 0.44)), (int(fw * 0.58), int(fh * 0.56)), 0, 0, 360, 1, -1)
+    # el pelo de encima de la frente (los lados no: en un primer plano ya son
+    # los hombros)
+    top = int(y + fh * 0.3)
+    head[:max(0, top), int(max(0, x - fw * 0.35)):int(min(w, x + fw * 1.35))] = 1
+    return head
 
 
 def mask_png_for_kontext(mask: np.ndarray) -> bytes:
