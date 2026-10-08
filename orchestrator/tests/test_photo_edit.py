@@ -468,3 +468,25 @@ def test_leaving_the_pose_is_not_a_pose_change():
     assert not photo_edit.is_pose_change("Remove the white t-shirt from the man, leaving his short beard, "
                                          "facial features, expression, hair, pose, and framing exactly the same.")
     assert photo_edit.is_pose_change("Make him kneel on the grass, leaving his clothes the same.")
+
+
+def _face(x, y, w, points):
+    return np.array([x, y, w, w] + [v for p in points for v in p] + [0.9], np.float32)
+
+
+def test_the_face_angle_decides_paste_or_clone():
+    """2026-10-08 (regla de Sergio): mismo angulo, la cara original; otro
+    angulo, los rasgos clonados sobre la cara nueva."""
+    front = [(40, 40), (60, 40), (50, 52), (42, 62), (58, 62)]
+    orig = [_face(30, 30, 40, front)]
+    moved = [_face(130, 230, 80, [(2 * x + 60, 2 * y + 160) for x, y in front])]  # solo movida y mas grande
+    turned = [_face(30, 30, 40, [(48, 40), (60, 41), (58, 52), (49, 62), (59, 62)])]  # girada
+    assert not photo_edit.face_angle_changed(orig, moved)
+    assert photo_edit.face_angle_changed(orig, turned)
+
+
+def test_face_swap_keeps_the_image_without_its_models(monkeypatch):
+    import face_swap
+    monkeypatch.setattr(face_swap, "available", lambda: False)
+    img = _textured(seed=9)
+    assert face_swap.swap_faces(img, img, [object()], [object()]) is img

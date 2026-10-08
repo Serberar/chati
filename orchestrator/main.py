@@ -29,6 +29,7 @@ import auth
 import devices
 import auth_sessions
 import face_detect
+import face_swap
 import access
 import agent_attachments
 import job_search
@@ -3044,9 +3045,27 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
             current, mode = photo_edit.compose_masked(current, edited, mask), "cuerpo"
         else:
             mode = "entera" if photo_edit.is_pose_change(step.instruction) else step.mode
+            if mode == "fondo" and face_swap.available():
+                # otra escena: la de Kontext entera (luz y angulo de la escena) y
+                # luego los rasgos; pegar a la persona original sobre el fondo
+                # nuevo quedaba como un recorte con halo (Sergio, 2026-10-08)
+                mode = "entera"
             current = photo_edit.finish(current, edited, mode)
             head_touched = True
         log.info("Edicion: componer (%s) %.0f s", mode, time.perf_counter() - t)
+    if face_src is not None and head_touched and face_swap.available():
+        # Con otro angulo (postura, escena) la cara original pegada no casa: se
+        # ponen sus rasgos sobre la cara que dibujo Kontext (face_swap.py). Con
+        # el mismo angulo, la cara original tal cual (abajo). Regla de Sergio,
+        # 2026-10-08.
+        source = photo_edit.load_rgb(face_src)
+        faces_o, faces_r = photo_edit._faces(source), photo_edit._faces(current)
+        if faces_o and faces_r and (any(photo_edit.is_pose_change(s.instruction) or s.mode == "fondo" for s in steps)
+                                    or photo_edit.face_angle_changed(faces_o, faces_r)):
+            t = time.perf_counter()
+            current = face_swap.swap_faces(source, current, faces_o, faces_r)
+            log.info("Edicion: rasgos clonados (otro angulo) %.0f s", time.perf_counter() - t)
+            return photo_edit.to_jpeg(current)
     if face_src is not None and head_touched:
         # la cara exacta de antes, no la redibujada por Kontext; si cambio la
         # postura, solo la cara (pelo y contorno nuevos, ver restore_faces)

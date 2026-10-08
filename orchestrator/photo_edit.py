@@ -1000,6 +1000,25 @@ def _background_fill(source: np.ndarray, out: np.ndarray, hole: np.ndarray, k: i
     return source.astype(np.float32)
 
 
+def face_angle_changed(faces_o: list, faces_r: list, tolerance: float = 0.05) -> bool:
+    """¿Alguna cara tiene otro angulo que en la original? Se mira si sus 5
+    puntos (ojos, nariz, comisuras) encajan con los originales moviendolos,
+    girandolos y escalandolos sin mas: con otro giro de cabeza no encajan.
+    Caras emparejadas de izquierda a derecha."""
+    order_o = sorted(faces_o, key=lambda f: f[0] + f[2] / 2)
+    order_r = sorted(faces_r, key=lambda f: f[0] + f[2] / 2)
+    for fo, fr in zip(order_o, order_r):
+        po = fo[4:14].reshape(5, 2).astype(np.float32)
+        pr = fr[4:14].reshape(5, 2).astype(np.float32)
+        m, _ = cv2.estimateAffinePartial2D(po, pr)
+        if m is None:
+            return True
+        err = np.linalg.norm(po @ m[:, :2].T + m[:, 2] - pr, axis=1).mean() / max(float(fr[2]), 1.0)
+        if err > tolerance:
+            return True
+    return len(faces_o) != len(faces_r)
+
+
 def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
                   face_only: bool = False, seams: list | None = None) -> np.ndarray:
     """Vuelve a poner cada cara ORIGINAL encima de la del resultado, alineada
