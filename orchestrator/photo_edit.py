@@ -728,6 +728,11 @@ def hide_held(original: np.ndarray, reference: np.ndarray) -> np.ndarray:
         return reference
     skin = _skin_mask(reference)
     if skin is not None:
+        # la cara se protege solo hasta la barbilla: el cuello visto a traves
+        # de la copa cuenta como piel y el borde de la copa se quedaba
+        for face in _faces(reference):
+            x, y, fw, fh = (int(v) for v in face[:4])
+            skin[int(y + fh * 1.0):, max(0, x - fw // 2):x + fw * 3 // 2] = 0
         mask[skin > 0] = 0
     small = max(1, int(max(h, w) / 512))
     sw, sh = w // small, h // small
@@ -1241,16 +1246,27 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
         # mandibula y cambiaba la forma de la cara (Sergio, 2026-10-07). La
         # union queda en el cuello y la disimula el repintado (_seam_band).
         cv2.ellipse(zone, (cx, int(y + fh * 0.6)), (int(fw * 0.55), int(fh * 0.47)), 0, 0, 360, 1, -1)
-        if not keep_hair:
+        if face_only:
+            # la frente entera: cortando en las cejas asomaban encima las de
+            # Kontext, algo mas altas ("aparecen como dos cejas", Sergio, 2026-10-08)
+            cv2.ellipse(zone, (cx, int(y + fh * 0.3)), (int(fw * 0.45), int(fh * 0.38)), 0, 0, 360, 1, -1)
+            zone[:int(y - fh * 0.05)] = 0
+        elif not keep_hair:
             zone[:int(y + fh * 0.15)] = 0
         zone_w = cv2.warpAffine(zone, m, (w, h), flags=cv2.INTER_LINEAR)
         zone_w = cv2.GaussianBlur(zone_w, (0, 0), max(2.0, fw * scale * (0.09 if face_only else 0.05)))
-        if face_only and skin is not None:
-            # solo piel, barba y pelo de la original: lo que tuviera delante
-            # (la copa bajo la barbilla) se quedaba como un arco fantasma en el
-            # cuello nuevo (Sergio, 2026-10-08)
-            skin_w = cv2.warpAffine(skin, m, (w, h), flags=cv2.INTER_LINEAR)
-            zone_w *= cv2.GaussianBlur(skin_w, (0, 0), max(1.5, fw * scale * 0.015))
+        if face_only:
+            # solo piel, barba y pelo de la original, y de la barbilla para
+            # abajo el cuello de Kontext: lo que tuviera delante (la copa, que
+            # deja ver el cuello y cuenta como piel) se quedaba como un arco
+            # fantasma en el cuello nuevo (Sergio, 2026-10-08)
+            limit = np.zeros(orig.shape[:2], np.float32)
+            limit[:int(y + fh * 1.02)] = 1
+            limit_w = cv2.warpAffine(limit, m, (w, h), flags=cv2.INTER_LINEAR)
+            zone_w *= cv2.GaussianBlur(limit_w, (0, 0), max(1.5, fw * scale * 0.03))
+            if skin is not None:
+                skin_w = cv2.warpAffine(skin, m, (w, h), flags=cv2.INTER_LINEAR)
+                zone_w *= cv2.GaussianBlur(skin_w, (0, 0), max(1.5, fw * scale * 0.015))
         # recortada por la silueta de la persona, para no traerse el fondo viejo
         head = matte(warped) * zone_w
         # el pelo de Kontext que asome por fuera de la cabeza original se borra
