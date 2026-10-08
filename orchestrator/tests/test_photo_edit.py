@@ -506,3 +506,17 @@ def test_face_swap_keeps_the_image_without_its_models(monkeypatch):
     monkeypatch.setattr(face_swap, "available", lambda: False)
     img = _textured(seed=9)
     assert face_swap.swap_faces(img, img, [object()], [object()]) is img
+
+
+def test_shrunken_faces_are_repainted_not_pasted():
+    """Sergio, 2026-10-08: a cuerpo entero la cara pegada "parece una mascara
+    pegada": si la cara sale mucho mas pequeña, se repinta en vez de pegarla."""
+    front = [(40, 40), (60, 40), (50, 52), (42, 62), (58, 62)]
+    big = [_face(30, 30, 300, front)]
+    assert photo_edit.face_shrunk(big, [_face(30, 30, 120, front)])
+    assert not photo_edit.face_shrunk(big, [_face(30, 30, 260, front)])
+    img = _textured(seed=3)
+    box, crop_png, mask_png, mask = photo_edit.detail_crop(img, _face(20, 20, 30, front))
+    assert mask.shape == (photo_edit.DETAIL_SIZE, photo_edit.DETAIL_SIZE) and mask.max() > 0.9
+    back = photo_edit.paste_detail(img, photo_edit.load_rgb(crop_png), box, mask)
+    assert back.shape == img.shape

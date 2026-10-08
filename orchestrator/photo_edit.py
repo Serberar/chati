@@ -1347,6 +1347,73 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
     return out.clip(0, 255).astype(np.uint8)
 
 
+# Caras que cambian de encuadre (cuerpo entero, paracaidas...): pegar la cara
+# original (un selfie de cerca) quedaba como una mascara pegada, con otra luz,
+# otra perspectiva y una inclinacion que no casaba ("parece una mascara
+# pegada", Sergio, 2026-10-08). Ahi se queda la cara de Kontext (casa con el
+# cuerpo y la luz), se repinta con detalle (a cuerpo entero sale con poco) y
+# se le ponen los rasgos (face_swap). 0,55 cambiaba de persona; 0,35 da
+# detalle y deja el parecido (0,86 con los rasgos, prueba del 2026-10-08).
+DETAIL_DENOISE = 0.35
+DETAIL_SIZE = 1024
+DETAIL_BELOW_SCALE = 0.6  # cara del resultado / cara original: por debajo, repintar en vez de pegar
+
+
+def face_shrunk(faces_o: list, faces_r: list) -> bool:
+    """¿La cara sale mucho mas pequeña que en la original (otro encuadre)?"""
+    if not faces_o or not faces_r:
+        return False
+    big_o = max(float(f[2]) for f in faces_o)
+    big_r = max(float(f[2]) for f in faces_r)
+    return big_r / max(big_o, 1.0) < DETAIL_BELOW_SCALE
+
+
+def detail_crop(rgb: np.ndarray, face: np.ndarray) -> tuple[tuple[int, int, int], bytes, bytes, np.ndarray]:
+    """Recorte cuadrado (3 veces la cara) ampliado a DETAIL_SIZE y la mascara
+    de la cara (con el pelo) para repintarla: (x0, y0, lado), PNG, PNG de la
+    mascara, mascara 0..1."""
+    h, w = rgb.shape[:2]
+    x, y, fw, fh = (float(v) for v in face[:4])
+    side = int(min(fw * 3, h, w))
+    x0 = int(np.clip(x + fw / 2 - side / 2, 0, w - side))
+    y0 = int(np.clip(y + fh / 2 - side / 2, 0, h - side))
+    big = cv2.resize(rgb[y0:y0 + side, x0:x0 + side], (DETAIL_SIZE, DETAIL_SIZE), interpolation=cv2.INTER_CUBIC)
+    k = DETAIL_SIZE / side
+    mask = np.zeros((DETAIL_SIZE, DETAIL_SIZE), np.float32)
+    center = (int((x + fw / 2 - x0) * k), int((y + fh * 0.4 - y0) * k))
+    cv2.ellipse(mask, center, (int(fw * 0.62 * k), int(fh * 0.85 * k)), 0, 0, 360, 1, -1)
+    mask = cv2.GaussianBlur(mask, (0, 0), DETAIL_SIZE / 85)
+    return (x0, y0, side), to_png(big), to_png(np.dstack([(mask * 255).astype(np.uint8)] * 3)), mask
+
+
+def detail_prompt(instruction: str) -> str:
+    low = instruction.lower()
+    who = "woman" if re.search(r"\b(woman|her|she|girl)\b", low) else \
+        "man" if re.search(r"\b(man|his|he|boy)\b", low) else "person"
+    return (f"A sharp, detailed, natural photo of the {who}'s face with realistic skin texture, "
+            f"the same expression and the same natural lighting.")
+
+
+def blend_resized(base: np.ndarray, edited: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """`edited` (al tamaño de `base`) dentro de la mascara 0..1, `base` fuera."""
+    h, w = base.shape[:2]
+    edited = cv2.resize(edited, (w, h), interpolation=cv2.INTER_LANCZOS4)
+    m = mask[..., None]
+    return (edited * m + base * (1 - m)).clip(0, 255).astype(np.uint8)
+
+
+def paste_detail(rgb: np.ndarray, detailed: np.ndarray, box: tuple[int, int, int], mask: np.ndarray) -> np.ndarray:
+    """Devuelve el recorte repintado a su sitio, solo dentro de la mascara."""
+    x0, y0, side = box
+    small = cv2.resize(detailed, (side, side), interpolation=cv2.INTER_AREA)
+    m = cv2.resize(mask, (side, side), interpolation=cv2.INTER_AREA)[..., None]
+    out = rgb.copy()
+    region = out[y0:y0 + side, x0:x0 + side].astype(np.float32)
+    small = add_grain(small, grain_sigma(rgb))
+    out[y0:y0 + side, x0:x0 + side] = (small * m + region * (1 - m)).clip(0, 255).astype(np.uint8)
+    return out
+
+
 # 0,3-0,6 con la referencia no cambiaban nada; sin ella, 0,5 aun dejaba el
 # borde y 0,7 ya era continuo (foto de Sergio, 2026-10-07). Solo se repinta
 # por FUERA de la cara (ver _seam_band), asi que la cara no cambia nunca.

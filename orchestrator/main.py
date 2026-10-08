@@ -3089,6 +3089,12 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
         faces_o, faces_r = photo_edit._faces(source), photo_edit._faces(current)
         turned_o, turned_r = photo_edit.turned_faces(faces_o, faces_r)
         pose = any(photo_edit.is_pose_change(s.instruction) or s.mode == "fondo" for s in steps)
+        if pose and face_swap.available() and photo_edit.face_shrunk(faces_o, faces_r):
+            # otro encuadre (cuerpo entero...): la cara pegada era una mascara;
+            # la de Kontext repintada con detalle y con los rasgos
+            current = _detail_faces(current, source, faces_o, faces_r, steps[-1].instruction)
+            log.info("Edicion: caras repintadas con detalle y rasgos %.0f s", time.perf_counter() - t)
+            return photo_edit.to_jpeg(current)
         seams: list = []
         current = photo_edit.restore_faces(source, current, keep_hair=keep_hair,
                                            face_only=pose, seams=seams)
@@ -3099,6 +3105,34 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
             current = face_swap.swap_faces(source, current, turned_o, turned_r)
             log.info("Edicion: rasgos clonados en %d cara(s) giradas %.0f s", len(turned_r), time.perf_counter() - t)
     return photo_edit.to_jpeg(current)
+
+
+def _detail_faces(current, source, faces_o: list, faces_r: list, instruction: str):
+    """Cada cara del resultado: recortada y ampliada, repintada con detalle por
+    Kontext y con los rasgos de su pareja en la original (de izquierda a
+    derecha) puestos ya a buena resolucion; luego devuelta a su sitio. Si el
+    repintado falla, solo los rasgos."""
+    order_o = sorted(faces_o, key=lambda f: f[0] + f[2] / 2)
+    order_r = sorted(faces_r, key=lambda f: f[0] + f[2] / 2)
+    for fo, fr in zip(order_o, order_r):
+        box, crop_png, mask_png, mask = photo_edit.detail_crop(current, fr)
+        _report("Afinando la cara…")
+        crop = photo_edit.load_rgb(crop_png)
+        try:
+            refined = photo_edit.load_rgb(image_agent.refine_with_kontext(
+                photo_edit.detail_prompt(instruction), crop_png, mask_png, denoise=photo_edit.DETAIL_DENOISE))
+            refined = photo_edit.blend_resized(crop, refined, mask)
+        except comfyui_client.GenerationCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - mejor solo con los rasgos
+            log.warning("Edicion: no se pudo repintar la cara: %s", exc)
+            refined = crop
+        found = photo_edit._faces(refined)
+        if found:
+            target = max(found, key=lambda f: f[2])
+            refined = face_swap.swap_faces(source, refined, [fo], [target])
+        current = photo_edit.paste_detail(current, refined, box, mask)
+    return current
 
 
 _POSE_REFERENCES: dict = {}  # foto -> referencia preparada (se repite mucho: de pie, playa, paracaidas...)
