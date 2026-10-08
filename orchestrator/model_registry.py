@@ -35,8 +35,15 @@ IMAGE_ARCHITECTURES = {
     "sdxl": {"comfy_dir": "checkpoints", "label": "SDXL", "extensions": (".safetensors",)},
     "sd15": {"comfy_dir": "checkpoints", "label": "SD 1.5", "extensions": (".safetensors",)},
     "flux": {"comfy_dir": "diffusion_models", "label": "FLUX", "extensions": (".safetensors", ".gguf")},
-    # solo edita una foto que se le da (ver photo_edit.py), no genera desde
-    # texto: no sale en la lista de generadores
+    # solo editan una foto que se le da (ver photo_edit.py), no generan desde
+    # texto: no salen en la lista de generadores. El primero que este
+    # instalado es el que edita: Qwen-Image-Edit mantiene mucho mejor la cara
+    # y la postura que Kontext (prueba con la foto de Sergio, 2026-10-08:
+    # de frente, de pie y con camisa salia el; con Kontext "parece una
+    # mascara pegada"). Necesita tambien su VAE, su codificador y Lightning
+    # (ver workflows/qwen_edit.json).
+    "qwen": {"comfy_dir": "diffusion_models", "label": "Qwen-Image-Edit (editar fotos)",
+             "extensions": (".safetensors", ".gguf"), "edit_only": True},
     "flux_kontext": {"comfy_dir": "diffusion_models", "label": "FLUX Kontext (editar fotos)",
                      "extensions": (".safetensors", ".gguf"), "edit_only": True},
 }

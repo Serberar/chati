@@ -514,7 +514,11 @@ def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "
     if len(plans) == 2 and plans[1].mode == "fondo" and not _PERSON_CHANGE.search(request):
         plans = plans[1:]
     for plan in plans:
-        plan.instruction = _keep_body(clothing_terms.fix_instruction(request, plan.instruction))
+        plan.instruction = clothing_terms.fix_instruction(request, plan.instruction)
+        if plan.mode != "fondo":
+            # en un cambio de sitio la ropa solo se nombra, no cambia: con la
+            # coletilla del cuerpo Qwen le cambiaba el cuello del jersey a Mon
+            plan.instruction = _keep_body(plan.instruction)
         plan.instruction = _real_clothes(plan.instruction, scene)
         plan.instruction = _natural_pose(plan.instruction, request)
         plan.summary = _same_person(plan.summary, [*(history or []), request])
@@ -621,8 +625,9 @@ def _keep_body(instruction: str) -> str:
     if who == "her":
         # con solo "body shape" Kontext le agrandaba el pecho y bajaba el escote
         # al ponerle un vestido (Mon, 2026-10-08); dicho en positivo
-        keep = ("Keep her body shape, her natural bust size and her proportions exactly the same as in the "
-                "photo, with a modest neckline.")
+        # (sin "with a modest neckline": Qwen le abria un escote al jersey de
+        # cuello alto de Mon en las piramides, 2026-10-08)
+        keep = "Keep her body shape, her natural bust size and her proportions exactly the same as in the photo."
     m = re.search(r"\s*Do not add any other", instruction)
     if m:
         return f"{instruction[:m.start()].rstrip()} {keep} {instruction[m.start():].lstrip()}"
@@ -2050,7 +2055,13 @@ def finish(orig: np.ndarray, edited_small: np.ndarray, mode: str) -> np.ndarray:
 _POSE = re.compile(
     r"\b(zoom(ed)? out|kneel\w*|lie|lying|lies|lay\w*|sit\w*|seated|stand\w*|lean\w*|bend\w*|crouch\w*|squat\w*|"
     r"hug\w*|embrac\w*|danc\w*|twirl\w*|hold(s|ing)? hands|hand in hand|kiss\w*|wav\w*|rais\w*|jump\w*|walk\w*|"
-    r"arms? crossed|cross(es|ed)? (his|her|their) arms|hands? on (his|her|their) (hips|waist)|pose|posing)\b",
+    r"arms? crossed|cross(es|ed)? (his|her|their) arms|hands? on (his|her|their) (hips|waist)|pose|posing|"
+    # girar la cabeza o mirar a camara tambien: si no, se volvia a pegar la
+    # cara original (ladeada) y se deshacia el giro (Sergio, 2026-10-08)
+    # (no "facing the camera" a secas: el planificador lo pone en casi todo
+    # cambio de fondo y entonces se tomaba por una postura)
+    r"turn\w* (his|her|their) (head|face|body)|faces? the camera (directly|straight on)|"
+    r"look(s|ing)? (straight|directly) (at|into) the camera)\b",
     re.IGNORECASE)
 
 

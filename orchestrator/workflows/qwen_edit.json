@@ -1,0 +1,96 @@
+{
+  "unet_loader": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "__UNET_PATH__"
+    }
+  },
+  "lightning": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": ["unet_loader", 0],
+      "lora_name": "qwen\\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "shift": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": ["lightning", 0],
+      "shift": 3.0
+    }
+  },
+  "clip_loader": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image"
+    }
+  },
+  "vae_loader": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "load_image": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__IMAGE_FILENAME__"
+    }
+  },
+  "vae_encode": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": ["load_image", 0],
+      "vae": ["vae_loader", 0]
+    }
+  },
+  "positive_encode": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": ["clip_loader", 0],
+      "prompt": "__PROMPT__",
+      "vae": ["vae_loader", 0],
+      "image1": ["load_image", 0]
+    }
+  },
+  "negative_encode": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": ["clip_loader", 0],
+      "prompt": "",
+      "vae": ["vae_loader", 0],
+      "image1": ["load_image", 0]
+    }
+  },
+  "sampler": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["shift", 0],
+      "seed": "__SEED__",
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["positive_encode", 0],
+      "negative": ["negative_encode", 0],
+      "latent_image": ["vae_encode", 0],
+      "denoise": 1.0
+    }
+  },
+  "vae_decode": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["sampler", 0],
+      "vae": ["vae_loader", 0]
+    }
+  },
+  "save_image": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["vae_decode", 0],
+      "filename_prefix": "ia_personal_edit"
+    }
+  }
+}

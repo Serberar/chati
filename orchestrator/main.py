@@ -3046,9 +3046,10 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
         mask = (photo_edit.clothes_mask(current, step.instruction)
                 if photo_edit.is_clothes_only(step, request_text) else None)
         reference = current
-        if mask is None and photo_edit.is_pose_change(step.instruction):
+        if mask is None and photo_edit.is_pose_change(step.instruction) and not _editor_is_qwen():
             # Kontext copia la inclinacion del selfie: de pie quedaba la cabeza
-            # torcida (Sergio, 2026-10-08). Ve la cabeza ya recta.
+            # torcida (Sergio, 2026-10-08). Ve la cabeza ya recta. Qwen no lo
+            # necesita: endereza la cabeza y deja la copa el solo.
             reference = _pose_reference(current, request_text)
         t = time.perf_counter()
         edited_png = image_agent.edit_with_kontext(
@@ -3102,6 +3103,22 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
         faces_o, faces_r = photo_edit._faces(source), photo_edit._faces(current)
         turned_o, turned_r = photo_edit.turned_faces(faces_o, faces_r)
         pose = any(photo_edit.is_pose_change(s.instruction) or s.mode == "fondo" for s in steps)
+        moved = any(photo_edit.is_pose_change(s.instruction) for s in steps)
+        if moved and _editor_is_qwen():
+            # (solo si cambia la postura: en un cambio de sitio el encuadre es
+            # el mismo y va la cara original, abajo; con la de Qwen Mon en las
+            # piramides se parecia 0,68, 2026-10-08)
+            # Qwen dibuja la cara con el angulo y la luz de la postura nueva y
+            # se parece (0,89 de frente, prueba del 2026-10-08): pegar la
+            # original encima era lo que dejaba la mascara. Solo se repasan
+            # las caras que se le parecen poco: repasar una que ya estaba bien
+            # la cambiaba ("porque me cambia la cara", de pie: 0,81 -> 0,70);
+            # en el paracaidas, diminuta, si la mejoraba (0,41 -> 0,77).
+            weak_o, weak_r = _weak_faces(source, current, faces_o, faces_r)
+            if weak_r and face_swap.available():
+                current = _detail_faces(current, source, weak_o, weak_r, steps[-1].instruction)
+                log.info("Edicion: %d cara(s) poco parecidas repasadas %.0f s", len(weak_r), time.perf_counter() - t)
+            return photo_edit.to_jpeg(current)
         if pose and face_swap.available() and photo_edit.face_shrunk(faces_o, faces_r):
             # otro encuadre (cuerpo entero...): la cara pegada era una mascara;
             # la de Kontext repintada con detalle y con los rasgos
@@ -3118,6 +3135,31 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
             current = face_swap.swap_faces(source, current, turned_o, turned_r)
             log.info("Edicion: rasgos clonados en %d cara(s) giradas %.0f s", len(turned_r), time.perf_counter() - t)
     return photo_edit.to_jpeg(current)
+
+
+WEAK_LIKENESS = 0.6  # parecido ArcFace por debajo del cual se repasa la cara
+
+
+def _weak_faces(source, current, faces_o: list, faces_r: list) -> tuple[list, list]:
+    """Las parejas (original, resultado) cuya cara se parece poco, emparejadas
+    de izquierda a derecha. Sin el modelo de rasgos, ninguna."""
+    if not face_swap.available():
+        return [], []
+    order_o = sorted(faces_o, key=lambda f: f[0] + f[2] / 2)
+    order_r = sorted(faces_r, key=lambda f: f[0] + f[2] / 2)
+    weak_o, weak_r = [], []
+    for fo, fr in zip(order_o, order_r):
+        likeness = face_swap.similarity(source, fo, current, fr)
+        log.info("Edicion: parecido de la cara de Qwen %.2f", likeness)
+        if likeness < WEAK_LIKENESS:
+            weak_o.append(fo)
+            weak_r.append(fr)
+    return weak_o, weak_r
+
+
+def _editor_is_qwen() -> bool:
+    entry = model_registry.get_edit_model()
+    return entry is not None and entry.architecture == "qwen"
 
 
 def _detail_faces(current, source, faces_o: list, faces_r: list, instruction: str):

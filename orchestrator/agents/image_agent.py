@@ -17,6 +17,7 @@ UPSCALE_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "upscale_im
 INPAINT_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "inpaint_image.json"
 CONTROLNET_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "controlnet_image.json"
 KONTEXT_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "kontext_edit.json"
+QWEN_WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "qwen_edit.json"
 
 # Que placeholder de checkpoint usa la plantilla de cada arquitectura - FLUX
 # separa el unet en un archivo aparte (UnetLoaderGGUF), el resto son
@@ -59,6 +60,7 @@ class ImageAgent:
         self.inpaint_template = json.loads(INPAINT_WORKFLOW_PATH.read_text(encoding="utf-8"))
         self.controlnet_template = json.loads(CONTROLNET_WORKFLOW_PATH.read_text(encoding="utf-8"))
         self.kontext_template = json.loads(KONTEXT_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        self.qwen_template = json.loads(QWEN_WORKFLOW_PATH.read_text(encoding="utf-8"))
 
     def _sdxl_checkpoint_path(self, model_id: str | None = None) -> str:
         """El checkpoint SDXL que usan FaceID/Inpaint/ControlNet - esas tres
@@ -224,7 +226,8 @@ class ImageAgent:
 
     def edit_with_kontext(self, instruction: str, image_png: bytes, steps: int = 20,
                           timeout: int = 900, mask_png: bytes | None = None) -> bytes:
-        """Edita la foto siguiendo una instruccion en ingles (FLUX Kontext).
+        """Edita la foto siguiendo una instruccion en ingles, con el modelo de
+        edicion instalado (Qwen-Image-Edit si esta, si no FLUX Kontext).
         image_png ya a su tamano (photo_edit.prepare_for_kontext). Devuelve lo
         que genera Kontext tal cual; photo_edit.finish() es quien vuelve a
         poner la original en lo que no se pidio cambiar."""
@@ -234,6 +237,8 @@ class ImageAgent:
                 "No esta instalado el modelo para editar fotos (FLUX Kontext). "
                 "Añadelo en Opciones > Modelos > Imagen."
             )
+        if entry.architecture == "qwen":
+            return self._edit_with_qwen(entry, instruction, image_png, mask_png, 1.0, True, timeout)
         uploaded_filename = self.upload_image_bytes(image_png, "edit_source.png")
         workflow = json.loads(json.dumps(self.kontext_template))
         workflow["unet_loader"]["inputs"]["unet_name"] = entry.comfy_path
@@ -253,6 +258,31 @@ class ImageAgent:
             workflow["sampler"]["inputs"]["latent_image"] = ["noise_mask", 0]
         return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]
 
+    def _edit_with_qwen(self, entry, instruction: str, image_png: bytes, mask_png: bytes | None,
+                        denoise: float, see_photo: bool, timeout: int) -> bytes:
+        """Lo mismo con Qwen-Image-Edit (workflows/qwen_edit.json, 4 pasos con
+        Lightning). Con mascara solo se genera lo blanco. see_photo=False: el
+        repintado sin la foto como referencia (con ella copia la imagen tal
+        cual y el repintado no cambia nada, igual que Kontext)."""
+        workflow = json.loads(json.dumps(self.qwen_template))
+        workflow["unet_loader"]["inputs"]["unet_name"] = entry.comfy_path
+        workflow["load_image"]["inputs"]["image"] = self.upload_image_bytes(image_png, "edit_source.png")
+        workflow["positive_encode"]["inputs"]["prompt"] = instruction
+        workflow["sampler"]["inputs"]["seed"] = int(time.time() * 1000) % (2**32)
+        workflow["sampler"]["inputs"]["denoise"] = denoise
+        if not see_photo:
+            for node in ("positive_encode", "negative_encode"):
+                del workflow[node]["inputs"]["image1"]
+        if mask_png is not None:
+            mask_name = self.upload_image_bytes(mask_png, "edit_mask.png")
+            workflow["load_mask"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
+            workflow["image_to_mask"] = {"class_type": "ImageToMask",
+                                         "inputs": {"image": ["load_mask", 0], "channel": "red"}}
+            workflow["noise_mask"] = {"class_type": "SetLatentNoiseMask",
+                                      "inputs": {"samples": ["vae_encode", 0], "mask": ["image_to_mask", 0]}}
+            workflow["sampler"]["inputs"]["latent_image"] = ["noise_mask", 0]
+        return submit_and_wait(self.base_url, workflow, "save_image", "images", timeout)["content"]
+
     def refine_with_kontext(self, instruction: str, image_png: bytes, mask_png: bytes, denoise: float = 0.4,
                             steps: int = 20, timeout: int = 600) -> bytes:
         """Repinta SOLO lo blanco de la mascara, con poca intensidad (denoise) y
@@ -262,6 +292,8 @@ class ImageAgent:
         entry = model_registry.get_edit_model()
         if entry is None:
             raise NoModelInstalledError("No esta instalado el modelo para editar fotos (FLUX Kontext).")
+        if entry.architecture == "qwen":
+            return self._edit_with_qwen(entry, instruction, image_png, mask_png, denoise, False, timeout)
         image_name = self.upload_image_bytes(image_png, "seam_source.png")
         mask_name = self.upload_image_bytes(mask_png, "seam_mask.png")
         workflow = json.loads(json.dumps(self.kontext_template))
