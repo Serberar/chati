@@ -483,6 +483,22 @@ def test_the_face_angle_decides_paste_or_clone():
     turned = [_face(30, 30, 40, [(48, 40), (60, 41), (58, 52), (49, 62), (59, 62)])]  # girada
     assert not photo_edit.face_angle_changed(orig, moved)
     assert photo_edit.face_angle_changed(orig, turned)
+    # en un grupo, solo la girada se clona; la otra lleva su cara original
+    two_o = [orig[0], _face(130, 30, 40, [(x + 100, y) for x, y in front])]
+    two_r = [turned[0], _face(130, 30, 40, [(x + 100, y) for x, y in front])]
+    turned_o, turned_r = photo_edit.turned_faces(two_o, two_r)
+    assert len(turned_r) == 1 and turned_r[0] is two_r[0]
+
+
+def test_pose_change_drops_the_held_glass_from_the_keep_list():
+    """Sergio, 2026-10-08: "no hace falta que salga en todas con la copa"."""
+    out = photo_edit._natural_pose(
+        "Make the man stand up, holding the glass of water, keeping his face, white t-shirt, "
+        "and the lemon slice in his hand exactly the same.", "ponme de pie")
+    assert "glass" not in out and "lemon" not in out and ".," not in out
+    assert "hands empty" in out and "head is upright" in out
+    kept = photo_edit._natural_pose("Make the man stand up holding the glass of wine.", "ponme de pie con la copa")
+    assert "glass" in kept
 
 
 def test_face_swap_keeps_the_image_without_its_models(monkeypatch):

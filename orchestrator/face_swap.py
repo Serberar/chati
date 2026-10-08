@@ -13,6 +13,8 @@ escena y despues:
 Todo en la CPU (unos segundos). Modelos de uso no comercial: es para uso
 personal. Si faltan, swap_faces() devuelve la imagen tal cual.
 """
+import logging
+
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -32,6 +34,9 @@ ARCFACE_POINTS = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.
 FFHQ_POINTS = np.array([[192.98138, 239.94708], [318.90277, 240.1936], [256.63416, 314.01935],
                         [201.26117, 371.41043], [313.08905, 371.15118]], np.float32)
 
+SECOND_PASS_BELOW = 0.6  # parecido ArcFace por debajo del cual se repite el clonado
+
+log = logging.getLogger("chati")
 _sessions: dict = {}
 
 
@@ -121,7 +126,15 @@ def swap_faces(original: np.ndarray, result: np.ndarray, faces_original: list, f
     order_r = sorted(faces_result, key=lambda f: f[0] + f[2] / 2)
     out = result
     for fo, fr in zip(order_o, order_r):
-        out = _swap_one(out, fr, identity(original, fo))
+        source_id = identity(original, fo)
+        out = _swap_one(out, fr, source_id)
+        # comprobar el parecido: si se queda corto (cara pequeña, de perfil),
+        # una segunda pasada lo acerca
+        score = float(source_id @ identity(out, fr))
+        if score < SECOND_PASS_BELOW:
+            out = _swap_one(out, fr, source_id)
+            score = float(source_id @ identity(out, fr))
+        log.info("Edicion: parecido con la original %.2f", score)
     return out
 
 

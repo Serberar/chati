@@ -3032,9 +3032,16 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
         # un cuello recto (Sergio, 2026-10-07).
         mask = (photo_edit.clothes_mask(current, step.instruction)
                 if photo_edit.is_clothes_only(step, request_text) else None)
+        reference = current
+        if mask is None and photo_edit.is_pose_change(step.instruction):
+            # Kontext copia la inclinacion del selfie: de pie quedaba la cabeza
+            # torcida (Sergio, 2026-10-08). Ve la cabeza ya recta.
+            reference = photo_edit.straighten_heads(current)
+            if not photo_edit.mentions_held_object(request_text):
+                reference = photo_edit.hide_held(current, reference)
         t = time.perf_counter()
         edited_png = image_agent.edit_with_kontext(
-            step.instruction, photo_edit.prepare_for_kontext(current),
+            step.instruction, photo_edit.prepare_for_kontext(reference),
             mask_png=None if mask is None else photo_edit.mask_png_for_kontext(mask))
         log.info("Edicion: Kontext %.0f s%s", time.perf_counter() - t, " (solo el cuerpo)" if mask is not None else "")
         t = time.perf_counter()
@@ -3053,29 +3060,29 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
             current = photo_edit.finish(current, edited, mode)
             head_touched = True
         log.info("Edicion: componer (%s) %.0f s", mode, time.perf_counter() - t)
-    if face_src is not None and head_touched and face_swap.available():
-        # Con otro angulo (postura, escena) la cara original pegada no casa: se
-        # ponen sus rasgos sobre la cara que dibujo Kontext (face_swap.py). Con
-        # el mismo angulo, la cara original tal cual (abajo). Regla de Sergio,
-        # 2026-10-08.
+    if face_src is not None and head_touched:
+        # Regla por cara y por angulo medido (Sergio, 2026-10-08):
+        # - mismo angulo: la cara exacta de antes, no la redibujada por Kontext
+        #   (si cambio la postura o la escena, solo la cara: pelo y contorno
+        #   nuevos, ver restore_faces);
+        # - cabeza girada de otra forma: no encaja, se clonan sus rasgos sobre
+        #   la cara de Kontext (face_swap.py).
+        # Antes se clonaba siempre que cambiaba la postura o el fondo y la cara
+        # salia mas ancha y no era el ("sigue poniendome la cara rara").
+        t = time.perf_counter()
         source = photo_edit.load_rgb(face_src)
         faces_o, faces_r = photo_edit._faces(source), photo_edit._faces(current)
-        if faces_o and faces_r and (any(photo_edit.is_pose_change(s.instruction) or s.mode == "fondo" for s in steps)
-                                    or photo_edit.face_angle_changed(faces_o, faces_r)):
-            t = time.perf_counter()
-            current = face_swap.swap_faces(source, current, faces_o, faces_r)
-            log.info("Edicion: rasgos clonados (otro angulo) %.0f s", time.perf_counter() - t)
-            return photo_edit.to_jpeg(current)
-    if face_src is not None and head_touched:
-        # la cara exacta de antes, no la redibujada por Kontext; si cambio la
-        # postura, solo la cara (pelo y contorno nuevos, ver restore_faces)
-        t = time.perf_counter()
-        pose = any(photo_edit.is_pose_change(step.instruction) for step in steps)
+        turned_o, turned_r = photo_edit.turned_faces(faces_o, faces_r)
+        pose = any(photo_edit.is_pose_change(s.instruction) or s.mode == "fondo" for s in steps)
         seams: list = []
-        current = photo_edit.restore_faces(photo_edit.load_rgb(face_src), current, keep_hair=keep_hair,
+        current = photo_edit.restore_faces(source, current, keep_hair=keep_hair,
                                            face_only=pose, seams=seams)
         log.info("Edicion: caras %.0f s", time.perf_counter() - t)
         current = _repaint_seam(current, seams)
+        if turned_r and face_swap.available():
+            t = time.perf_counter()
+            current = face_swap.swap_faces(source, current, turned_o, turned_r)
+            log.info("Edicion: rasgos clonados en %d cara(s) giradas %.0f s", len(turned_r), time.perf_counter() - t)
     return photo_edit.to_jpeg(current)
 
 
