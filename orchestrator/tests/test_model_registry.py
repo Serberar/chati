@@ -141,7 +141,7 @@ def test_list_image_architectures_includes_empty_ones(tmp_path, monkeypatch):
 
     archs = {a["id"]: a for a in model_registry.list_image_architectures()}
 
-    assert set(archs) == {"sdxl", "sd15", "flux", "flux_kontext"}
+    assert set(archs) == {"sdxl", "sd15", "flux", "qwen", "flux_kontext"}
     assert archs["sdxl"]["installed_count"] == 1
     assert archs["sd15"]["installed_count"] == 0
     assert archs["sdxl"]["folder"] == str(img / "checkpoints" / "sdxl")

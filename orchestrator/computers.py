@@ -44,6 +44,15 @@ def _has_chati(host: str) -> bool:
         return False
 
 
+def this_host() -> str | None:
+    """La direccion de Tailscale de este ordenador ("msi.tailcdce77.ts.net"),
+    o None sin Tailscale. Asi no hace falta apuntarla a mano en
+    data/remote_hosts.txt al instalar en otro equipo."""
+    status = _status()
+    host = _host(status.get("Self", {})) if status else ""
+    return host.lower() or None
+
+
 def list_computers() -> list[dict]:
     """[{"name", "url", "this", "online", "chati"}]: este primero y luego los
     demas Windows de Tailscale. [] sin Tailscale. Se guarda 20 s (comprobar

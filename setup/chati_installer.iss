@@ -126,8 +126,11 @@ begin
     'Necesario para preservar caras, ControlNet e inpaint.', True);
   // sin GPU, editar una foto tardaria horas
   if IncludeVideo then
-    AddCatalogItem('imagen-editar', 'Imagen', 'Editar fotos (FLUX Kontext)',
-      'Edita tus fotos con una frase (otro fondo, otra ropa) sin cambiar las caras.', True);
+    AddCatalogItem('imagen-editar-qwen', 'Imagen', 'Editar fotos (Qwen-Image-Edit, ~24 GB)',
+      'Edita tus fotos con una frase (ropa, fondo, postura, mirar a camara) manteniendo las caras.', True);
+  if IncludeVideo then
+    AddCatalogItem('imagen-editar', 'Imagen', 'Editar fotos con FLUX Kontext (respaldo)',
+      'El editor anterior: solo hace falta si no instalas Qwen-Image-Edit.', False);
   if IncludeVideo then
     AddCatalogItem('video-ltxv', 'Video', 'LTX-Video (2B, destilado)',
       'El generador de video recomendado por defecto.', True);

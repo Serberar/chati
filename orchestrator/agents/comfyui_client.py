@@ -32,6 +32,16 @@ _owners: dict[str, str] = {}
 # (Sergio, pendiente.md 2026-10-08). main._own_session_id lo pone.
 current_conversation: ContextVar[str | None] = ContextVar("comfy_conversation", default=None)
 _conversations: dict[str, str] = {}
+# la ultima conversacion de cada dueño: el streaming de las respuestas corre en
+# otro contexto y ahi current_conversation llega vacio (el boton "Ver" no salia)
+_last_conversation: dict[str, str] = {}
+
+
+def note_conversation(owner: str | None, conversation: str) -> None:
+    current_conversation.set(conversation)
+    if owner:
+        with _owners_lock:
+            _last_conversation[owner] = conversation
 _owners_lock = threading.Lock()
 
 
@@ -154,6 +164,7 @@ def _submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys:
     prompt_id = resp.json()["prompt_id"]
     owner, conversation = current_owner.get(), current_conversation.get()
     with _owners_lock:
+        conversation = conversation or (_last_conversation.get(owner) if owner else None)
         if owner:
             _owners[prompt_id] = owner
         if conversation:

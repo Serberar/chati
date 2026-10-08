@@ -23,9 +23,14 @@ from paths import DATA_ROOT, MODELS_DIR
 
 SWAP_DIR = MODELS_DIR / "img" / "faceswap"
 SWAPPER = SWAP_DIR / "inswapper_128.onnx"
-EMAP = SWAP_DIR / "inswapper_emap.npy"      # matriz del propio inswapper (extraida con onnx)
+EMAP = SWAP_DIR / "inswapper_emap.npy"      # matriz del propio inswapper: se saca de el la primera vez
 RESTORER = SWAP_DIR / "gfpgan_1.4.onnx"
-ARCFACE = DATA_ROOT / "ComfyUI" / "models" / "insightface" / "models" / "buffalo_l" / "w600k_r50.onnx"
+# ArcFace w600k_r50 (lo descarga el instalador, de FaceFusion); el de
+# buffalo_l de ComfyUI es el mismo modelo (huellas identicas, 2026-10-08) y
+# vale si el otro no esta
+ARCFACE_FILE = SWAP_DIR / "arcface_w600k_r50.onnx"
+ARCFACE_BUFFALO = DATA_ROOT / "ComfyUI" / "models" / "insightface" / "models" / "buffalo_l" / "w600k_r50.onnx"
+ARCFACE = ARCFACE_FILE if ARCFACE_FILE.exists() or not ARCFACE_BUFFALO.exists() else ARCFACE_BUFFALO
 
 # donde caen los 5 puntos (ojos, nariz, comisuras) en una cara alineada de
 # 112 px (ArcFace) y de 512 px (FFHQ, GFPGAN)
@@ -41,7 +46,30 @@ _sessions: dict = {}
 
 
 def available() -> bool:
-    return all(p.exists() for p in (SWAPPER, EMAP, RESTORER, ARCFACE))
+    return all(p.exists() for p in (SWAPPER, RESTORER, ARCFACE)) and _emap() is not None
+
+
+def _emap() -> np.ndarray | None:
+    """La matriz con la que inswapper convierte la huella de ArcFace: es el
+    ultimo dato guardado dentro del propio inswapper_128.onnx. Se extrae una
+    vez (con la libreria onnx) y se guarda al lado; asi el instalador no tiene
+    que descargar nada aparte."""
+    if "emap" in _sessions:
+        return _sessions["emap"]
+    emap = None
+    if EMAP.exists():
+        emap = np.load(EMAP)
+    elif SWAPPER.exists():
+        try:
+            import onnx
+            from onnx import numpy_helper
+            emap = numpy_helper.to_array(onnx.load(str(SWAPPER)).graph.initializer[-1])
+            np.save(EMAP, emap)
+        except Exception as exc:  # noqa: BLE001 - sin emap no se clonan rasgos, la edicion sigue
+            log.warning("face_swap: no se pudo sacar el emap de inswapper: %s", exc)
+            emap = None
+    _sessions["emap"] = emap
+    return emap
 
 
 def _session(path):
@@ -92,7 +120,7 @@ def _swap_one_inswapper(rgb: np.ndarray, target_face: np.ndarray, source_id: np.
     # 2-3: la identidad sobre la cara nueva (inswapper, 128 px)
     template = ARCFACE_POINTS * (128 / 112)
     crop, m = _align(rgb, _points(target_face), template, 128)
-    latent = source_id[None] @ np.load(EMAP)
+    latent = source_id[None] @ _emap()
     latent /= np.linalg.norm(latent) + 1e-9
     s = _session(SWAPPER)
     out = s.run(None, {"target": (crop.astype(np.float32) / 255.0).transpose(2, 0, 1)[None],

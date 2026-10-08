@@ -54,6 +54,47 @@ _REALESRGAN = ("https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/
                "upscale_models/RealESRGAN_x4plus.pth",
                "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1")
 
+# Lo que usa el editor de fotos ademas del modelo que edita (photo_edit.py,
+# face_swap.py): reconocer la ropa, las manos, rellenar huecos y poner los
+# rasgos de una cara. Mismo editor con Qwen o con Kontext (2026-10-08).
+_QWEN_TEXT_ENCODER = (
+    "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/1f12b17be14c89b026c51a91d67c32f84bb047bc/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+    "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+    "cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4")
+_QWEN_VAE = (
+    "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/1f12b17be14c89b026c51a91d67c32f84bb047bc/split_files/vae/qwen_image_vae.safetensors",
+    "vae/qwen_image_vae.safetensors",
+    "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f")
+_QWEN_LIGHTNING = (
+    "https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/d74eba145674fd7e31b949324e148e21e7118abd/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+    "loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+    "22226e8d05d354bb356627d428809f5afd7819399b077238a2b70a82883a904f")
+_CLOTHES_PARSER = (
+    "https://huggingface.co/mattmdjaga/segformer_b2_clothes/resolve/584abc1e1d260e23c0fc627c5217a09b2b461046/onnx/model.onnx",
+    "parsing/segformer_b2_clothes.onnx",
+    "a93a8dac171b5c1fcc53632a8bfc180bfd9759ea69a3e207451bb07f76add54f")
+_HANDS = (
+    "https://huggingface.co/opencv/palm_detection_mediapipe/resolve/233e619dcea1759bf6de707b9b904fe30881ea55/palm_detection_mediapipe_2023feb.onnx",
+    "hands/palm_detection_mediapipe_2023feb.onnx",
+    "78ff51c38496b7fc8b8ebdb6cc8c1abb02fa6c38427c6848254cdaba57fcce7c")
+_LAMA = (
+    "https://huggingface.co/opencv/inpainting_lama/resolve/aee6d22f0a13e5e35af1c9a1c3afd62841fc6f3f/inpainting_lama_2025jan.onnx",
+    "inpaint/inpainting_lama_2025jan.onnx",
+    "7df918ac3921d3daf0aae1d219776cf0dc4e4935f035af81841b40adcf74fdf2")
+_INSWAPPER = (
+    "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/inswapper_128.onnx",
+    "faceswap/inswapper_128.onnx",
+    "a290273ed497312095dac48cdef20feec9d5208298223dd01288ab202b54bea7")
+_GFPGAN = (
+    "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx",
+    "faceswap/gfpgan_1.4.onnx",
+    "accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385")
+_ARCFACE = (
+    "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/arcface_w600k_r50.onnx",
+    "faceswap/arcface_w600k_r50.onnx",
+    "f1f79dc3b0b79a69f94799af1fffebff09fbd78fd96a275fd8f0cbbea23270d1")
+_EDITOR_HELPERS = (_MODNET, _REALESRGAN, _CLOTHES_PARSER, _HANDS, _LAMA, _INSWAPPER, _GFPGAN, _ARCFACE)
+
 
 # Mismo catalogo para todos los niveles con GPU (minimo/8gb/12gb/16gb_plus) -
 # todo lo de aqui ya esta comprobado que cabe en 8GB, asi que no hay motivo
@@ -90,13 +131,24 @@ _BASE_CATALOG: list[CatalogEntry] = [
         extra_files=(_CLIP_L, _T5XXL, _FLUX_VAE),
     ),
     CatalogEntry(
-        id="imagen-editar", modality="imagen", label="Editar fotos (FLUX Kontext)",
-        description="Edita tus fotos con una frase (otro fondo, otro color de ropa...) sin cambiar las caras.",
+        id="imagen-editar-qwen", modality="imagen", label="Editar fotos (Qwen-Image-Edit)",
+        description="Edita tus fotos con una frase: ropa, fondo, postura, mirar a camara... manteniendo las caras. "
+                    "Unos 24 GB.",
+        architecture="qwen",
+        download_url="https://huggingface.co/unsloth/Qwen-Image-Edit-2511-GGUF/resolve/0d33d9692b4b26212297240d87b0d4719aa4fd06/qwen-image-edit-2511-Q4_K_S.gguf",
+        filename="qwen-image-edit-2511-Q4_K_S.gguf",
+        sha256="df952ef0d2b46463bd95d9afbb78e045ec5412316f453a7ad5a3d7bcbb111b72",
+        extra_files=(_QWEN_TEXT_ENCODER, _QWEN_VAE, _QWEN_LIGHTNING) + _EDITOR_HELPERS,
+    ),
+    CatalogEntry(
+        id="imagen-editar", modality="imagen", label="Editar fotos con FLUX Kontext (respaldo)",
+        description="El editor anterior: solo hace falta si no se instala Qwen-Image-Edit.",
         architecture="flux_kontext",
         download_url="https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF/resolve/2d083027732f81e5548620b57ac47da22d30aa5a/flux1-kontext-dev-Q4_K_S.gguf",
         filename="flux1-kontext-dev-Q4_K_S.gguf",
         sha256="cc22ff7a2debb02e63765fa53af8c5ae0b6883b462d0601b9b55f51a15cdd6da",
-        extra_files=(_CLIP_L, _T5XXL, _FLUX_VAE, _MODNET, _REALESRGAN),
+        extra_files=(_CLIP_L, _T5XXL, _FLUX_VAE) + _EDITOR_HELPERS,
+        recommended_by_default=False,
     ),
     CatalogEntry(
         id="imagen-sdxl", modality="imagen", label="SDXL base",

@@ -321,7 +321,8 @@ app.add_middleware(security.LocalOnlyMiddleware)
 
 def _remote_hosts() -> set[str]:
     """Las direcciones por las que se puede entrar desde fuera (Tailscale):
-    las de config.yaml y las de este equipo en data/remote_hosts.txt."""
+    las de config.yaml y las de data/remote_hosts.txt; la de este equipo la
+    pregunta tambien a Tailscale al arrancar (_add_own_tailscale_host)."""
     hosts = set((CONFIG.get("remote") or {}).get("hosts") or [])
     extra = paths.DATA_DIR / "remote_hosts.txt"
     if extra.exists():
@@ -330,6 +331,18 @@ def _remote_hosts() -> set[str]:
 
 
 security.REMOTE_HOSTS |= _remote_hosts()
+
+
+def _add_own_tailscale_host() -> None:
+    # la de este equipo, preguntada a Tailscale (en segundo plano: tarda un
+    # par de segundos y no debe retrasar el arranque)
+    host = computers.this_host()
+    if host:
+        security.REMOTE_HOSTS.add(host)
+        log.info("Acceso desde fuera por %s", host)
+
+
+threading.Thread(target=_add_own_tailscale_host, daemon=True).start()
 
 
 # --- Sistema de usuarios (rutas en routes_auth.py, politica en access.py) ---
@@ -2595,7 +2608,8 @@ def _own_session_id(session_id: str | None, auth_session: dict) -> str:
     usuarios) solo la puede seguir la sesion que la empezo: antes cualquiera
     que supiera el id veia su historial (auditoria 2026-09-29)."""
     sid = _resolve_session_id(session_id, auth_session)
-    comfyui_client.current_conversation.set(sid)  # para el boton "Ver" de las tareas en marcha
+    # para el boton "Ver" de las tareas en marcha
+    comfyui_client.note_conversation(comfyui_client.current_owner.get(), sid)
     return sid
 
 
@@ -2963,6 +2977,9 @@ def _stream_with_progress(work, agent_used: str, session_id: str):
 
     def run():
         _progress.set(events.put)
+        # el streaming corre fuera del contexto donde _own_session_id apunto la
+        # conversacion: sin esto el boton "Ver" de la tarea no salia
+        comfyui_client.current_conversation.set(session_id)
         try:
             result["resp"] = work()
         except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario

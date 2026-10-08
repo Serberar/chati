@@ -495,6 +495,29 @@ Write-Host "Acceso directo 'Chati IA' creado en el escritorio." -ForegroundColor
 
 & powershell -ExecutionPolicy Bypass -File "$AiRoot\setup\install_watchdog.ps1"
 
+# 6. Acceso desde el movil (opcional): si Tailscale esta instalado y con la
+# sesion iniciada, se publica Chati solo dentro de la red de Tailscale
+# (https://<este-equipo>.<red>.ts.net -> 127.0.0.1:8899), igual que en el
+# ordenador de casa. Chati averigua sola esa direccion al arrancar
+# (computers.this_host). Sin Tailscale no se hace nada: se puede activar luego
+# instalandolo, iniciando sesion y volviendo a ejecutar este script.
+$tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+if (Test-Path $tailscale) {
+    & $tailscale status *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & $tailscale serve --bg http://127.0.0.1:8899
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Chati publicada en Tailscale (solo para tus dispositivos)." -ForegroundColor Green
+        } else {
+            Write-Host "AVISO: no se pudo publicar Chati en Tailscale (tailscale serve)." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Tailscale instalado pero sin sesion: inicia sesion y vuelve a ejecutar install.ps1 para usar Chati desde el movil." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Tailscale no esta instalado: para usar Chati desde el movil, instalalo (tailscale.com) y vuelve a ejecutar install.ps1." -ForegroundColor Yellow
+}
+
 Write-Host "`n=== Listo. Modelos de texto/codigo disponibles via 'ollama list'. ===" -ForegroundColor Cyan
 Write-Host "Para arrancar todo: doble clic en 'Chati IA' del escritorio," -ForegroundColor Cyan
 Write-Host "o powershell -ExecutionPolicy Bypass -File $AiRoot\setup\start_all.ps1" -ForegroundColor Cyan

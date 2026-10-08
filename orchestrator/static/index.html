@@ -924,6 +924,8 @@
       width: min(86vw, 320px); height: 100dvh;
       transform: translateX(-102%); transition: transform 0.22s ease;
       box-shadow: 0 0 40px rgba(0, 0, 0, 0.45);
+      /* como app a pantalla completa (iPhone) el menu empezaba debajo del reloj */
+      padding-top: env(safe-area-inset-top);
       padding-bottom: env(safe-area-inset-bottom);
     }
     body.mobile-menu-open #sidebar { transform: none; }
@@ -1684,7 +1686,7 @@
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/js/theme.js?v=20261008a"></script>
+<script src="/static/js/theme.js?v=20261008b"></script>
 <style>
   html[data-theme="light"] {
     --bg: #f5f6f8;
@@ -1699,6 +1701,6 @@
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
 </style>
-<script src="/static/js/app.js?v=20261008a"></script>
+<script src="/static/js/app.js?v=20261008b"></script>
 </body>
 </html>
