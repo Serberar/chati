@@ -523,6 +523,11 @@ def _keep_body(instruction: str) -> str:
     # Nada de "Do not add any necklace": estos modelos entienden mal las
     # negaciones y nombrarlo le hacia dibujar un collar (2026-10-07)
     keep = f"Keep {who} body shape and proportions exactly the same."
+    if who == "her":
+        # con solo "body shape" Kontext le agrandaba el pecho y bajaba el escote
+        # al ponerle un vestido (Mon, 2026-10-08); dicho en positivo
+        keep = ("Keep her body shape, her natural bust size and her proportions exactly the same as in the "
+                "photo, with a modest neckline.")
     m = re.search(r"\s*Do not add any other", instruction)
     if m:
         return f"{instruction[:m.start()].rstrip()} {keep} {instruction[m.start():].lstrip()}"

@@ -283,7 +283,8 @@ def test_clothing_changes_keep_the_body_shape():
     ollama.chat.return_value = ('{"pasos": [{"instruction": "Replace the woman\'s sweater with a white shirt. Keep her '
                                 'face. Do not add any other people.", "mode": "local"}]}')
     (plan,) = photo_edit.plan_edit(ollama, "m", "con una camisa blanca", ["centro"], "a woman")
-    assert "Keep her body shape and proportions exactly the same. Do not add" in plan.instruction
+    assert "Keep her body shape, her natural bust size and her proportions exactly the same" in plan.instruction
+    assert plan.instruction.index("Keep her body shape") < plan.instruction.index("Do not add")
     # ni en un cambio de fondo ni en uno de postura
     assert "body shape" not in photo_edit._keep_body("Change the background to a beach. Keep his clothes.")
     assert "body shape" not in photo_edit._keep_body("Make him kneel in his shirt, zoomed out.")
