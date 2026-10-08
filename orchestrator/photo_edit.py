@@ -137,6 +137,22 @@ Reglas que no se pueden saltar (con fallos reales, 2026-10-05):
   "Keep her body shape and proportions exactly the same." (el editor le
   cambiaba la figura y el escote, foto real de Sergio, 2026-10-07).
 
+SI NO ENTIENDES LA PETICION, PREGUNTA (Sergio, 2026-10-08: "si le pido algo
+que no lo comprende que lo pregunte, no que genere la imagen sin entenderlo y
+me haga la misma imagen con manchas"): si no sabes QUE cambio pide (palabras
+que no conoces, algo que no se puede ver en una foto, una frase sin sentido) o
+de verdad no sabes a QUIEN o a QUE se refiere y no lo aclaran los cambios
+anteriores, NO inventes. Devuelve solo {{"pregunta": "<una pregunta corta en
+español, de tu a tu, para aclararlo>"}}. Ejemplo: "ponme el flurbo" ->
+{{"pregunta": "No sé qué es «el flurbo». ¿Es una prenda, un objeto o un sitio? Descríbemelo y lo hago."}}
+Si se entiende, aunque sea corta ("mas grande", "en rojo", "de noche"), NO
+preguntes: hazlo.
+SI SE ENTIENDE PERO NO SE PUEDE HACER con un editor de fotos (un video o una
+animacion, un sonido, mover la camara a ver lo que hay detras de una pared,
+leer o escribir un texto largo exacto, cambiar varias fotos a la vez...),
+dilo sin intentarlo: devuelve solo {{"no_puedo": "<en español, corto: que no
+puedes y por que, y si hay una alternativa parecida, cual>"}}.
+
 Devuelve SOLO un JSON con "pasos": una lista con uno o dos pasos.
 DOS pasos solo si pide cambiar el lugar o el fondo Y ADEMAS algo de las
 personas (ropa, colores, accesorios, postura...): primero el cambio de las
@@ -324,6 +340,29 @@ def photo_intent(ollama, model: str, message: str, last_request: str = "") -> st
     return "editar"
 
 
+class NeedsClarification(Exception):
+    """No se edita y se le dice al usuario por que (el texto): el planificador
+    no ha entendido la peticion (pregunta), no se puede hacer, o el resultado
+    no tiene lo pedido. Antes se le daba la foto igual o con manchas tras
+    4 minutos (Sergio, 2026-10-08)."""
+
+
+def barely_changed(before: bytes, after: bytes) -> bool:
+    """¿El resultado es casi la misma foto? (Kontext no ha entendido o no ha
+    podido y devuelve la original redibujada, "con manchas"). Se mira a
+    256 px, en gris: cambio de verdad si mas del 0,2% de los puntos difiere
+    claramente (quitar unas gafas ya pasa de eso). Si no se puede mirar, se
+    da por cambiada: comprobar nunca debe estropear una edicion."""
+    try:
+        a, b = load_rgb(before), load_rgb(after)
+    except Exception:  # noqa: BLE001
+        return False
+    size = (256, max(1, int(256 * a.shape[0] / a.shape[1])))
+    ga = cv2.cvtColor(cv2.resize(a, size, interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY).astype(np.int16)
+    gb = cv2.cvtColor(cv2.resize(b, size, interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY).astype(np.int16)
+    return float((np.abs(ga - gb) > 25).mean()) < 0.002
+
+
 class EditPlan:
     def __init__(self, instruction: str, mode: str, summary: str = ""):
         self.instruction = instruction
@@ -450,6 +489,13 @@ def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "
     raw = ollama.chat(model, [{"role": "user", "content": content}], temperature=0.0, think=False)
     try:
         data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+    except (ValueError, json.JSONDecodeError):
+        data = {}
+    if isinstance(data, dict) and "pasos" not in data:
+        for key in ("pregunta", "no_puedo"):
+            if str(data.get(key, "")).strip():
+                raise NeedsClarification(str(data[key]).strip())
+    try:
         steps = data["pasos"] if "pasos" in data else [data]
         plans = [EditPlan(str(step["instruction"]).strip(), str(step.get("mode", "local")).strip().lower(),
                           str(step.get("resumen", "")).strip())

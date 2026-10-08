@@ -981,6 +981,7 @@ def test_edit_photo_chains_plan_kontext_and_composition():
          patch.object(main.photo_edit, "describe_photo", return_value="a man"), \
          patch.object(main.photo_edit, "verify_edit", return_value=None), \
          patch.object(main, "_free_comfyui"), \
+         patch.object(main.photo_edit, "barely_changed", return_value=False), \
          patch.object(main.image_agent, "edit_with_kontext", return_value=photo) as mock_kontext, \
          patch.object(main.image_agent, "upscale_bytes") as mock_upscale:
         out, done = main._edit_photo("la camiseta verde", photo)
@@ -1784,6 +1785,7 @@ def test_an_edit_that_misses_part_of_the_request_is_retried_insisting_on_it():
          patch.object(main.photo_edit, "describe_photo", return_value="a woman"), \
          patch.object(main.photo_edit, "verify_edit", side_effect=[bad, Verdict(True)]) as mock_verify, \
          patch.object(main, "_free_comfyui"), \
+         patch.object(main.photo_edit, "barely_changed", return_value=False), \
          patch.object(main.image_agent, "edit_with_kontext", return_value=photo) as mock_kontext:
         _, done = main._edit_photo("ponla en bikini en la playa con un coctel", photo)
     assert mock_kontext.call_count == 2
@@ -1797,9 +1799,42 @@ def test_an_edit_that_misses_part_of_the_request_is_retried_insisting_on_it():
          patch.object(main.photo_edit, "describe_photo", return_value="a woman"), \
          patch.object(main.photo_edit, "verify_edit", side_effect=[bad, bad]), \
          patch.object(main, "_free_comfyui"), \
-         patch.object(main.image_agent, "edit_with_kontext", return_value=photo):
-        _, done = main._edit_photo("ponla en bikini en la playa con un coctel", photo)
-    assert "no me ha salido del todo: no tiene el coctel en la mano" in done  # se dice, no se da por hecho
+         patch.object(main.photo_edit, "barely_changed", return_value=False), \
+         patch.object(main.image_agent, "edit_with_kontext", return_value=photo), \
+         pytest.raises(main.photo_edit.NeedsClarification) as failed:
+        main._edit_photo("ponla en bikini en la playa con un coctel", photo)
+    # ni al segundo intento: se dice que ha fallado y no se da la foto mal hecha (Sergio, 2026-10-08)
+    assert "no tiene el coctel en la mano" in str(failed.value)
+    assert main._generation_error_message("editando la foto", failed.value) == str(failed.value)
+
+
+def test_an_edit_that_comes_out_the_same_is_not_delivered():
+    # Sergio, 2026-10-08: "que no me haga la misma imagen con manchas"
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), (10, 20, 30)).save(buf, format="PNG")
+    photo = buf.getvalue()
+    plan = main.photo_edit.EditPlan("Put a red hat on the man. Keep his face.", "local", "te he puesto un gorro")
+    with patch.object(main.photo_edit, "plan_edit", return_value=[plan]), \
+         patch.object(main.photo_edit, "describe_photo", return_value="a man"), \
+         patch.object(main, "_free_comfyui"), \
+         patch.object(main.image_agent, "edit_with_kontext", return_value=photo), \
+         pytest.raises(main.photo_edit.NeedsClarification) as failed:
+        main._edit_photo("ponme un gorro rojo", photo)
+    assert "prácticamente igual" in str(failed.value)
+
+
+def test_a_request_it_does_not_understand_is_asked_before_editing():
+    question = "No sé qué es «el flurbo». ¿Es una prenda, un objeto o un sitio?"
+    with patch.object(main.ollama, "chat", return_value='{"pregunta": "%s"}' % question), \
+         pytest.raises(main.photo_edit.NeedsClarification) as asked:
+        main.photo_edit.plan_edit(main.ollama, "m", "ponme el flurbo", ["centro"], "a man")
+    assert str(asked.value) == question
+    with patch.object(main.ollama, "chat", return_value='{"no_puedo": "No puedo hacer vídeos, solo fotos."}'), \
+         pytest.raises(main.photo_edit.NeedsClarification) as refused:
+        main.photo_edit.plan_edit(main.ollama, "m", "hazme un video bailando", ["centro"], "a man")
+    assert "vídeos" in str(refused.value)
 
 
 def test_a_long_photo_edit_tells_what_it_is_doing_while_it_works():
@@ -1826,6 +1861,7 @@ def test_the_face_comes_from_the_last_approved_version_after_a_face_change():
          patch.object(main.photo_edit, "needs_upscale", return_value=False), \
          patch.object(main.photo_edit, "finish", side_effect=lambda cur, ed, mode: ed), \
          patch.object(main.photo_edit, "to_jpeg", side_effect=lambda x: x), \
+         patch.object(main.photo_edit, "_faces", return_value=[]), \
          patch.object(main.photo_edit, "restore_faces", side_effect=lambda src, cur, keep_hair, face_only=False, seams=None: used.append(src) or cur):
         main._apply_edit([plan], b"base", b"original", "que sea al atardecer", ["ponme en la playa"])
         main._apply_edit([plan], b"base", b"original", "que sea al atardecer", ["ponte gafas de sol"])

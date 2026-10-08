@@ -414,6 +414,10 @@ def _generation_error_message(action: str, exc: Exception) -> str:
     volver a escribirlo (Sergio, 2026-10-07) - ver RETRYABLE en app.js.
     Todo fallo queda en el registro: antes se le decia al usuario y no se
     apuntaba en ningun sitio ("buscar un error a ciegas", 2026-10-07)."""
+    if isinstance(exc, photo_edit.NeedsClarification):
+        # no es un fallo: no ha entendido la peticion y lo pregunta
+        log.info("Edicion: pregunta en vez de editar: %s", exc)
+        return str(exc)
     if isinstance(exc, GenerationCancelled):
         log.warning("Generacion cancelada (%s): %s", action, exc)
     else:
@@ -2973,6 +2977,12 @@ def _edit_photo_locked(request_text: str, photo: bytes, face_photo: bytes | None
     _report("Editando la foto (2-3 minutos)…")
     result = _apply_edit(steps, photo, face_photo, request_text, earlier)
     summary = _edit_summary(steps)
+    if photo_edit.barely_changed(photo, result):
+        # la misma foto redibujada ("con manchas"): mejor decirlo que darla
+        log.info("Edicion: el resultado es casi la misma foto, no se entrega")
+        raise photo_edit.NeedsClarification(
+            "No he conseguido hacer el cambio: la foto me ha salido prácticamente igual. "
+            "¿Me lo pides de otra forma o con más detalle (qué cambiar, cómo y dónde)?")
 
     # ¿se ve TODO lo pedido? (Sergio: "ha hecho la mitad de lo que he pedido")
     t3 = time.perf_counter()
@@ -3004,9 +3014,12 @@ def _edit_photo_locked(request_text: str, photo: bytes, face_photo: bytes | None
             result, verdict = second, second_verdict
     ollama.unload(vision_agent.model)
     if verdict is not None and not verdict.ok:
-        # mejor decirlo que dar por hecho lo que no se ve
+        # ni al segundo intento: no se entrega una foto mal hecha, se dice
+        # que ha fallado (Sergio, 2026-10-08: "si no puede hacerlo que lo diga")
         problem = verdict.problem_es or "no se ve todo lo que pediste"
-        summary += f" Ojo, no me ha salido del todo: {problem[0].lower() + problem[1:]}. Prueba a pedirmelo otra vez."
+        raise photo_edit.NeedsClarification(
+            f"No me ha salido bien ni repitiéndolo: {problem[0].lower() + problem[1:]}. "
+            "Prefiero no darte una foto mal hecha. Si me lo pides de otra forma o con más detalle, lo intento otra vez.")
     return result, summary
 
 
