@@ -30,6 +30,8 @@ PUBLIC_PATHS = {
     "/pair", "/pair/claim",
     # errores de la pantalla: pueden pasar antes de iniciar sesion
     "/client-log",
+    # icono y manifiesto de la app del movil: el iPhone los pide sin sesion
+    "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/manifest.webmanifest",
 }
 # /llm/: pasarela de OpenCode hacia Ollama (main.py) - no lleva sesion de usuario
 PUBLIC_PATH_PREFIXES = ("/auth/security-question/", "/static/", "/llm/")
