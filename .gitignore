@@ -62,3 +62,6 @@ __pycache__/
 Thumbs.db
 .DS_Store
 .vscode/
+
+# Pantalla de inicio de la app del movil: repo aparte (Serberar.github.io)
+/inicio/
