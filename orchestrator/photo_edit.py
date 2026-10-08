@@ -119,7 +119,9 @@ Reglas que no se pueden saltar (con fallos reales, 2026-10-05):
   and empty"). Si no, el editor ponia uno en cada mano (2026-10-06).
 - Lo que ya tiene en las manos y no se pide cambiar (un movil, una taza...)
   se nombra en lo que se mantiene: "still holding her single smartphone in her
-  right hand" (el editor lo duplicaba en la otra mano).
+  right hand" (el editor lo duplicaba en la otra mano). PERO en un cambio de
+  POSTURA no: las manos libres y relajadas, salvo que el usuario nombre el
+  objeto ("con la copa"). Salia tirandose en paracaidas con la copa (2026-10-08).
 - El sitio o el fondo va SOLO en el paso "fondo", nunca en el paso "local".
 - Ropa de baño: para un hombre "swim trunks, bare chest"; para una mujer el
   bañador o bikini que pida (si no dice, "a one-piece swimsuit").
@@ -468,9 +470,42 @@ def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "
     for plan in plans:
         plan.instruction = _keep_body(clothing_terms.fix_instruction(request, plan.instruction))
         plan.instruction = _real_clothes(plan.instruction, scene)
+        plan.instruction = _natural_pose(plan.instruction, request)
         plan.summary = _same_person(plan.summary, [*(history or []), request])
     # sin instruccion en ingles Kontext entiende peor, pero entiende algo
     return plans or [EditPlan(request, "local")]
+
+
+_HELD = re.compile(r",?\s*(still\s+)?holding\b[^.,]*?(glass|cup|mug|drink|cocktail|beer|wine|phone|smartphone|"
+                   r"bottle|can)\b[^.,]*", re.IGNORECASE)
+_MENTIONS_OBJECT = re.compile(r"\b(copa|vaso|taza|bebida|coctel|cóctel|cerveza|vino|m[oó]vil|tel[eé]fono|botella|lata)\b",
+                              re.IGNORECASE)
+
+
+def _natural_pose(instruction: str, request: str) -> str:
+    """En un cambio de postura: la cabeza recta y natural, no la inclinacion
+    que tenia por el angulo de la camara (en un selfie ladeado, de pie parecia
+    jorobado), y las manos libres salvo que pida el objeto (salia en
+    paracaidas con la copa). Sergio, 2026-10-08."""
+    if not is_pose_change(instruction):
+        return instruction
+    low = instruction.lower()
+    who = "her" if re.search(r"\b(woman|her|she|girl)\b", low) else \
+        "his" if re.search(r"\b(man|his|he|boy)\b", low) else "their"
+    if not _MENTIONS_OBJECT.search(request or ""):
+        change, keep = instruction, ""
+        m = _KEEP.search(instruction)
+        if m:
+            change, keep = instruction[:m.start()], instruction[m.start():]
+        change = _HELD.sub("", change)
+        keep = _HELD.sub("", keep)
+        instruction = (change.rstrip(" ,.") + f", with {who} hands free and relaxed." + keep)
+    posture = (f" {who.capitalize()} head is upright and straight in a natural relaxed posture, "
+               f"as seen from a natural eye-level camera angle.")
+    m = re.search(r"\s*Keep\b", instruction)
+    if m:
+        return instruction[:m.start()].rstrip() + posture + " " + instruction[m.start():].lstrip()
+    return instruction.rstrip() + posture
 
 
 _REPLACE_OBJ = re.compile(r"\bReplace\s+(the man's|the woman's|the person's|his|her|their)\s+(.+?)\s+with\s+",
