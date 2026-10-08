@@ -25,6 +25,7 @@ SWAP_DIR = MODELS_DIR / "img" / "faceswap"
 SWAPPER = SWAP_DIR / "inswapper_128.onnx"
 EMAP = SWAP_DIR / "inswapper_emap.npy"      # matriz del propio inswapper (extraida con onnx)
 RESTORER = SWAP_DIR / "gfpgan_1.4.onnx"
+HYPERSWAP = SWAP_DIR / "hyperswap_1a_256.onnx"  # FaceFusion 3.3; si no esta, inswapper
 ARCFACE = DATA_ROOT / "ComfyUI" / "models" / "insightface" / "models" / "buffalo_l" / "w600k_r50.onnx"
 
 # donde caen los 5 puntos (ojos, nariz, comisuras) en una cara alineada de
@@ -33,6 +34,9 @@ ARCFACE_POINTS = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.
                            [41.5493, 92.3655], [70.7299, 92.2041]], np.float32)
 FFHQ_POINTS = np.array([[192.98138, 239.94708], [318.90277, 240.1936], [256.63416, 314.01935],
                         [201.26117, 371.41043], [313.08905, 371.15118]], np.float32)
+# plantilla "arcface_128" de FaceFusion (la de HyperSwap), a 256 px
+HYPER_POINTS = np.array([[0.36167656, 0.40387734], [0.63696719, 0.40235469], [0.50019687, 0.56044219],
+                         [0.38710391, 0.72160547], [0.61507734, 0.72034453]], np.float32) * 256
 
 SECOND_PASS_BELOW = 0.6  # parecido ArcFace por debajo del cual se repite el clonado
 
@@ -85,6 +89,29 @@ def _paste(base: np.ndarray, face_img: np.ndarray, m: np.ndarray, size: int, fea
 
 
 def _swap_one(rgb: np.ndarray, target_face: np.ndarray, source_id: np.ndarray) -> np.ndarray:
+    if HYPERSWAP.exists():
+        return _swap_one_hyper(rgb, target_face, source_id)
+    return _swap_one_inswapper(rgb, target_face, source_id)
+
+
+def _swap_one_hyper(rgb: np.ndarray, target_face: np.ndarray, source_id: np.ndarray) -> np.ndarray:
+    """HyperSwap a 256 px: el doble de detalle que inswapper (a 128 la cara
+    salia mas ancha y "no era el", Sergio, 2026-10-08) y sin restaurar despues
+    (GFPGAN alisaba la piel). Su propia mascara dice que parte es cara."""
+    crop, m = _align(rgb, _points(target_face), HYPER_POINTS, 256)
+    s = _session(HYPERSWAP)
+    out, mask = s.run(None, {"source": source_id[None].astype(np.float32),
+                             "target": ((crop.astype(np.float32) / 255.0 - 0.5) / 0.5).transpose(2, 0, 1)[None]})
+    swapped = ((out[0].transpose(1, 2, 0) * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
+    mask = cv2.GaussianBlur(mask[0, 0].clip(0, 1).astype(np.float32), (0, 0), 3)
+    h, w = rgb.shape[:2]
+    inv = cv2.invertAffineTransform(m)
+    back = cv2.warpAffine(swapped, inv, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    alpha = cv2.warpAffine(mask, inv, (w, h), flags=cv2.INTER_LINEAR)[..., None]
+    return (back.astype(np.float32) * alpha + rgb.astype(np.float32) * (1 - alpha)).clip(0, 255).astype(np.uint8)
+
+
+def _swap_one_inswapper(rgb: np.ndarray, target_face: np.ndarray, source_id: np.ndarray) -> np.ndarray:
     # 2-3: la identidad sobre la cara nueva (inswapper, 128 px)
     template = ARCFACE_POINTS * (128 / 112)
     crop, m = _align(rgb, _points(target_face), template, 128)

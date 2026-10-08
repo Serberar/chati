@@ -3036,18 +3036,33 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
         if mask is None and photo_edit.is_pose_change(step.instruction):
             # Kontext copia la inclinacion del selfie: de pie quedaba la cabeza
             # torcida (Sergio, 2026-10-08). Ve la cabeza ya recta.
-            reference = photo_edit.straighten_heads(current)
-            if not photo_edit.mentions_held_object(request_text):
-                reference = photo_edit.hide_held(current, reference)
+            reference = _pose_reference(current, request_text)
         t = time.perf_counter()
         edited_png = image_agent.edit_with_kontext(
             step.instruction, photo_edit.prepare_for_kontext(reference),
             mask_png=None if mask is None else photo_edit.mask_png_for_kontext(mask))
         log.info("Edicion: Kontext %.0f s%s", time.perf_counter() - t, " (solo el cuerpo)" if mask is not None else "")
         t = time.perf_counter()
-        edited = photo_edit.load_rgb(edited_png)
-        if photo_edit.needs_upscale(current, edited):
-            edited = photo_edit.load_rgb(image_agent.upscale_bytes(edited_png))
+        edited = _upscaled(current, edited_png)
+        if reference is not current:
+            # control de calidad: con la cabeza aun torcida, la cara pegada
+            # sigue esa inclinacion y queda rara ("la cara esta rara con
+            # inclinacion extraña", Sergio, 2026-10-08). Otra vez (otra
+            # semilla) y se queda la mas recta. Se mide ya ampliada: en la de
+            # Kontext (1 MP) una cara de cuerpo entero es tan pequeña que no
+            # se detectaba y contaba como recta.
+            tilt = photo_edit.max_head_tilt(edited)
+            if tilt > photo_edit.HEAD_TILT_MIN:
+                _report("La cabeza ha salido torcida, repitiendo…")
+                t = time.perf_counter()
+                retry = _upscaled(current, image_agent.edit_with_kontext(
+                    step.instruction, photo_edit.prepare_for_kontext(reference)))
+                retry_tilt = photo_edit.max_head_tilt(retry)
+                log.info("Edicion: cabeza torcida %.0f grados, repetida (%.0f grados) %.0f s",
+                         tilt, retry_tilt, time.perf_counter() - t)
+                if retry_tilt < tilt:
+                    edited = retry
+            t = time.perf_counter()
         if mask is not None:
             current, mode = photo_edit.compose_masked(current, edited, mask), "cuerpo"
         else:
@@ -3084,6 +3099,53 @@ def _apply_edit(steps, photo: bytes, face_photo: bytes | None, request_text: str
             current = face_swap.swap_faces(source, current, turned_o, turned_r)
             log.info("Edicion: rasgos clonados en %d cara(s) giradas %.0f s", len(turned_r), time.perf_counter() - t)
     return photo_edit.to_jpeg(current)
+
+
+_POSE_REFERENCES: dict = {}  # foto -> referencia preparada (se repite mucho: de pie, playa, paracaidas...)
+POSE_REFERENCE_CACHE = 8
+REMOVE_HELD_PROMPT = ("Remove the object the person is holding in their hand, so that their hand is empty and "
+                      "relaxed. Keep the person, their face, clothes, pose and the background exactly the same.")
+
+
+def _pose_reference(current, request_text: str):
+    """La foto que ve Kontext en un cambio de postura (Sergio, 2026-10-08):
+    - sin lo que se tenga en la mano, salvo que se pida: Kontext copiaba la
+      copa aunque la instruccion pidiera las manos vacias. Lo quita Kontext
+      mismo (borrarlo a mano dejaba una mancha que Kontext copiaba);
+    - con la cabeza recta (straighten_heads): copiaba la inclinacion del selfie.
+    Se guarda por foto: sirve para cada postura que se pida con ella."""
+    import hashlib
+    keep_object = photo_edit.mentions_held_object(request_text)
+    key = (hashlib.sha1(current.tobytes()).hexdigest(), keep_object)
+    if key in _POSE_REFERENCES:
+        return _POSE_REFERENCES[key]
+    reference = current
+    if not keep_object and photo_edit.detect_hands(current):
+        _report("Preparando la foto para la nueva postura…")
+        t = time.perf_counter()
+        try:
+            reference = _upscaled(current, image_agent.edit_with_kontext(
+                REMOVE_HELD_PROMPT, photo_edit.prepare_for_kontext(current)))
+            reference = photo_edit.finish(current, reference, "entera")
+            log.info("Edicion: quitado lo que tenia en la mano %.0f s", time.perf_counter() - t)
+        except comfyui_client.GenerationCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - mejor con el objeto que sin edicion
+            log.warning("Edicion: no se pudo quitar lo que tenia en la mano: %s", exc)
+            reference = current
+    reference = photo_edit.straighten_heads(reference)
+    if len(_POSE_REFERENCES) >= POSE_REFERENCE_CACHE:
+        _POSE_REFERENCES.pop(next(iter(_POSE_REFERENCES)))
+    _POSE_REFERENCES[key] = reference
+    return reference
+
+
+def _upscaled(current, edited_png: bytes):
+    """La salida de Kontext, ampliada con ESRGAN si se queda pequeña para la foto."""
+    edited = photo_edit.load_rgb(edited_png)
+    if photo_edit.needs_upscale(current, edited):
+        edited = photo_edit.load_rgb(image_agent.upscale_bytes(edited_png))
+    return edited
 
 
 def _repaint_seam(current, seams: list):

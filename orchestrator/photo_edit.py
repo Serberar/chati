@@ -509,6 +509,13 @@ def _natural_pose(instruction: str, request: str) -> str:
         instruction = change.rstrip(" ,.") + f", with {who} hands empty, open and relaxed{joint}" + keep
     posture = (f" {who.capitalize()} head is upright and straight in a natural relaxed posture, "
                f"as seen from a natural eye-level camera angle.")
+    if re.search(r"\bstand(s|ing)?\b|\bstood\b", low):
+        # "stand up" solo: lo sacaba encorvado apoyado en el borde de la mesa
+        # de la foto (Sergio, 2026-10-08)
+        pronoun = {"her": "she", "his": "he"}.get(who, "they")
+        posture += (f" {pronoun.capitalize()} {'is' if pronoun != 'they' else 'are'} standing fully upright "
+                    f"with a straight back and relaxed shoulders, {who} arms hanging naturally at {who} sides, "
+                    f"in an open space with nothing in front of {who.replace('his', 'him').replace('their', 'them')}.")
     m = re.search(r"\s*Keep\b", instruction)
     if m:
         return instruction[:m.start()].rstrip() + posture + " " + instruction[m.start():].lstrip()
@@ -701,45 +708,70 @@ def head_tilt(face: np.ndarray) -> float:
     return float(np.degrees(np.arctan2(ry - ly, rx - lx)))
 
 
+def max_head_tilt(rgb: np.ndarray) -> float:
+    """La cabeza mas inclinada hacia un hombro (grados); las tumbadas (mas de
+    60, es la postura) no cuentan. 0 sin caras."""
+    tilts = [abs(head_tilt(f)) for f in _faces(rgb)]
+    return max([t for t in tilts if t <= 60], default=0.0)
+
+
 def straighten_heads(rgb: np.ndarray) -> np.ndarray:
     """Para un cambio de postura: la foto que ve Kontext con la cabeza recta.
     Kontext copiaba la inclinacion del selfie aunque se le pidiera la cabeza
     recta, y de pie o en paracaidas quedaba torcida ("la cara esta girada
     rara", Sergio, 2026-10-08). Se gira solo la cabeza, sobre el cuello; lo
-    que queda al descubierto se rellena con lo de alrededor. Es solo la
+    que queda al descubierto se rellena con lo que habria detras (fill_hole). Es solo la
     referencia: Kontext redibuja el cuerpo entero y luego va la cara original,
     girada igual (restore_faces encaja giros en el plano).
     Dos pasadas: con la cara algo girada de lado, una sola dejaba 5 grados."""
     return _straighten_once(_straighten_once(rgb, HEAD_TILT_MIN), 3.0)
 
 
-def hide_held(original: np.ndarray, reference: np.ndarray) -> np.ndarray:
-    """Para un cambio de postura sin pedir el objeto: la referencia de Kontext
-    sin lo que se tiene en la mano. Aunque la instruccion no lo nombrara (y
-    pidiera las manos vacias), Kontext copiaba la copa de la foto ("no hace
-    falta que salga en todas con la copa", Sergio, 2026-10-08). Las manos se
-    buscan en la original (en la enderezada a veces no salen); se borra la mano
-    y lo de encima (una copa, un movil), sin tocar la cara."""
-    h, w = reference.shape[:2]
-    mask = np.zeros((h, w), np.uint8)
-    for x, y, size in detect_hands(original):
-        cv2.circle(mask, (int(x), int(y - 0.8 * size)), int(2.2 * size), 255, -1)
-    if not mask.any():
-        return reference
-    skin = _skin_mask(reference)
-    if skin is not None:
-        # la cara se protege solo hasta la barbilla: el cuello visto a traves
-        # de la copa cuenta como piel y el borde de la copa se quedaba
-        for face in _faces(reference):
-            x, y, fw, fh = (int(v) for v in face[:4])
-            skin[int(y + fh * 1.0):, max(0, x - fw // 2):x + fw * 3 // 2] = 0
-        mask[skin > 0] = 0
-    small = max(1, int(max(h, w) / 512))
-    sw, sh = w // small, h // small
-    filled = cv2.inpaint(cv2.resize(reference, (sw, sh), interpolation=cv2.INTER_AREA),
-                         cv2.resize(mask, (sw, sh), interpolation=cv2.INTER_NEAREST), 20, cv2.INPAINT_TELEA)
-    filled = cv2.resize(filled, (w, h), interpolation=cv2.INTER_LINEAR)
-    return np.where(mask[..., None] > 0, filled, reference)
+
+
+INPAINT_MODEL = MODELS_DIR / "img" / "inpaint" / "inpainting_lama_2025jan.onnx"  # LaMa, opencv_zoo (Apache 2.0)
+_inpaint_session = None
+
+
+def fill_hole(rgb: np.ndarray, hole: np.ndarray) -> np.ndarray:
+    """Rellena `hole` (uint8, >0 = hueco) con lo que habria detras: LaMa sobre
+    un recorte cuadrado alrededor del hueco (a buena resolucion), solo dentro
+    del hueco. El relleno a ojo (Telea) quedaba como una mancha borrosa que
+    Kontext copiaba a la foto final (Sergio, 2026-10-08). Sin el modelo, Telea."""
+    global _inpaint_session
+    ys, xs = np.nonzero(hole)
+    if not len(ys):
+        return rgb
+    h, w = rgb.shape[:2]
+    if not INPAINT_MODEL.exists():
+        small = max(1.0, max(h, w) / 1024)
+        sw, sh = int(w / small), int(h / small)
+        rough = cv2.inpaint(cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_AREA),
+                            cv2.resize(hole, (sw, sh), interpolation=cv2.INTER_NEAREST), 15, cv2.INPAINT_TELEA)
+        return np.where(hole[..., None] > 0, cv2.resize(rough, (w, h), interpolation=cv2.INTER_LINEAR), rgb)
+    if _inpaint_session is None:
+        _inpaint_session = ort.InferenceSession(str(INPAINT_MODEL), providers=["CPUExecutionProvider"])
+    # cuadrado con el hueco y su contexto (el doble de grande), dentro de la foto
+    side = int(min(max(np.ptp(ys), np.ptp(xs)) * 2 + 32, min(h, w)))
+    cy, cx = (ys.min() + ys.max()) // 2, (xs.min() + xs.max()) // 2
+    x0 = int(np.clip(cx - side // 2, 0, max(0, w - side)))
+    y0 = int(np.clip(cy - side // 2, 0, max(0, h - side)))
+    crop = rgb[y0:y0 + side, x0:x0 + side]
+    hole_crop = hole[y0:y0 + side, x0:x0 + side]
+    ch, cw = crop.shape[:2]
+    x = cv2.resize(crop, (512, 512), interpolation=cv2.INTER_AREA).astype(np.float32).transpose(2, 0, 1)[None] / 255
+    m = (cv2.resize(hole_crop, (512, 512), interpolation=cv2.INTER_NEAREST) > 0).astype(np.float32)[None, None]
+    out = _inpaint_session.run(None, {"image": x, "mask": m})[0][0].transpose(1, 2, 0)
+    out = cv2.resize(out.clip(0, 255).astype(np.uint8), (cw, ch), interpolation=cv2.INTER_CUBIC)
+    result = rgb.copy()
+    result[y0:y0 + ch, x0:x0 + cw] = np.where(hole_crop[..., None] > 0, out, crop)
+    return result
+
+
+
+
+
+
 
 
 def mentions_held_object(request: str) -> bool:
@@ -773,10 +805,7 @@ def _straighten_once(rgb: np.ndarray, min_tilt: float) -> np.ndarray:
         if hole.any():
             small = max(1.0, max(h, w) / 1024)
             sw, sh = int(w / small), int(h / small)
-            filled = cv2.inpaint(cv2.resize(out, (sw, sh), interpolation=cv2.INTER_AREA),
-                                 cv2.resize(hole, (sw, sh), interpolation=cv2.INTER_NEAREST), 15, cv2.INPAINT_TELEA)
-            filled = cv2.resize(filled, (w, h), interpolation=cv2.INTER_LINEAR)
-            out = np.where(hole[..., None] > 0, filled, out)
+            out = fill_hole(out, hole)
         alpha = cv2.GaussianBlur(new_head, (0, 0), max(1.5, fw * 0.01))[..., None]
         out = (turned * alpha + out * (1 - alpha)).clip(0, 255).astype(np.uint8)
     return out
@@ -1158,6 +1187,26 @@ def turned_faces(faces_o: list, faces_r: list, tolerance: float = 0.05) -> tuple
     return turned_o, turned_r
 
 
+def _eye_aligned(pts_o: np.ndarray, pts_r: np.ndarray) -> np.ndarray:
+    """Giro, escala y posicion para llevar una cara a otra con la linea de
+    los ojos exactamente igual. Ajustando los 5 puntos a la vez, con la cara
+    original algo girada de lado el giro salia a medias: en la cabeza recta de
+    Kontext la cara quedaba inclinada 6-9 grados ("inclinacion extraña",
+    Sergio, 2026-10-08). Escala por la distancia entre ojos y de ojos a boca;
+    centrada en el centro de ojos y boca."""
+    def frame(p):
+        eyes, mouth = (p[0] + p[1]) / 2, (p[3] + p[4]) / 2
+        return eyes, mouth, p[1] - p[0]
+    eo, mo, vo = frame(pts_o.astype(np.float64))
+    er, mr, vr = frame(pts_r.astype(np.float64))
+    angle = np.arctan2(vr[1], vr[0]) - np.arctan2(vo[1], vo[0])
+    scale = (np.linalg.norm(vr) + np.linalg.norm(mr - er)) / max(np.linalg.norm(vo) + np.linalg.norm(mo - eo), 1e-6)
+    c, s = scale * np.cos(angle), scale * np.sin(angle)
+    rot = np.array([[c, -s], [s, c]])
+    co, cr = (eo + mo) / 2, (er + mr) / 2
+    return np.hstack([rot, (cr - rot @ co)[:, None]]).astype(np.float64)
+
+
 def _skin_mask(rgb: np.ndarray) -> np.ndarray | None:
     """Cara (con cuello y barba), pelo y gafas segun el segmentador, con los
     huecos de dentro rellenos (el bigote salia a veces como otra cosa); lo que
@@ -1224,6 +1273,8 @@ def restore_faces(orig: np.ndarray, result: np.ndarray, keep_hair: bool = True,
             continue
         _, j, m, _ = best
         used.add(j)
+        if face_only:
+            m = _eye_aligned(pts_o, faces_r[j][4:14].reshape(5, 2).astype(np.float32))
         warped = cv2.warpAffine(orig, m, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
         x, y, fw, fh = (float(v) for v in f[:4])
         scale = float(np.sqrt(abs(np.linalg.det(m[:, :2]))))
