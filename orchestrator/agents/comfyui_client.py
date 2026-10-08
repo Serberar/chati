@@ -28,6 +28,10 @@ before_submit: Callable[[], None] | None = None
 # dueño de cada peticion en current_owner.
 current_owner: ContextVar[str | None] = ContextVar("comfy_owner", default=None)
 _owners: dict[str, str] = {}
+# y de que conversacion: el boton "Ver" de las tareas en marcha lleva a ella
+# (Sergio, pendiente.md 2026-10-08). main._own_session_id lo pone.
+current_conversation: ContextVar[str | None] = ContextVar("comfy_conversation", default=None)
+_conversations: dict[str, str] = {}
 _owners_lock = threading.Lock()
 
 
@@ -148,10 +152,12 @@ def _submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys:
     )
     resp.raise_for_status()
     prompt_id = resp.json()["prompt_id"]
-    owner = current_owner.get()
-    if owner:
-        with _owners_lock:
+    owner, conversation = current_owner.get(), current_conversation.get()
+    with _owners_lock:
+        if owner:
             _owners[prompt_id] = owner
+        if conversation:
+            _conversations[prompt_id] = conversation
 
     deadline = time.time() + timeout
     grace_deadline = time.time() + 5  # margen inicial: no comprobar la cola nada mas enviar (posible carrera)
@@ -254,6 +260,7 @@ def forget(base_url: str, prompt_id: str, workflow: dict, output_info: dict | No
     Nunca falla: si algo no se puede borrar, no rompe la generacion."""
     with _owners_lock:
         _owners.pop(prompt_id, None)
+        _conversations.pop(prompt_id, None)
     root = COMFY_DIR() if callable(COMFY_DIR) else COMFY_DIR
     targets = []
     if output_info and output_info.get("filename"):
@@ -316,8 +323,12 @@ def user_jobs(base_url: str) -> list[dict]:
     def is_user_job(item) -> bool:
         return f'"{WARMUP_PROMPT}"' not in json.dumps(item[2] if len(item) > 2 else {})
 
-    return ([{"id": item[1], "state": "running"} for item in queue.get("queue_running", []) if is_user_job(item)]
-            + [{"id": item[1], "state": "queued"} for item in queue.get("queue_pending", []) if is_user_job(item)])
+    def job(item, state: str) -> dict:
+        with _owners_lock:
+            return {"id": item[1], "state": state, "session_id": _conversations.get(item[1])}
+
+    return ([job(item, "running") for item in queue.get("queue_running", []) if is_user_job(item)]
+            + [job(item, "queued") for item in queue.get("queue_pending", []) if is_user_job(item)])
 
 
 def user_queue(base_url: str) -> tuple[int, int]:

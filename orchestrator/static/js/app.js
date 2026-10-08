@@ -1075,9 +1075,12 @@ async function refreshBackgroundTasks() {
       t.reason === "permission" ? "Esperando tu permiso" : "Esperando tu respuesta", "waiting",
       [["Ver", "", viewAgent(t.session_id)], ["Cerrar tarea", "stop", stopAgent(t.session_id)]]));
   }
+  // "Ver": a la conversacion donde se pidio (Sergio, pendiente.md 2026-10-08)
+  const viewConversation = (sid) => () => { bgTasksPanel.classList.remove("show"); loadConversationIntoLog(sid); };
   for (const g of p.generations || []) {
-    list.appendChild(bgRow("🖼️ Imagen o video", g.state === "running" ? "Generandose ahora" : "En cola", "",
-      [["Detener", "stop", () => fetch(`/work/generation/${encodeURIComponent(g.id)}/stop`, { method: "POST" })]]));
+    const actions = [["Detener", "stop", () => fetch(`/work/generation/${encodeURIComponent(g.id)}/stop`, { method: "POST" })]];
+    if (g.session_id) actions.unshift(["Ver", "", viewConversation(g.session_id)]);
+    list.appendChild(bgRow("🖼️ Imagen o video", g.state === "running" ? "Generandose ahora" : "En cola", "", actions));
   }
 }
 
@@ -1335,6 +1338,40 @@ function startTypingIndicator(bubble) {
   return () => clearInterval(interval);
 }
 
+// Hora de cada mensaje y separador cuando cambia el dia, para seguir cuando
+// se pregunto y cuanto tardo la respuesta (Sergio, pendiente.md 2026-10-08).
+// created_at de la base de datos viene en UTC ("2026-10-08 14:05:00").
+function messageDate(createdAt) {
+  if (!createdAt) return new Date();
+  const d = new Date(String(createdAt).replace(" ", "T") + (String(createdAt).endsWith("Z") ? "" : "Z"));
+  return isNaN(d) ? new Date() : d;
+}
+
+function dayLabel(d) {
+  const today = new Date();
+  const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Hoy";
+  if (d.toDateString() === yesterday.toDateString()) return "Ayer";
+  return d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+}
+
+function stampMessage(wrap, roleEl, date) {
+  const day = date.toDateString();
+  const previous = [...log.querySelectorAll(".msg[data-day]")].pop();
+  if (!previous || previous.dataset.day !== day) {
+    const sep = document.createElement("div");
+    sep.className = "day-sep";
+    sep.textContent = dayLabel(date);
+    log.appendChild(sep);
+  }
+  wrap.dataset.day = day;
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = date.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  time.title = date.toLocaleString("es-ES");
+  roleEl.appendChild(time);
+}
+
 function addMessage(role, tag) {
   hideEmptyState();
   const wrap = document.createElement("div");
@@ -1342,6 +1379,7 @@ function addMessage(role, tag) {
   const roleEl = document.createElement("div");
   roleEl.className = "role";
   roleEl.textContent = role === "user" ? "Tu" : "Chati";
+  stampMessage(wrap, roleEl, new Date());
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   if (tag) {
@@ -1906,6 +1944,79 @@ async function loadDevices() {
     row.append(info, btn);
     list.appendChild(row);
   }
+}
+
+// Ordenadores con Chati (casa / trabajo), por Tailscale: en cual trabajar
+// (Sergio, pendiente.md 2026-10-08). Ver computers.py.
+const computersModal = document.getElementById("computersModal");
+
+async function fetchComputers() {
+  try { return await (await fetch("/computers")).json(); } catch (e) { return []; }
+}
+
+async function loadComputers() {
+  const list = document.getElementById("computersList");
+  list.textContent = "Comprobando…";
+  const items = await fetchComputers();
+  list.innerHTML = "";
+  if (!items.length) { list.textContent = "No se ve Tailscale en este ordenador."; return; }
+  for (const pc of items) {
+    const row = document.createElement("div");
+    row.className = "pc-row";
+    const dot = document.createElement("span");
+    dot.className = "pc-dot" + (pc.chati ? " on" : "");
+    const name = document.createElement("span");
+    name.className = "pc-name";
+    name.textContent = pc.name;
+    const state = document.createElement("span");
+    state.className = "pc-state";
+    state.textContent = pc.this ? "Estás aquí" : (pc.chati ? "Encendido" : (pc.online ? "Encendido, sin Chati" : "Apagado"));
+    row.append(dot, name, state);
+    if (!pc.this && pc.chati) {
+      const open = document.createElement("a");
+      open.className = "personas-primary";
+      open.href = pc.url;
+      open.textContent = "Abrir";
+      row.appendChild(open);
+    }
+    list.appendChild(row);
+  }
+}
+
+document.getElementById("optComputersBtn").addEventListener("click", () => {
+  optionsModal.style.display = "none";
+  computersModal.style.display = "block";
+  loadComputers();
+});
+document.getElementById("closeComputersBtn").addEventListener("click", () => { computersModal.style.display = "none"; });
+
+// siempre a la vista a que ordenador se esta conectado (Sergio, 2026-10-08)
+async function showCurrentComputer() {
+  const here = (await fetchComputers()).find((pc) => pc.this);
+  const name = here ? here.name : location.hostname.split(".")[0];
+  if (!name || name === "127" || name === "localhost") return;
+  document.getElementById("pcNameBadge").textContent = "🖥 " + name;
+  document.getElementById("pcChip").textContent = "🖥 " + name;
+  document.title = `Chati IA · ${name}`;
+}
+
+// al abrir Chati: si otro ordenador tambien tiene Chati encendida, se avisa
+async function announceOtherComputers() {
+  try { if (sessionStorage.getItem("chati_other_pc_seen")) return; } catch (e) { /* sin almacenamiento */ }
+  const others = (await fetchComputers()).filter((pc) => !pc.this && pc.chati);
+  if (!others.length) return;
+  const banner = document.getElementById("otherComputerBanner");
+  const here = (await fetchComputers()).find((pc) => pc.this);
+  document.getElementById("otherComputerText").textContent =
+    `Estás en ${here ? here.name : "este ordenador"}. También está encendida la Chati de ${others.map((pc) => pc.name).join(" y ")}.`;
+  const open = document.getElementById("otherComputerOpen");
+  open.href = others[0].url;
+  open.textContent = others.length === 1 ? `Ir a ${others[0].name}` : "Ver ordenadores";
+  if (others.length > 1) open.addEventListener("click", (e) => { e.preventDefault(); computersModal.style.display = "block"; loadComputers(); });
+  banner.style.display = "flex";
+  const dismiss = () => { banner.style.display = "none"; try { sessionStorage.setItem("chati_other_pc_seen", "1"); } catch (e) { /* nada */ } };
+  document.getElementById("otherComputerClose").addEventListener("click", dismiss);
+  open.addEventListener("click", dismiss);
 }
 
 document.getElementById("optDevicesBtn").addEventListener("click", () => {
@@ -3899,7 +4010,7 @@ newChatBtn.addEventListener("click", () => startNewConversation());
 
 const ATTACHED_DOC_PREFIX = "📄 Documento adjuntado: ";
 
-function addLoadedMessage(role, content, agent, messageId, sessionId, media) {
+function addLoadedMessage(role, content, agent, messageId, sessionId, media, createdAt) {
   if (agent === "adjunto" && content.startsWith(ATTACHED_DOC_PREFIX)) {
     addDocCard(content.slice(ATTACHED_DOC_PREFIX.length));
     return;
@@ -3909,6 +4020,7 @@ function addLoadedMessage(role, content, agent, messageId, sessionId, media) {
   const roleEl = document.createElement("div");
   roleEl.className = "role";
   roleEl.textContent = role === "user" ? "Tu" : ("Chati" + (agent ? ` (${agent})` : ""));
+  stampMessage(wrap, roleEl, messageDate(createdAt));
 
   const actions = document.createElement("span");
   actions.className = "msg-actions";
@@ -3988,7 +4100,7 @@ async function loadConversationIntoLog(sessionId) {
   localStorage.setItem("ia_session_id", sessionId);
   refreshDocChips();
   log.innerHTML = "";
-  messages.forEach(m => addLoadedMessage(m.role, m.content, m.agent, m.id, sessionId, m.media));
+  messages.forEach(m => addLoadedMessage(m.role, m.content, m.agent, m.id, sessionId, m.media, m.created_at));
   log.scrollTop = log.scrollHeight;
   planPanel.style.display = "none";
   document.querySelectorAll(".conv-row").forEach(r => r.classList.remove("current"));
@@ -4713,6 +4825,8 @@ initSessionUI().then(() => {
   if (getSessionRole() !== "guest") {
     refreshBackgroundTasks();
     setInterval(refreshBackgroundTasks, 8000);
+    announceOtherComputers();
   }
+  showCurrentComputer();
 });
 refreshPlan();

@@ -3,6 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Chati">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#14161a">
 <title>Chati IA</title>
 <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
 <link rel="stylesheet" href="/static/vendor/highlight-dark.min.css">
@@ -120,6 +127,20 @@
   .errors-list .err { white-space: pre-wrap; word-break: break-word; padding: 8px 10px; margin-bottom: 6px;
     border-left: 3px solid var(--warn); background: var(--panel-2); border-radius: 6px; }
   .errors-list .err.error { border-left-color: var(--error); }
+  .pc-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .pc-dot { width: 9px; height: 9px; border-radius: 50%; background: #6b7280; flex: none; }
+  .pc-dot.on { background: #22c55e; }
+  .pc-name { flex: 1; font-weight: 600; }
+  .pc-state { font-size: 12px; color: var(--muted); }
+  .other-pc-banner { position: fixed; top: calc(8px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+                     z-index: 60; display: flex; gap: 12px; align-items: center; padding: 8px 12px; border-radius: 999px;
+                     background: var(--panel-2); border: 1px solid var(--border); font-size: 13px; max-width: calc(100vw - 32px); }
+  .other-pc-open { font-weight: 600; }
+  .other-pc-close { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; }
+  .pc-name-badge { font-size: 11px; color: var(--muted); padding: 2px 8px; border-radius: 999px; background: var(--panel-2);
+                   white-space: nowrap; }
+  .pc-name-badge:empty, .pc-chip:empty { display: none; }
+  .pc-chip { display: none; }
   .pair-box { text-align: center; padding: 10px; margin-bottom: 10px; border-radius: var(--radius-sm); background: var(--panel-2); }
   .pair-box img { background: white; border-radius: 8px; padding: 6px; }
   .pair-code-label { font-size: 12px; color: var(--muted); margin-top: 8px; }
@@ -279,6 +300,10 @@
   .msg { max-width: 760px; margin: 0 auto 22px; animation: msgIn 0.28s ease; position: relative; }
   @keyframes msgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   .msg .role { font-size: 11.5px; color: var(--muted); margin-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+  .msg .msg-time { font-size: 11px; color: var(--muted); opacity: .75; font-variant-numeric: tabular-nums; }
+  .day-sep { align-self: center; text-align: center; font-size: 11.5px; color: var(--muted); margin: 10px auto 2px;
+             padding: 3px 12px; border-radius: 999px; background: var(--panel); width: fit-content; }
+  .day-sep::first-letter { text-transform: uppercase; }
   .msg .bubble {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -888,6 +913,9 @@
      se desliza (☰); nada se sale de lado; ventanas a pantalla completa. ---------- */
   #mobileBackdrop { display: none; }
   @media (max-width: 760px) {
+    .pc-chip { display: block; position: fixed; top: calc(12px + env(safe-area-inset-top)); right: 10px; z-index: 40;
+               font-size: 11px; color: var(--muted); padding: 3px 9px; border-radius: 999px; background: var(--panel-2);
+               border: 1px solid var(--border); pointer-events: none; }
     html, body { height: 100%; overflow: hidden; }
     body { height: 100dvh; }
     /* la barra lateral: menu deslizante por encima del chat */
@@ -1004,6 +1032,7 @@
   <div id="sidebarHeader">
     <img src="/static/logo.svg" alt="" width="28" height="28">
     <h1>Chati IA</h1>
+    <span class="pc-name-badge" id="pcNameBadge" title="Ordenador al que estás conectado"></span>
     <button id="themeToggle" title="Cambiar tema">&#9789;</button>
     <button id="sidebarHideBtn" title="Ocultar barra lateral (Ctrl+B)">&laquo;</button>
   </div>
@@ -1437,6 +1466,7 @@
       <div class="options-section-label">Cuenta</div>
       <button class="options-row" id="profileBtn"><span class="ic">&#128100;</span>Mi perfil</button>
       <button class="options-row" id="optDevicesBtn"><span class="ic">&#128241;</span>Dispositivos (usar desde el móvil)</button>
+      <button class="options-row" id="optComputersBtn"><span class="ic">&#128421;</span>Ordenadores (casa / trabajo)</button>
       <button class="options-row" id="adminBtn" style="display:none;"><span class="ic">&#128273;</span>Administracion</button>
       <button class="options-row" id="optErrorsBtn" style="display:none;"><span class="ic">&#9888;</span>Registro de errores</button>
       <div class="options-divider"></div>
@@ -1493,6 +1523,28 @@
       <div id="devicesList"></div>
     </div>
   </div>
+</div>
+
+<div id="computersModal" class="modal-overlay">
+  <div class="modal-box" style="max-width:440px; margin:50px auto; max-height:86vh; display:flex; flex-direction:column;">
+    <div class="modal-header">
+      <strong>Ordenadores</strong>
+      <button id="closeComputersBtn" class="modal-close">&times;</button>
+    </div>
+    <div style="padding:14px 16px; overflow-y:auto;">
+      <p class="personas-intro">Tus ordenadores con Chati (los de tu red de Tailscale). Para entrar en otro desde el
+        móvil, vincula el móvil también en ese ordenador (Opciones &gt; Dispositivos, allí).</p>
+      <div id="computersList"></div>
+    </div>
+  </div>
+</div>
+
+<div id="pcChip" class="pc-chip" title="Ordenador al que estás conectado"></div>
+
+<div id="otherComputerBanner" class="other-pc-banner" style="display:none;">
+  <span id="otherComputerText"></span>
+  <a id="otherComputerOpen" class="other-pc-open" href="#">Abrir</a>
+  <button id="otherComputerClose" class="other-pc-close" title="Cerrar">&times;</button>
 </div>
 
 <div id="creditsModal" class="modal-overlay">
@@ -1632,7 +1684,7 @@
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/js/theme.js?v=20261007d"></script>
+<script src="/static/js/theme.js?v=20261008a"></script>
 <style>
   html[data-theme="light"] {
     --bg: #f5f6f8;
@@ -1647,6 +1699,6 @@
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
 </style>
-<script src="/static/js/app.js?v=20261007d"></script>
+<script src="/static/js/app.js?v=20261008a"></script>
 </body>
 </html>

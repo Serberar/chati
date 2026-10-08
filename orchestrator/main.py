@@ -29,6 +29,7 @@ import auth
 import devices
 import auth_sessions
 import face_detect
+import computers
 import face_swap
 import access
 import agent_attachments
@@ -463,12 +464,33 @@ def _is_busy() -> bool:
     return False
 
 
+# Pantalla de inicio de la app del movil: elige en que ordenador entrar
+# (C:/AI/inicio, publicada en GitHub Pages; Sergio, 2026-10-08)
+LAUNCHER_ORIGIN = "https://serberar.github.io"
+
+
 @app.get("/health")
-def health(busy: bool = False):
-    """Publica (la usa el vigilante cada 30 s: tiene que ser instantanea).
+def health(request: Request, busy: bool = False):
+    """Publica (la usa el vigilante cada 30 s: tiene que ser instantanea, y
+    la otra Chati por Tailscale para saber si esta esta encendida).
     Con ?busy=true dice ademas si hay algo en marcha (antes de la copia de
-    seguridad), que consulta a OpenCode y ComfyUI y puede tardar."""
-    return {"status": "ok", "busy": _is_busy()} if busy else {"status": "ok"}
+    seguridad), que consulta a OpenCode y ComfyUI y puede tardar: solo desde
+    este ordenador."""
+    if busy and security.is_local_host(request.headers.get("host", "")):
+        return {"status": "ok", "busy": _is_busy()}
+    response = JSONResponse({"status": "ok"})
+    if request.headers.get("origin") == LAUNCHER_ORIGIN:
+        # la pantalla de inicio del movil (Serberar.github.io) pregunta a
+        # cada ordenador si esta encendido; solo ella y solo aqui
+        response.headers["Access-Control-Allow-Origin"] = LAUNCHER_ORIGIN
+    return response
+
+
+@app.get("/computers")
+def computers_list():
+    """Los ordenadores con Chati (este y los otros de Tailscale) y si estan
+    encendidos: para elegir en cual trabajar (ver computers.py)."""
+    return computers.list_computers()
 
 
 # --- Pasarela OpenCode -> Ollama (ver llm_proxy.py): quita los parametros
@@ -1160,6 +1182,30 @@ def image_inpaint(request: Request, prompt: str = Form(...), mask: UploadFile = 
 @app.get("/")
 def index():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
+
+
+# Iconos y manifiesto para añadir Chati a la pantalla de inicio (iPhone,
+# Android): se abre a pantalla completa como una app. Publicos (ver
+# security.PAIR_PATHS): el movil los pide sin la cookie del dispositivo.
+@app.get("/apple-touch-icon.png")
+@app.get("/apple-touch-icon-precomposed.png")
+def apple_touch_icon():
+    return FileResponse(Path(__file__).parent / "static" / "apple-touch-icon.png", media_type="image/png")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(Path(__file__).parent / "static" / "logo.ico", media_type="image/x-icon")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return JSONResponse({
+        "name": "Chati IA", "short_name": "Chati", "start_url": "/", "display": "standalone",
+        "background_color": "#14161a", "theme_color": "#14161a",
+        "icons": [{"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                  {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"}],
+    }, media_type="application/manifest+json")
 
 
 @app.get("/admin/errors")
@@ -2548,6 +2594,12 @@ def _own_session_id(session_id: str | None, auth_session: dict) -> str:
     Una conversacion sin dueño (de invitado, o antigua de antes de haber
     usuarios) solo la puede seguir la sesion que la empezo: antes cualquiera
     que supiera el id veia su historial (auditoria 2026-09-29)."""
+    sid = _resolve_session_id(session_id, auth_session)
+    comfyui_client.current_conversation.set(sid)  # para el boton "Ver" de las tareas en marcha
+    return sid
+
+
+def _resolve_session_id(session_id: str | None, auth_session: dict) -> str:
     started = auth_session.setdefault("chat_sessions", set())
     if session_id:
         owner = memory.session_owner(session_id)
