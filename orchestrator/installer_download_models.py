@@ -129,8 +129,19 @@ def _pull_ollama_model(model: str) -> None:
     subprocess.run([_ollama_exe(), "pull", base], check=True)
     params = ((["num_gpu 0"] if model.endswith(CPU_SUFFIX) else [])
               + (["num_gpu 999"] if model.endswith(GPU_SUFFIX) else []) + _EXTRA_PARAMS.get(model, []))
-    if not params:
-        return
+    if params:
+        _create_variant(model, base, params)
+    for variant, variant_params in _EXTRA_VARIANTS.get(model, []):
+        _create_variant(variant, base, variant_params)
+
+
+# Variantes que se crean ademas de la pedida (mismo archivo, otros ajustes):
+# el agente de codigo usa qwen3-coder con 12 capas en la GPU (ver config.yaml,
+# medido el 2026-10-13: 4,5 veces mas rapido que solo en CPU).
+_EXTRA_VARIANTS = {"qwen3-coder:30b-cpu": [("qwen3-coder:30b-mixto", ["num_gpu 12", "num_ctx 32768"])]}
+
+
+def _create_variant(model: str, base: str, params: list[str]) -> None:
     modelfile = "\n".join([f"FROM {base}", *(f"PARAMETER {p}" for p in params)]) + "\n"
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "Modelfile"

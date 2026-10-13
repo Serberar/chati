@@ -78,3 +78,24 @@ def clean_stream_line(line: bytes) -> bytes:
     if not changed:
         return line
     return b"data: " + json.dumps(chunk, ensure_ascii=False).encode("utf-8")
+
+
+MIXED_SUFFIX = "-mixto"
+
+
+def cpu_when_gpu_busy(body: bytes, gpu_busy: bool) -> bytes:
+    """El modelo del agente de codigo en version "-mixto" (12 capas en la
+    tarjeta grafica: lee 7 veces mas rapido que solo en el procesador, medido
+    el 2026-10-13) pasa a su version "-cpu" mientras ComfyUI genera una
+    imagen: con los dos en los 8 GB, la edicion de fotos se atascaba."""
+    if not gpu_busy or not body:
+        return body
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return body
+    model = data.get("model") if isinstance(data, dict) else None
+    if not isinstance(model, str) or not model.endswith(MIXED_SUFFIX):
+        return body
+    data["model"] = model.removesuffix(MIXED_SUFFIX) + "-cpu"
+    return json.dumps(data, ensure_ascii=False).encode("utf-8")

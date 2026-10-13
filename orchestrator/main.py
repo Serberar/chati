@@ -178,7 +178,11 @@ def _index_in_background(session_id: str, message: str, answer: str, user_id: st
 
 
 def _agent_models() -> set[str]:
-    return {CONFIG["opencode"]["model"], CONFIG["opencode"]["model_potente"]}
+    """Los modelos del agente, con la version "-cpu" del "-mixto" (la que usa
+    la pasarela mientras ComfyUI genera, ver llm_proxy.cpu_when_gpu_busy)."""
+    oc = CONFIG["opencode"]
+    potente = oc["model_potente"]
+    return {oc["model"], potente, potente.removesuffix(llm_proxy.MIXED_SUFFIX) + "-cpu"}
 
 
 def _free_memory_for_generation() -> None:
@@ -193,7 +197,9 @@ def _free_memory_for_generation() -> None:
     global _active_heavy_model
     keep = set()
     if opencode_client.busy_session_ids(CONFIG["opencode"]["base_url"]):
-        keep |= _agent_models()
+        # salvo el "-mixto" (12 capas en la GPU): ese se va y el agente sigue
+        # en su version "-cpu" mientras se genera (llm_proxy.cpu_when_gpu_busy)
+        keep |= {m for m in _agent_models() if not m.endswith(llm_proxy.MIXED_SUFFIX)}
     with _heavy_model_lock:
         for model in ollama.running_models():
             if model not in keep:
@@ -223,8 +229,11 @@ def _free_memory_for_agent(agent: str | None, model: str | None = None, wait: bo
     potente = model == CONFIG["opencode"]["model_potente"]
 
     def work():
-        # el potente va en CPU: el ligero del chat (GPU) puede quedarse
-        keep = {model, EMBED_MODEL} | ({_LIGHT_MODEL} if potente else set())
+        # el potente solo en CPU deja al ligero del chat en la GPU; el "-mixto"
+        # (12 capas en la GPU) no cabe con el: con los dos se desbordaban los
+        # 8 GB y todo iba mas lento (2026-10-13)
+        cpu_only = potente and not model.endswith(llm_proxy.MIXED_SUFFIX)
+        keep = {model, EMBED_MODEL} | ({_LIGHT_MODEL} if cpu_only else set())
         _keep_only_ollama(keep, heavy=model)
         comfyui_client.free_memory(CONFIG["comfyui"]["base_url"])
         # si se cargo cuando la GPU estaba ocupada, Ollama lo dejo en CPU y
@@ -522,6 +531,7 @@ async def llm_proxy_route(path: str, request: Request):
         return JSONResponse({"detail": "Ruta no permitida."}, status_code=400)
     target = f"{CONFIG['ollama']['base_url']}/v1/{path}"
     body = llm_proxy.disable_thinking(await request.body(), set(CONFIG["opencode"].get("no_think_models", [])))
+    body = llm_proxy.cpu_when_gpu_busy(body, comfyui_client.gpu_busy(CONFIG["comfyui"]["base_url"]))
     headers = {"Content-Type": request.headers.get("content-type", "application/json")}
     wants_stream = b'"stream":true' in body.replace(b" ", b"")
 
@@ -725,6 +735,26 @@ def agent_web_login(request: Request):
     return {"user": opencode_client.AUTH[0], "password": opencode_client.AUTH[1]}
 
 
+_CODE_ORDER = re.compile(
+    r"^\W*(haz|hazme|crea|creame|arregla|corrige|cambia|añade|anade|agrega|implementa|escribe|refactoriza|"
+    r"elimina|borra|quita|instala|actualiza|mueve|renombra|genera|pon|programa|monta|configura|migra|sube|"
+    r"ejecuta|lanza|prueba|testea|optimiza|mejora|traduce|documenta|haga|hagas)\b", re.IGNORECASE)
+_CODE_QUESTION = re.compile(
+    r"\?\s*$|^\W*¿|¿[^?]{3,}\?|^\W*(que|qué|como|cómo|por que|por qué|porque|cual|cuál|cuales|cuáles|cuando|cuándo|donde|dónde|"
+    r"quien|quién|explica|explicame|explícame|recomienda|recomiendame|recomiéndame|dime|sabes|hay|es posible|"
+    r"se puede|puedo|deberia|debería|merece la pena|compara|revisa si|mira si|comprueba si)\b",
+    re.IGNORECASE)
+
+
+def _is_code_question(task: str) -> bool:
+    """¿Es una pregunta (responder) y no un encargo (hacer)? Ante la duda,
+    encargo: el de construir pregunta antes de lo que no tenga claro."""
+    first = task.strip().splitlines()[0] if task.strip() else ""
+    if _CODE_ORDER.search(first):
+        return False
+    return bool(_CODE_QUESTION.search(task.strip()) or _CODE_QUESTION.search(first))
+
+
 @app.get("/agent/tasks")
 def agent_list_tasks(request: Request):
     if request.state.session["role"] == "guest":
@@ -743,7 +773,11 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         project = Path(req.project)
         if not project.is_dir():
             return JSONResponse({"detail": f"No existe la carpeta {req.project}."}, status_code=400)
-        agent = CONFIG["opencode"]["agent_code_plan" if req.plan else "agent_code"]
+        # una pregunta va al agente de planificar, que no puede crear ni editar
+        # archivos: con la pregunta "¿que libreria me recomiendas?" el de
+        # construir se ponia a crear un proyecto (2026-10-13, 3 de 4 veces)
+        plan = req.plan or _is_code_question(task)
+        agent = CONFIG["opencode"]["agent_code_plan" if plan else "agent_code"]
         model = CONFIG["opencode"]["model"] if req.rapido else None
         result = _opencode_call(opencode_client.start_task, task, agent, str(project), model)
         if isinstance(result, JSONResponse):

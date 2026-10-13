@@ -116,8 +116,11 @@ def test_cpu_variant_pulls_base_and_creates_variant_locally():
         installer_download_models._pull_ollama_model("qwen3-coder:30b-cpu")
 
     cmds = [c.args[0][:3] for c in mock_run.call_args_list]
-    assert cmds == [["ollama", "pull", "qwen3-coder:30b"], ["ollama", "create", "qwen3-coder:30b-cpu"]]
-    assert modelfiles == ["FROM qwen3-coder:30b\nPARAMETER num_gpu 0\nPARAMETER num_ctx 32768\n"]
+    # y la "-mixto" del agente de codigo (12 capas en la GPU, 2026-10-13)
+    assert cmds == [["ollama", "pull", "qwen3-coder:30b"], ["ollama", "create", "qwen3-coder:30b-cpu"],
+                    ["ollama", "create", "qwen3-coder:30b-mixto"]]
+    assert modelfiles == ["FROM qwen3-coder:30b\nPARAMETER num_gpu 0\nPARAMETER num_ctx 32768\n",
+                          "FROM qwen3-coder:30b\nPARAMETER num_gpu 12\nPARAMETER num_ctx 32768\n"]
 
 
 def test_pull_ollama_model_calls_ollama_pull():

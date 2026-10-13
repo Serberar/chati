@@ -412,24 +412,34 @@ $opencodeConfig = @'
       "models": {
         "qwen2.5:7b": { "name": "Qwen2.5 7B (local, GPU)", "limit": { "context": 16384, "output": 4096 } },
         "qwen3:8b": { "name": "Qwen3 8B (local, GPU)", "limit": { "context": 16384, "output": 4096 } },
-        "qwen3-coder:30b-cpu": { "name": "Qwen3 Coder 30B-A3B (local, CPU)", "limit": { "context": 32768, "output": 8192 } }
+        "qwen3-coder:30b-cpu": { "name": "Qwen3 Coder 30B-A3B (local, CPU)", "limit": { "context": 32768, "output": 8192 } },
+        "qwen3-coder:30b-mixto": { "name": "Qwen3 Coder 30B-A3B (local, CPU + 12 capas en GPU)", "limit": { "context": 32768, "output": 8192 } }
       }
     }
   },
-  "model": "ollama/qwen3-coder:30b-cpu",
-  "small_model": "ollama/qwen3:8b",
+  "model": "ollama/qwen3-coder:30b-mixto",
+  "small_model": "ollama/qwen3-coder:30b-mixto",
   "shell": "powershell",
-  "instructions": ["AGENTS.md"],
+  "instructions": ["AGENTS.md", "__MEMORY_INDEX__"],
+  "mcp": {
+    "chati": { "type": "local", "command": ["__ORCH_PY__", "__ORCH_DIR__/agent_mcp.py"], "enabled": true }
+  },
   "permission": {
     "edit": "ask",
     "webfetch": "ask",
     "todowrite": "allow",
     "bash": {
-      "git push*": "ask", "git reset --hard*": "ask", "git clean*": "ask",
-      "rm *": "ask", "rm -rf*": "ask", "del *": "ask", "Remove-Item*": "ask",
+      "*": "ask",
       "python -m pytest*": "allow", "pytest*": "allow",
       "git status*": "allow", "git diff*": "allow", "git log*": "allow",
-      "*": "ask"
+      "git show*": "allow", "git branch*": "allow", "git remote -v*": "allow", "git blame*": "allow",
+      "Get-ChildItem*": "allow", "Get-Content*": "allow", "Select-String*": "allow", "Test-Path*": "allow",
+      "Get-Location*": "allow", "Resolve-Path*": "allow", "Get-Item *": "allow", "Measure-Object*": "allow",
+      "python --version*": "allow", "python -V*": "allow", "pip list*": "allow", "pip show*": "allow",
+      "pip index versions*": "allow", "node --version*": "allow", "npm --version*": "allow",
+      "npm ls*": "allow", "npm outdated*": "allow", "npm view*": "allow",
+      "git push*": "ask", "git reset --hard*": "ask", "git clean*": "ask",
+      "rm *": "ask", "rm -rf*": "ask", "del *": "ask", "Remove-Item*": "ask"
     }
   },
   "agent": {
@@ -439,29 +449,35 @@ $opencodeConfig = @'
       "description": "Agente de Chati IA: tareas sobre los archivos del usuario (rapido, GPU)",
       "mode": "primary", "model": "ollama/qwen3:8b", "temperature": 0.1,
       "prompt": "{file:./chati_agent_prompt.md}",
-      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false, "write": false }
+      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false, "write": false, "chati_*": false }
     },
     "chati-potente": {
       "description": "Agente de Chati IA con el modelo grande (lento, CPU) para tareas complejas",
-      "mode": "primary", "model": "ollama/qwen3-coder:30b-cpu", "temperature": 0.1,
+      "mode": "primary", "model": "ollama/qwen3-coder:30b-mixto", "temperature": 0.1,
       "prompt": "{file:./chati_agent_prompt.md}",
-      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false }
+      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false, "chati_*": false }
     },
     "chati-code": {
       "description": "Chati modo Codigo: programa en el proyecto del usuario (construir)",
-      "mode": "primary", "model": "ollama/qwen3-coder:30b-cpu", "temperature": 0.1,
+      "mode": "primary", "model": "ollama/qwen3-coder:30b-mixto", "temperature": 0.1,
       "prompt": "{file:./chati_code_prompt.md}",
       "tools": { "task": false, "webfetch": false, "skill": false }
     },
     "chati-code-plan": {
       "description": "Chati modo Codigo: analiza el proyecto y propone, sin cambiar nada (planificar)",
-      "mode": "primary", "model": "ollama/qwen3-coder:30b-cpu", "temperature": 0.1,
+      "mode": "primary", "model": "ollama/qwen3-coder:30b-mixto", "temperature": 0.1,
       "prompt": "{file:./chati_code_plan_prompt.md}",
       "tools": { "task": false, "webfetch": false, "skill": false, "edit": false, "write": false, "patch": false }
     }
   }
 }
 '@
+# permission.bash: gana la ULTIMA regla que coincide. Por eso "*": "ask" va
+# la primera (con ella al final, nada de lo permitido llegaba a permitirse y
+# pedia permiso hasta para listar una carpeta, 2026-10-13), despues lo que
+# solo mira y al final lo destructivo, que siempre pregunta.
+# small_model: el mismo qwen3-coder "-mixto": con qwen3:8b para los titulos
+# los dos se cargaban en la GPU y se desbordaban los 8 GB.
 # baseURL: la pasarela de Chati (main.py, /llm/v1) y no Ollama directamente -
 # quita los parametros null que el modelo pequeño pone en las herramientas.
 # Agentes "chati" y "chati-potente" (los usa Chati, ver orchestrator/config.yaml):
@@ -471,6 +487,17 @@ Copy-Item "$PSScriptRoot\chati_agent_prompt.md" "$opencodeConfigDir\chati_agent_
 # modo Codigo (chati-code / chati-code-plan)
 Copy-Item "$PSScriptRoot\chati_code_prompt.md" "$opencodeConfigDir\chati_code_prompt.md" -Force
 Copy-Item "$PSScriptRoot\chati_code_plan_prompt.md" "$opencodeConfigDir\chati_code_plan_prompt.md" -Force
+# Herramientas extra del modo Codigo (memoria, internet, librerias,
+# actualizaciones, repositorios): orchestrator/agent_mcp.py por MCP. El indice
+# de su memoria se carga al empezar cada conversacion (instructions).
+$memoryDir = "$DataRoot\data\agente_memoria"
+if (-not (Test-Path $memoryDir)) { New-Item -ItemType Directory -Path $memoryDir -Force | Out-Null }
+if (-not (Test-Path "$memoryDir\MEMORY.md")) {
+    Set-Content -Path "$memoryDir\MEMORY.md" -Value "# Memoria del agente de codigo de Chati`n(vacia)" -Encoding utf8
+}
+$opencodeConfig = $opencodeConfig.Replace("__ORCH_PY__", "$orch\venv\Scripts\python.exe".Replace("\", "/")).
+    Replace("__ORCH_DIR__", $orch.Replace("\", "/")).
+    Replace("__MEMORY_INDEX__", "$memoryDir\MEMORY.md".Replace("\", "/"))
 Set-Content -Path "$opencodeConfigDir\opencode.json" -Value $opencodeConfig -Encoding utf8
 Write-Host "Config de OpenCode escrita en $opencodeConfigDir\opencode.json" -ForegroundColor Green
 

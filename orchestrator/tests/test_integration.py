@@ -1137,9 +1137,11 @@ def _run_before_task(agent, loaded):
 
 
 def test_powerful_agent_task_frees_ram_and_comfyui():
+    """El potente va en "-mixto" (12 capas en la GPU, 2026-10-13): fuera
+    tambien el ligero del chat, que con el desbordaba los 8 GB."""
     with patch.object(main.opencode_client, "busy_session_ids", return_value=[]):
-        unloaded, frees = _run_before_task("chati-potente", ["qwen3:8b", "qwen2.5vl:7b-cpu", "qwen3-coder:30b-cpu"])
-    assert unloaded == ["qwen2.5vl:7b-cpu"] and frees == 1
+        unloaded, frees = _run_before_task("chati-potente", ["qwen3:8b", "qwen2.5vl:7b-cpu", "qwen3-coder:30b-mixto"])
+    assert unloaded == ["qwen3:8b", "qwen2.5vl:7b-cpu"] and frees == 1
 
 
 def test_fast_agent_task_makes_room_on_the_gpu():

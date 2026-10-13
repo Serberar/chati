@@ -74,7 +74,7 @@ def _check_one(name: str, tag: str) -> dict:
     # pero nunca han existido ahi y jamas lo estaran, comprobarlas contra el
     # registro solo produce un 404 seguro. Se detectan por convencion propia
     # (es el sufijo que usa este proyecto, ver ROADMAP.md) y se saltan.
-    if tag.endswith("-cpu"):
+    if tag.endswith(("-cpu", "-mixto")):
         return {"model": model_id, "update_available": False, "error": None, "local_only": True}
     local = local_digest(name, tag)
     try:
