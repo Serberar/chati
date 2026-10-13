@@ -1702,34 +1702,10 @@
   </div>
 </div>
 
-<div id="inpaintModal" class="modal-overlay" style="background:rgba(0,0,0,0.75);">
-  <div class="modal-box" style="max-width:700px; margin:30px auto; max-height:90vh; display:flex; flex-direction:column;">
-    <div class="modal-header">
-      <strong>Editar imagen - pinta la zona a repintar</strong>
-      <button id="closeInpaintBtn" class="modal-close">&times;</button>
-    </div>
-    <div style="padding:12px 16px; display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--border); font-size:12px; color:var(--muted);">
-      <label>Pincel: <input type="range" id="brushSize" min="8" max="120" value="35"></label>
-      <button id="clearMaskBtn" style="font-size:12px; padding:4px 10px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Borrar trazo</button>
-      <span>Arrastra sobre la imagen para marcar en rojo lo que quieres que se regenere.</span>
-    </div>
-    <div style="position:relative; overflow:auto; padding:16px; text-align:center;">
-      <div id="inpaintCanvasWrap" style="position:relative; display:inline-block;">
-        <img id="inpaintBaseImg" style="display:block; max-width:100%;">
-        <canvas id="inpaintCanvas" style="position:absolute; top:0; left:0; cursor:crosshair;"></canvas>
-      </div>
-    </div>
-    <div style="padding:16px; border-top:1px solid var(--border);">
-      <textarea id="inpaintPrompt" rows="2" placeholder="Describe que debe aparecer en la zona marcada..." style="width:100%; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px; font-family:inherit; resize:vertical;"></textarea>
-      <button id="submitInpaintBtn" style="margin-top:8px; padding:10px 20px; background:var(--accent); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600;">Repintar zona marcada</button>
-    </div>
-  </div>
-</div>
-
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/js/theme.js?v=20261013r"></script>
+<script src="/static/js/theme.js?v=20261013s"></script>
 <style>
   html[data-theme="light"] {
     --bg: #f5f6f8;
@@ -1744,6 +1720,6 @@
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
 </style>
-<script src="/static/js/app.js?v=20261013r"></script>
+<script src="/static/js/app.js?v=20261013s"></script>
 </body>
 </html>

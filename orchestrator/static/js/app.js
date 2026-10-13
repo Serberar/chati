@@ -4216,20 +4216,62 @@ function appendEditShortcuts(bubble) {
   bubble.appendChild(row);
 }
 
-function downloadLink(fileUrl) {
-  // mismo origen: el atributo download guarda el archivo en vez de abrirlo
-  const a = document.createElement("a");
-  a.href = fileUrl;
-  a.download = fileUrl.split("?")[0].split("/").pop() || "chati";
-  a.textContent = "⬇ Descargar";
-  a.title = "Guardar en tu ordenador";
-  return a;
+function mediaFileName(fileUrl) {
+  return fileUrl.split("?")[0].split("/").pop() || "chati";
 }
 
-function appendMediaWithActions(bubble, fileUrl, filePath) {
+function downloadButton(fileUrl) {
+  // se baja como archivo (en el iPhone, a Archivos > Descargas): con un enlace
+  // normal la app instalada abria el panel de compartir (Instagram...)
+  const b = document.createElement("button");
+  b.textContent = "⬇ Descargar";
+  b.title = "Guardar el archivo";
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      const blob = await (await fetch(fileUrl)).blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = mediaFileName(fileUrl);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      alert("No se pudo descargar: " + (err.message || err));
+    } finally {
+      b.disabled = false;
+    }
+  });
+  return b;
+}
+
+function shareButton(fileUrl) {
+  // el panel de compartir del movil (desde ahi, "Guardar imagen" la deja en Fotos)
+  if (!navigator.share || !navigator.canShare) return null;
+  const b = document.createElement("button");
+  b.textContent = "↗ Compartir";
+  b.title = "Enviar o guardar en Fotos";
+  b.addEventListener("click", async () => {
+    try {
+      const blob = await (await fetch(fileUrl)).blob();
+      const file = new File([blob], mediaFileName(fileUrl), { type: blob.type });
+      if (!navigator.canShare({ files: [file] })) throw new Error("este navegador no puede compartir archivos");
+      await navigator.share({ files: [file] });
+    } catch (err) {
+      if (err && err.name !== "AbortError") alert("No se pudo compartir: " + (err.message || err));
+    }
+  });
+  return b;
+}
+
+function appendMediaWithActions(bubble, fileUrl) {
   const actionsRow = document.createElement("div");
   actionsRow.className = "media-actions";
-  actionsRow.appendChild(downloadLink(fileUrl));
+  actionsRow.appendChild(downloadButton(fileUrl));
+  const share = shareButton(fileUrl);
+  if (share) actionsRow.appendChild(share);
 
   if (fileUrl.endsWith(".mp4")) {
     const vid = document.createElement("video");
@@ -4245,37 +4287,6 @@ function appendMediaWithActions(bubble, fileUrl, filePath) {
   img.className = "attach";
   img.src = fileUrl;
   bubble.append(img, actionsRow);
-
-  if (!filePath) return;  // sin ruta del servidor no se puede escalar ni editar
-
-  const upscaleBtn = document.createElement("button");
-  upscaleBtn.textContent = "Escalar x4";
-  upscaleBtn.addEventListener("click", async () => {
-    upscaleBtn.disabled = true;
-    upscaleBtn.textContent = "Escalando...";
-    const form = new FormData();
-    form.append("file_path", filePath);
-    try {
-      const resp = await fetch("/image/upscale", { method: "POST", body: form });
-      const data = await resp.json();
-      if (data.file_url) {
-        const resultBubble = addMessage("assistant", "image_upscale");
-        resultBubble.textContent = data.response;
-        appendMediaWithActions(resultBubble, data.file_url, data.file_path);
-      } else {
-        alert(data.response || "Fallo al escalar.");
-      }
-    } finally {
-      upscaleBtn.disabled = false;
-      upscaleBtn.textContent = "Escalar x4";
-    }
-  });
-
-  const editBtn = document.createElement("button");
-  editBtn.textContent = "Editar (repintar zona)";
-  editBtn.addEventListener("click", () => openInpaintEditor(fileUrl, filePath));
-
-  actionsRow.append(upscaleBtn, editBtn);
 }
 
 // --- Sidebar: conversaciones (siempre visibles, tipo ChatGPT) ---
@@ -5193,109 +5204,6 @@ async function loadImageVideoModelsBox() {
     videoModelsBox.textContent = "No se pudo cargar.";
   }
 }
-
-// --- Editor de inpainting (pintar mascara sobre una imagen ya generada) ---
-const inpaintModal = document.getElementById("inpaintModal");
-const closeInpaintBtn = document.getElementById("closeInpaintBtn");
-const inpaintBaseImg = document.getElementById("inpaintBaseImg");
-const inpaintCanvas = document.getElementById("inpaintCanvas");
-const inpaintCtx = inpaintCanvas.getContext("2d");
-const brushSize = document.getElementById("brushSize");
-const clearMaskBtn = document.getElementById("clearMaskBtn");
-const inpaintPrompt = document.getElementById("inpaintPrompt");
-const submitInpaintBtn = document.getElementById("submitInpaintBtn");
-
-let inpaintFilePath = null;
-let isPainting = false;
-
-function openInpaintEditor(fileUrl, filePath) {
-  inpaintFilePath = filePath;
-  inpaintPrompt.value = "";
-  inpaintModal.style.display = "block";
-
-  inpaintBaseImg.onload = () => {
-    // el canvas usa el tamaño real de la imagen (no el tamaño mostrado en pantalla)
-    // para que la mascara sea precisa aunque la imagen se vea escalada en el modal
-    inpaintCanvas.width = inpaintBaseImg.naturalWidth;
-    inpaintCanvas.height = inpaintBaseImg.naturalHeight;
-    inpaintCanvas.style.width = inpaintBaseImg.clientWidth + "px";
-    inpaintCanvas.style.height = inpaintBaseImg.clientHeight + "px";
-    inpaintCtx.clearRect(0, 0, inpaintCanvas.width, inpaintCanvas.height);
-  };
-  inpaintBaseImg.src = fileUrl;
-}
-
-closeInpaintBtn.addEventListener("click", () => { inpaintModal.style.display = "none"; });
-clearMaskBtn.addEventListener("click", () => {
-  inpaintCtx.clearRect(0, 0, inpaintCanvas.width, inpaintCanvas.height);
-});
-
-function canvasCoordsFromEvent(e) {
-  const rect = inpaintCanvas.getBoundingClientRect();
-  const scaleX = inpaintCanvas.width / rect.width;
-  const scaleY = inpaintCanvas.height / rect.height;
-  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
-}
-
-function paintAt(x, y) {
-  inpaintCtx.fillStyle = "rgba(255, 60, 60, 0.85)";
-  inpaintCtx.beginPath();
-  inpaintCtx.arc(x, y, Number(brushSize.value), 0, Math.PI * 2);
-  inpaintCtx.fill();
-}
-
-inpaintCanvas.addEventListener("mousedown", (e) => { isPainting = true; const c = canvasCoordsFromEvent(e); paintAt(c.x, c.y); });
-inpaintCanvas.addEventListener("mousemove", (e) => { if (isPainting) { const c = canvasCoordsFromEvent(e); paintAt(c.x, c.y); } });
-window.addEventListener("mouseup", () => { isPainting = false; });
-inpaintCanvas.addEventListener("touchstart", (e) => { isPainting = true; const c = canvasCoordsFromEvent(e); paintAt(c.x, c.y); e.preventDefault(); });
-inpaintCanvas.addEventListener("touchmove", (e) => { if (isPainting) { const c = canvasCoordsFromEvent(e); paintAt(c.x, c.y); e.preventDefault(); } });
-window.addEventListener("touchend", () => { isPainting = false; });
-
-function buildMaskBlob() {
-  // el trazo visible es rojo translucido (para que se vea bien sobre la foto);
-  // la mascara real que se envia es blanco/negro puro segun donde haya trazo
-  const maskCanvas = document.createElement("canvas");
-  maskCanvas.width = inpaintCanvas.width;
-  maskCanvas.height = inpaintCanvas.height;
-  const maskCtx = maskCanvas.getContext("2d");
-  const painted = inpaintCtx.getImageData(0, 0, inpaintCanvas.width, inpaintCanvas.height);
-  const out = maskCtx.createImageData(inpaintCanvas.width, inpaintCanvas.height);
-  for (let i = 0; i < painted.data.length; i += 4) {
-    const alpha = painted.data[i + 3];
-    const v = alpha > 10 ? 255 : 0;
-    out.data[i] = v; out.data[i + 1] = v; out.data[i + 2] = v; out.data[i + 3] = 255;
-  }
-  maskCtx.putImageData(out, 0, 0);
-  return new Promise((resolve) => maskCanvas.toBlob(resolve, "image/png"));
-}
-
-submitInpaintBtn.addEventListener("click", async () => {
-  if (!inpaintPrompt.value.trim()) {
-    alert("Describe que quieres que aparezca en la zona marcada.");
-    return;
-  }
-  submitInpaintBtn.disabled = true;
-  submitInpaintBtn.textContent = "Repintando...";
-  try {
-    const maskBlob = await buildMaskBlob();
-    const form = new FormData();
-    form.append("prompt", inpaintPrompt.value.trim());
-    form.append("file_path", inpaintFilePath);
-    form.append("mask", maskBlob, "mask.png");
-    form.append("denoise", "1.0");
-    const resp = await fetch("/image/inpaint", { method: "POST", body: form });
-    const data = await resp.json();
-    inpaintModal.style.display = "none";
-    const resultBubble = addMessage("assistant", "image_inpaint");
-    resultBubble.textContent = data.response;
-    if (data.file_url) appendMediaWithActions(resultBubble, data.file_url, data.file_path);
-  } finally {
-    submitInpaintBtn.disabled = false;
-    submitInpaintBtn.textContent = "Repintar zona marcada";
-  }
-});
 
 sendBtn.addEventListener("click", () => send());  // sin el evento: send(x) es "reintentar x"
 promptEl.addEventListener("keydown", (e) => {
