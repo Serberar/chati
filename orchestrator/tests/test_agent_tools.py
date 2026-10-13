@@ -145,3 +145,39 @@ def test_rename_symbol_previews_then_changes_whole_words_only(tmp_path):
     assert "import con_iva" in (tmp_path / "test_precios.py").read_text(encoding="utf-8")
     assert (tmp_path / "venv" / "otro.py").read_text(encoding="utf-8") == "precio_con_iva = 2\n"
     assert "Solo nombres simples" in t.rename_symbol(str(tmp_path), "a.b", "c")
+
+
+def test_definition_and_usages_find_imports_from_other_files(tmp_path):
+    (tmp_path / "precios.py").write_text('def precio_con_iva(precio, iva=0.21):\n    """Precio con IVA."""\n'
+                                         "    return precio * (1 + iva)\n", encoding="utf-8")
+    (tmp_path / "test_precios.py").write_text("from precios import precio_con_iva\n\n"
+                                              "def test_iva():\n    assert precio_con_iva(100) == 121\n",
+                                              encoding="utf-8")
+    d = t.find_definition(str(tmp_path), "precio_con_iva")
+    assert "precios.py:1" in d and "precio_con_iva(precio, iva=0.21)" in d and "Precio con IVA" in d
+    u = t.find_usages(str(tmp_path), "precio_con_iva")
+    assert "test_precios.py:1" in u and "test_precios.py:4" in u
+    assert not any(line.startswith("precios.py:1:") for line in u.splitlines())  # la definicion no cuenta
+    assert "Dame solo el nombre" in t.find_usages(str(tmp_path), "a.b")
+
+
+def test_database_queries_are_read_only(tmp_path):
+    import sqlite3
+    db = tmp_path / "tienda.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE productos (nombre TEXT, precio REAL)")
+        conn.execute("INSERT INTO productos VALUES ('pan', 1.2)")
+    assert "productos" in t.query_database(str(db))
+    assert "pan | 1.2" in t.query_database(str(db), "SELECT * FROM productos")
+    for bad in ("DELETE FROM productos", "UPDATE productos SET precio = 0", "SELECT * INTO x FROM productos",
+                "WITH a AS (SELECT 1) DELETE FROM productos", "DROP TABLE productos"):
+        assert "lectura" in t.query_database(str(db), bad) or "cambiar datos" in t.query_database(str(db), bad), bad
+    assert "Solo SQL Server de este ordenador" in t.query_database("sqlserver:servidor.com/BD", "SELECT 1")
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM productos").fetchone()[0] == 1
+
+
+def test_web_and_github_refuse_what_they_should():
+    assert "Solo webs de este ordenador" in t.use_local_page("https://google.com", [{"accion": "clic", "en": "x"}])
+    assert "usuario/proyecto" in t.github_read("no es un repo")
+    assert "Que quieres ver" in t.github_read("Serberar/chati", "borrar")

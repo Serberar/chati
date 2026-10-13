@@ -472,7 +472,7 @@ $opencodeConfig = @'
       "mode": "primary", "model": "ollama/qwen3-coder:30b-mixto", "temperature": 0.1,
       "prompt": "{file:./chati_code_plan_prompt.md}",
       "tools": { "task": false, "webfetch": false, "skill": false, "edit": false, "write": false, "patch": false,
-                 "chati_lanzar_programa": false, "chati_renombrar": false }
+                 "chati_lanzar_programa": false, "chati_renombrar": false, "chati_usar_web": false }
     }
   }
 }

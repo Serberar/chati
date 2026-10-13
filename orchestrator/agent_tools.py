@@ -647,3 +647,337 @@ def rename_symbol(folder: str, old: str, new: str, apply: bool = False) -> str:
 def find_symbol(folder: str, name: str) -> str:
     """Donde aparece un nombre en el proyecto, sin cambiar nada."""
     return rename_symbol(folder, name, name + "_")
+
+
+# ---------- navegar el codigo ----------
+# "Donde esta definido X" y "donde se usa X", como en un editor de codigo. En
+# Python con jedi (entiende el codigo: no confunde dos cosas que se llamen
+# igual ni cuenta comentarios); en el resto, por patrones.
+_DEF_PATTERNS = (
+    r"^\s*(?:async\s+)?def\s+{n}\b", r"^\s*class\s+{n}\b", r"^{n}\s*(?::[^=]+)?=[^=]",
+    r"\bfunction\s*\*?\s*{n}\s*\(", r"\b(?:const|let|var)\s+{n}\s*=", r"^\s*(?:export\s+)?(?:default\s+)?class\s+{n}\b",
+    r"^\s*(?:public|private|protected|static|async|\s)*{n}\s*\([^)]*\)\s*\{{", r"\b(?:func|fn|struct|interface|type|enum)\s+{n}\b",
+)
+
+
+def _code_files(root: Path):
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if path.is_file() and path.suffix.lower() in _RENAME_EXT and not _RENAME_SKIP.intersection(rel.parts):
+            yield path, rel.as_posix()
+
+
+def _regex_definitions(root: Path, name: str) -> list[tuple[str, int, str]]:
+    pattern = re.compile("|".join(p.format(n=re.escape(name)) for p in _DEF_PATTERNS))
+    found = []
+    for path, rel in _code_files(root):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        found += [(rel, n, line.strip()) for n, line in enumerate(lines, 1) if pattern.search(line)]
+    return found
+
+
+def _jedi_definitions(root: Path, name: str) -> list:
+    import jedi
+    project = jedi.Project(str(root), smart_sys_path=False)
+    defs = []
+    for path, rel in _code_files(root):
+        if path.suffix != ".py":
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not re.search(rf"\b(def|class)\s+{re.escape(name)}\b|^{re.escape(name)}\s*=", text, re.MULTILINE):
+            continue
+        script = jedi.Script(text, path=str(path), project=project)
+        defs += [d for d in script.get_names(all_scopes=True, definitions=True) if d.name == name
+                 and d.type in ("function", "class", "statement", "instance")]
+    return defs
+
+
+def find_definition(folder: str, name: str) -> str:
+    """Donde esta definido un nombre (funcion, clase, variable) y como es."""
+    root = Path(folder)
+    if not root.is_dir():
+        return f"No existe la carpeta {folder}."
+    if not _IDENT.fullmatch(name):
+        return "Dame solo el nombre (sin parentesis ni puntos), por ejemplo precio_final."
+    lines = []
+    try:
+        for d in _jedi_definitions(root, name)[:20]:
+            rel = Path(d.module_path).relative_to(root).as_posix()
+            sig = "; ".join(s.to_string() for s in d.get_signatures()) or d.description
+            doc = (d.docstring(raw=True) or "").strip().splitlines()
+            lines.append(f"- {rel}:{d.line} ({d.type}) {sig}" + (f" — {doc[0][:150]}" if doc else ""))
+    except Exception:  # noqa: BLE001 - jedi no pudo: los patrones de abajo
+        lines = []
+    if not lines:
+        lines = [f"- {rel}:{n}: {text[:160]}" for rel, n, text in _regex_definitions(root, name)[:20]]
+    if not lines:
+        return f"No encuentro donde se define '{name}' en el proyecto. ¿Viene de una libreria? Prueba chati_usos."
+    return f"Definicion de '{name}':\n" + "\n".join(lines)
+
+
+def find_usages(folder: str, name: str) -> str:
+    """Donde se usa un nombre en el proyecto (sin contar donde se define).
+    Por palabra completa: jedi se saltaba los usos desde otros archivos
+    (from x import nombre, modulo.nombre), y es justo lo que mas interesa."""
+    root = Path(folder)
+    if not root.is_dir():
+        return f"No existe la carpeta {folder}."
+    if not _IDENT.fullmatch(name):
+        return "Dame solo el nombre (sin parentesis ni puntos), por ejemplo precio_final."
+    word = re.compile(rf"\b{re.escape(name)}\b")
+    defs_at = {(rel, n) for rel, n, _ in _regex_definitions(root, name)}
+    hits: list[str] = []
+    for path, rel in _code_files(root):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        hits += [f"{rel}:{n}: {line.strip()[:140]}" for n, line in enumerate(lines, 1)
+                 if word.search(line) and (rel, n) not in defs_at]
+    if not hits:
+        return f"'{name}' no se usa en ningun sitio del proyecto (aparte de donde se define)."
+    files = len({h.split(":", 1)[0] for h in hits})
+    shown = "\n".join(hits[:80]) + (f"\n... y {len(hits) - 80} mas" if len(hits) > 80 else "")
+    return (f"'{name}' aparece en {len(hits)} sitios de {files} archivos (imports incluidos; si otra cosa se llama "
+            f"igual, tambien sale):\n{shown}")
+
+
+# ---------- usar una web en desarrollo ----------
+WEB_STEP_LIMIT = 25
+
+
+def _locate(page, target: str):
+    """El elemento que el agente describe: por su texto, su etiqueta, su
+    texto de ayuda o, si no, como selector CSS."""
+    for find in (lambda: page.get_by_role("button", name=target), lambda: page.get_by_role("link", name=target),
+                 lambda: page.get_by_label(target), lambda: page.get_by_placeholder(target),
+                 lambda: page.get_by_text(target), lambda: page.locator(target)):
+        try:
+            loc = find()
+            if loc.count():
+                return loc.first
+        except Exception:  # noqa: BLE001 - selector no valido: el siguiente
+            continue
+    return None
+
+
+def _visible_controls(page) -> str:
+    js = """() => Array.from(document.querySelectorAll('a,button,input,select,textarea,[role=button]'))
+      .filter(e => e.offsetParent !== null).slice(0, 40).map(e => {
+        const label = (e.labels && e.labels[0] && e.labels[0].innerText) || e.getAttribute('aria-label')
+          || e.placeholder || e.innerText || e.value || e.name || e.id || '';
+        return `${e.tagName.toLowerCase()}${e.type ? '[' + e.type + ']' : ''}: ${label.trim().slice(0, 60)}`;
+      })"""
+    try:
+        return "\n".join(page.evaluate(js)) or "(ninguno)"
+    except Exception:  # noqa: BLE001
+        return "(no se pudieron leer)"
+
+
+def use_local_page(url: str, steps: list | None = None, question: str = "") -> str:
+    """Abre la web en desarrollo (solo de este ordenador) y hace los pasos que
+    se le pidan: clic, escribir, elegir, tecla, esperar, ir. Devuelve que paso
+    en cada uno, los errores de la consola y como queda la pagina."""
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    if parsed.hostname not in _LOCAL_HOSTS:
+        return "Solo webs de este ordenador (http://localhost:PUERTO)."
+    steps = list(steps or [])[:WEB_STEP_LIMIT]
+    from playwright.sync_api import sync_playwright
+    SHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    errors: list[str] = []
+    log_lines: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = pw.chromium.launch(channel="msedge", headless=True)
+            except Exception:  # noqa: BLE001 - sin Edge: el Chromium de Playwright
+                browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 800})
+                page.on("console", lambda m: errors.append(f"consola {m.type}: {m.text}")
+                        if m.type in ("error", "warning") else None)
+                page.on("pageerror", lambda e: errors.append(f"error de JavaScript: {e}"))
+                page.goto(parsed.geturl(), timeout=30000, wait_until="networkidle")
+                for i, step in enumerate(steps, 1):
+                    action = str(step.get("accion", "")).lower()
+                    target = str(step.get("en", ""))
+                    try:
+                        if action == "ir":
+                            dest = urlparse(str(step.get("url", "")))
+                            if dest.hostname and dest.hostname not in _LOCAL_HOSTS:
+                                raise ValueError("solo webs de este ordenador")
+                            page.goto(step["url"], timeout=30000, wait_until="networkidle")
+                        elif action == "esperar":
+                            page.wait_for_timeout(min(int(step.get("ms", 1000)), 15000))
+                        elif action == "tecla":
+                            page.keyboard.press(str(step.get("tecla", "Enter")))
+                        else:
+                            el = _locate(page, target)
+                            if el is None:
+                                raise ValueError(f"no encuentro «{target}» en la pagina")
+                            if action == "clic":
+                                el.click(timeout=10000)
+                            elif action == "escribir":
+                                el.fill(str(step.get("texto", "")), timeout=10000)
+                            elif action == "elegir":
+                                el.select_option(label=str(step.get("opcion", "")), timeout=10000)
+                            else:
+                                raise ValueError(f"accion desconocida «{action}» (clic, escribir, elegir, tecla, "
+                                                 "esperar, ir)")
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                        log_lines.append(f"{i}. {action} {target or step.get('url', '')}: bien")
+                    except Exception as exc:  # noqa: BLE001 - se cuenta y se para
+                        log_lines.append(f"{i}. {action} {target}: FALLO - {str(exc).splitlines()[0][:200]}")
+                        break
+                title, final_url = page.title(), page.url
+                text = page.inner_text("body")[:3000]
+                controls = _visible_controls(page)
+                png = page.screenshot(full_page=True)
+            finally:
+                browser.close()
+    except Exception as exc:  # noqa: BLE001 - servidor apagado, puerto mal...
+        return f"No se pudo abrir {parsed.geturl()}: {exc}. ¿Esta arrancado el servidor de desarrollo?"
+    shot = SHOTS_DIR / f"uso_{date.today().isoformat()}_{abs(hash((url, str(steps)))) % 10000}.png"
+    shot.write_bytes(png)
+    parts = [f"Pagina final: {final_url} («{title}»). Captura en {shot}.",
+             "Pasos:\n" + ("\n".join(log_lines) or "(ninguno: solo se ha abierto)"),
+             "Errores de la consola:\n" + ("\n".join(errors[:30]) or "ninguno"),
+             f"Botones y campos visibles:\n{controls}", f"Texto de la pagina:\n{text}"]
+    if question:
+        parts.append("Lo que se ve:\n" + _describe_image(png, question))
+    return "\n\n".join(parts)
+
+
+# ---------- GitHub (solo leer) ----------
+GITHUB_API = "https://api.github.com"
+
+
+def _github_token() -> str | None:
+    """El acceso a GitHub que ya usa git en este ordenador (para los repos
+    privados del usuario). Sin ventanas: si no hay, se sigue sin el."""
+    try:
+        out = subprocess.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n\n",
+                             capture_output=True, text=True, timeout=15,
+                             env={**__import__("os").environ, "GCM_INTERACTIVE": "never", "GIT_TERMINAL_PROMPT": "0"})
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"^password=(.+)$", out.stdout, re.MULTILINE)
+    return m.group(1).strip() if out.returncode == 0 and m else None
+
+
+def github_read(repo: str, what: str = "issues", number: int | None = None) -> str:
+    """Lee de un repositorio de GitHub: issues, prs, issue N, pr N (con sus
+    cambios), commits, acciones o readme. Solo leer: no cambia nada."""
+    repo = repo.strip().removeprefix("https://github.com/").removesuffix(".git").strip("/")
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        return "Dime el repositorio como usuario/proyecto (por ejemplo Serberar/chati)."
+    headers = {**HEADERS, "Accept": "application/vnd.github+json"}
+    token = _github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    what = what.lower().strip()
+    paths = {"issues": f"/repos/{repo}/issues?state=open&per_page=30", "prs": f"/repos/{repo}/pulls?state=open&per_page=30",
+             "commits": f"/repos/{repo}/commits?per_page=20", "acciones": f"/repos/{repo}/actions/runs?per_page=10",
+             "readme": f"/repos/{repo}/readme"}
+    if what in ("issue", "pr") and number:
+        path = f"/repos/{repo}/{'issues' if what == 'issue' else 'pulls'}/{int(number)}"
+    elif what in paths:
+        path = paths[what]
+    else:
+        return "Que quieres ver: issues, prs, issue (con numero), pr (con numero), commits, acciones o readme."
+    try:
+        resp = requests.get(GITHUB_API + path, headers=headers, timeout=TIMEOUT)
+        if resp.status_code == 404:
+            return f"No encuentro {repo} (¿existe? Si es privado, git en este ordenador no tiene acceso)."
+        resp.raise_for_status()
+        data = resp.json()
+        if what == "readme":
+            import base64
+            return base64.b64decode(data["content"]).decode("utf-8", "replace")[:PAGE_CHARS]
+        if what in ("issues", "prs"):
+            rows = [f"#{i['number']} {i['title']} ({i['user']['login']}, {i['updated_at'][:10]})"
+                    for i in data if what == "prs" or "pull_request" not in i]
+            return f"{what} abiertos en {repo}:\n" + ("\n".join(rows) or "(ninguno)")
+        if what == "commits":
+            return "\n".join(f"{c['sha'][:7]} {c['commit']['author']['date'][:10]} {c['commit']['message'].splitlines()[0]}"
+                             for c in data)
+        if what == "acciones":
+            return "\n".join(f"{r['name']}: {r['status']}/{r['conclusion'] or '-'} ({r['head_branch']}, "
+                             f"{r['created_at'][:16]})" for r in data.get("workflow_runs", [])) or "(sin ejecuciones)"
+        text = f"#{data['number']} {data['title']} [{data['state']}] por {data['user']['login']}\n\n{data.get('body') or ''}"
+        comments = requests.get(data["comments_url"], headers=headers, timeout=TIMEOUT).json()
+        text += "\n\nComentarios:\n" + ("\n".join(f"- {c['user']['login']}: {c['body'][:500]}" for c in comments[:20])
+                                        or "(ninguno)")
+        if what == "pr":
+            diff = requests.get(GITHUB_API + path, headers={**headers, "Accept": "application/vnd.github.diff"},
+                                timeout=TIMEOUT).text
+            text += f"\n\nCambios:\n{diff}"
+        return text[:PAGE_CHARS * 2]
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        return f"No se pudo leer {repo} de GitHub: {exc}"
+
+
+# ---------- bases de datos (solo leer) ----------
+_SQL_FIRST = re.compile(r"^\s*(select|with|pragma|explain)\b", re.IGNORECASE)
+_SQL_FORBIDDEN = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|truncate|merge|exec|execute|grant|revoke|deny|backup|restore|"
+    r"shutdown|into|attach|detach|vacuum|dbcc|openrowset|openquery|bulk)\b|\b(sp|xp)_\w+", re.IGNORECASE)
+SQL_OUTPUT_CHARS = 8000
+
+
+def _read_only(sql: str) -> str | None:
+    """None si es una consulta de lectura; si no, por que no."""
+    if not _SQL_FIRST.match(sql):
+        return "Solo consultas de lectura (SELECT, WITH, PRAGMA o EXPLAIN)."
+    m = _SQL_FORBIDDEN.search(sql)
+    return f"Esa consulta usa «{m.group(0)}», que puede cambiar datos: aqui solo se lee." if m else None
+
+
+def query_database(source: str, sql: str = "") -> str:
+    """Consulta de solo lectura a una base de datos de este ordenador: un
+    archivo SQLite (.db, .sqlite, .sqlite3) o SQL Server local
+    ("sqlserver:BASE" o "sqlserver:SERVIDOR/BASE"). Sin consulta, lista las
+    tablas."""
+    source = source.strip()
+    sql = sql.strip().rstrip(";")
+    if sql and (why := _read_only(sql)):
+        return why
+    if source.lower().startswith("sqlserver:"):
+        target = source.split(":", 1)[1].strip("/")
+        server, _, database = target.rpartition("/")
+        server = server or "localhost"
+        if server.split("\\")[0].lower() not in ("localhost", ".", "127.0.0.1", "(local)"):
+            return "Solo SQL Server de este ordenador (sqlserver:BASE o sqlserver:localhost/BASE)."
+        if not re.fullmatch(r"[\w$.-]+", database):
+            return "Dime la base de datos: sqlserver:NOMBRE_DE_LA_BASE."
+        query = sql or ("SELECT TABLE_SCHEMA + '.' + TABLE_NAME AS tabla, TABLE_TYPE AS tipo "
+                        "FROM INFORMATION_SCHEMA.TABLES ORDER BY 1")
+        try:
+            out = subprocess.run(["sqlcmd", "-E", "-C", "-S", server, "-d", database, "-W", "-s", "|",
+                                  "-Q", f"SET NOCOUNT ON; {query}"], capture_output=True, text=True, timeout=120,
+                                 encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return "No esta instalado sqlcmd (las herramientas de SQL Server)."
+        except subprocess.TimeoutExpired:
+            return "La consulta no termino en 2 minutos."
+        text = (out.stdout + out.stderr).strip()
+        return text[:SQL_OUTPUT_CHARS] + ("\n[... recortado ...]" if len(text) > SQL_OUTPUT_CHARS else "")
+    path = Path(source)
+    if not path.is_file() or path.suffix.lower() not in (".db", ".sqlite", ".sqlite3"):
+        return "Dame un archivo SQLite (.db, .sqlite, .sqlite3) o sqlserver:BASE para SQL Server de este ordenador."
+    import sqlite3
+    query = sql or "SELECT name AS tabla, type AS tipo FROM sqlite_master WHERE type IN ('table','view') ORDER BY 1"
+    try:
+        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=10) as conn:
+            cur = conn.execute(query)
+            cols = [c[0] for c in cur.description or []]
+            rows = cur.fetchmany(200)
+    except sqlite3.Error as exc:
+        return f"Error de SQLite: {exc}"
+    lines = [" | ".join(cols)] + [" | ".join("" if v is None else str(v) for v in r) for r in rows]
+    text = "\n".join(lines)
+    more = " (se ven las primeras 200 filas)" if len(rows) == 200 else ""
+    return f"{len(rows)} filas{more}:\n{text[:SQL_OUTPUT_CHARS]}"

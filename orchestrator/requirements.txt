@@ -20,6 +20,8 @@ onnxruntime
 onnx
 # analizador de errores que Chati pasa al codigo del agente (code_checks.run_lint)
 ruff
+# el agente navega el codigo Python: definiciones y usos (agent_tools.find_definition)
+jedi
 # lectura de documentos (PDF y Word) en rag.py; antes llegaban de rebote con
 # browser-use, que no se usa y arrastraba ~35 paquetes (auditoria 2026-09-29)
 pypdf

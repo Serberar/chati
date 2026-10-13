@@ -90,6 +90,41 @@ TOOLS = [
                     "sin tocar venv ni node_modules). Mira antes con ver_nombre. Usala en vez de bash o de editar "
                     "archivo por archivo.",
      "inputSchema": _schema({"carpeta": _STR, "viejo": _STR, "nuevo": _STR}, ["carpeta", "viejo", "nuevo"])},
+    {"name": "definicion", "fn": lambda a: t.find_definition(a["carpeta"], a["nombre"]),
+     "description": "Donde esta definida una funcion, clase o variable del proyecto, con su firma (parametros) y "
+                    "su descripcion. Como 'ir a la definicion' de un editor de codigo.",
+     "inputSchema": _schema({"carpeta": _STR, "nombre": _STR}, ["carpeta", "nombre"])},
+    {"name": "usos", "fn": lambda a: t.find_usages(a["carpeta"], a["nombre"]),
+     "description": "En que archivos y lineas se usa una funcion, clase o variable (imports incluidos). Usala antes "
+                    "de cambiar algo para saber a que afecta.",
+     "inputSchema": _schema({"carpeta": _STR, "nombre": _STR}, ["carpeta", "nombre"])},
+    {"name": "usar_web",
+     "fn": lambda a: t.use_local_page(a["url"], a.get("pasos") or [], a.get("pregunta", "")),
+     "description": "Usa la web que estas desarrollando (solo http://localhost) como lo haria una persona y dice que "
+                    "pasa: pasos en orden, cada uno {accion, en, texto/opcion/tecla/ms/url}. Acciones: clic (en: texto "
+                    "del boton o enlace), escribir (en: etiqueta o texto de ayuda del campo, texto), elegir (en: el "
+                    "desplegable, opcion), tecla (tecla: Enter...), esperar (ms), ir (url). Devuelve el resultado de "
+                    "cada paso, errores de la consola, botones y campos visibles y el texto de la pagina. Sin pasos, "
+                    "solo la abre y dice que hay. Con pregunta, ademas describe la captura (1-2 min).",
+     "inputSchema": _schema({"url": _STR,
+                             "pasos": {"type": "array", "items": {"type": "object"},
+                                       "description": "[{\"accion\": \"escribir\", \"en\": \"Nombre\", "
+                                                      "\"texto\": \"Ana\"}, {\"accion\": \"clic\", "
+                                                      "\"en\": \"Enviar\"}]"},
+                             "pregunta": {"type": "string"}}, ["url"])},
+    {"name": "github", "fn": lambda a: t.github_read(a["repo"], a.get("que", "issues"), a.get("numero")),
+     "description": "Lee de un repositorio de GitHub (usuario/proyecto): issues, prs, issue o pr con numero (con "
+                    "comentarios y, en un pr, sus cambios), commits, acciones (estado de los tests en GitHub) o "
+                    "readme. Solo leer.",
+     "inputSchema": _schema({"repo": _STR, "que": {"type": "string",
+                                                    "enum": ["issues", "prs", "issue", "pr", "commits", "acciones",
+                                                             "readme"]},
+                             "numero": {"type": "integer"}}, ["repo"])},
+    {"name": "consultar_bd", "fn": lambda a: t.query_database(a["origen"], a.get("sql", "")),
+     "description": "Consulta de SOLO LECTURA a una base de datos de este ordenador: un archivo SQLite (ruta al "
+                    ".db/.sqlite) o SQL Server local (\"sqlserver:NOMBRE_BASE\"). Sin sql, lista las tablas. Solo "
+                    "SELECT/WITH (y PRAGMA en SQLite); para cambiar datos, hazlo desde el codigo del proyecto.",
+     "inputSchema": _schema({"origen": _STR, "sql": {"type": "string"}}, ["origen"])},
     {"name": "lanzar_programa", "fn": lambda a: t.start_program(a["carpeta"], a["comando"], int(a.get("espera", 8))),
      "description": "Arranca un programa que se queda abierto (un servidor web, una app, npm run dev...) en la carpeta "
                     "del proyecto, SIN esperar a que termine, y devuelve lo que escribe en los primeros segundos. "
