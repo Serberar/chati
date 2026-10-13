@@ -539,6 +539,14 @@ def unrevert_task(base_url: str, session_id: str) -> None:
     resp.raise_for_status()
 
 
+def delete_task(base_url: str, session_id: str) -> None:
+    """Borra una tarea de OpenCode (su conversacion entera). Los archivos que
+    cambio se quedan como estan."""
+    resp = requests.delete(f"{base_url}/session/{session_id}", **_sparams(base_url, session_id), auth=AUTH,
+                           timeout=TIMEOUT)
+    resp.raise_for_status()
+
+
 def abort(base_url: str, session_id: str) -> None:
     resp = requests.post(f"{base_url}/session/{session_id}/abort", json={},
                          **_sparams(base_url, session_id), auth=AUTH, timeout=TIMEOUT)

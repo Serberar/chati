@@ -802,6 +802,30 @@ def agent_list_tasks(request: Request):
     return _own_tasks(request, _opencode_call(opencode_client.list_tasks))
 
 
+@app.post("/agent/tasks/clear")
+def agent_clear_tasks(request: Request):
+    """Boton "Borrar historial" de la lista de tareas del agente: borra las
+    tareas propias ya terminadas; las que trabajan o esperan respuesta, no."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    base = CONFIG["opencode"]["base_url"]
+    tasks = _own_tasks(request, _opencode_call(opencode_client.list_tasks, 500))
+    if isinstance(tasks, JSONResponse):
+        return tasks
+    keep = set(opencode_client.busy_session_ids(base)) | set(opencode_client.waiting_sessions(base))
+    deleted = 0
+    for t in tasks:
+        if t["status"] != "idle" or t["session_id"] in keep:
+            continue
+        try:
+            opencode_client.delete_task(base, t["session_id"])
+            deleted += 1
+        except requests.RequestException as exc:
+            log.warning("No se pudo borrar la tarea %s: %s", t["session_id"], exc)
+    log.info("Historial del agente borrado: %d tareas", deleted)
+    return {"borradas": deleted, "en_marcha": len(tasks) - deleted}
+
+
 @app.post("/agent/tasks")
 def agent_start_task(request: Request, req: AgentTaskRequest):
     if request.state.session["role"] == "guest":

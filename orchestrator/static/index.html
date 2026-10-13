@@ -567,7 +567,11 @@
   .agent-follow button:disabled, .agent-follow input:disabled { opacity: 0.5; }
   .agent-credit a, #modeDesc a { color: var(--muted); }
   .agent-tasks { display: flex; flex-direction: column; gap: 4px; }
-  .agent-tasks-title { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  .agent-tasks-title { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center;
+    justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .agent-tasks-clear { font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: var(--radius-sm); cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); }
+  .agent-tasks-clear:hover { border-color: var(--error); color: var(--error); }
   .agent-tasks button { text-align: left; display: flex; gap: 8px; align-items: center; font-size: 12.5px;
     padding: 6px 8px; border-radius: var(--radius-sm); border: 1px solid transparent; background: none;
     color: var(--text); cursor: pointer; }
@@ -1712,7 +1716,7 @@
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/js/theme.js?v=20261013k"></script>
+<script src="/static/js/theme.js?v=20261013l"></script>
 <style>
   html[data-theme="light"] {
     --bg: #f5f6f8;
@@ -1727,6 +1731,6 @@
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
 </style>
-<script src="/static/js/app.js?v=20261013k"></script>
+<script src="/static/js/app.js?v=20261013l"></script>
 </body>
 </html>

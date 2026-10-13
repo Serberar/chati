@@ -1600,6 +1600,25 @@ async function showAgentTaskList() {
   const title = document.createElement("div");
   title.className = "agent-tasks-title";
   title.textContent = "Tareas recientes del agente - pulsa una para ver su estado:";
+  const clear = document.createElement("button");
+  clear.className = "agent-tasks-clear";
+  clear.textContent = "🗑 Borrar historial";
+  clear.title = "Borra las tareas terminadas (las que estén en marcha se quedan)";
+  clear.addEventListener("click", async () => {
+    if (!confirm("¿Borrar el historial de tareas del agente?\n\nSe borran las conversaciones de las tareas terminadas; " +
+                 "los archivos que cambiaron se quedan como están. Las tareas en marcha no se tocan.")) return;
+    clear.disabled = true;
+    try {
+      const r = await agentPost("/agent/tasks/clear");
+      bubble.textContent = r.en_marcha
+        ? `Historial borrado (${r.borradas}). Quedan ${r.en_marcha} en marcha o esperando tu respuesta.`
+        : `Historial borrado (${r.borradas} tareas).`;
+    } catch (err) {
+      alert("No se pudo borrar: " + (err.message || err));
+      clear.disabled = false;
+    }
+  });
+  title.appendChild(clear);
   const list = document.createElement("div");
   list.className = "agent-tasks";
   for (const t of tasks.slice(0, 6)) {

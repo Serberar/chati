@@ -1986,3 +1986,16 @@ def test_retry_cuts_the_stuck_answer_and_continues_the_same_task():
     assert abort.call_args.args[1:] == ("ses_r",)
     assert cont.call_args.args[1] == "ses_r" and "colgada" in cont.call_args.args[2]
     assert "ses_r" not in main._stalled
+
+
+def test_clear_agent_history_deletes_only_own_finished_tasks():
+    tasks = [{"session_id": s, "title": s, "updated": 1, "status": st}
+             for s, st in (("hecha", "idle"), ("trabajando", "busy"), ("esperando", "idle"), ("ajena", "idle"))]
+    with patch.object(main.opencode_client, "list_tasks", return_value=tasks), \
+         patch.object(main, "_owns_task", side_effect=lambda req, sid: sid != "ajena"), \
+         patch.object(main.opencode_client, "busy_session_ids", return_value=["trabajando"]), \
+         patch.object(main.opencode_client, "waiting_sessions", return_value={"esperando": "permission"}), \
+         patch.object(main.opencode_client, "delete_task") as delete:
+        r = client.post("/agent/tasks/clear").json()
+    assert [c.args[1] for c in delete.call_args_list] == ["hecha"]
+    assert r == {"borradas": 1, "en_marcha": 2}
