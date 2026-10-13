@@ -2203,7 +2203,6 @@ async function showCurrentComputer() {
   const name = here ? here.name : location.hostname.split(".")[0];
   if (!name || name === "127" || name === "localhost") return;
   document.getElementById("pcNameBadge").textContent = "🖥 " + name;
-  document.getElementById("pcChip").textContent = "🖥 " + name;
   document.title = `Chati IA · ${name}`;
 }
 
@@ -2282,6 +2281,30 @@ async function disablePush() {
   } finally {
     try { localStorage.removeItem("ia_push"); } catch (e) { /* nada */ }
   }
+}
+
+// El lanzador del movil (Serberar.github.io) se suscribe el mismo a los avisos
+// de este ordenador y pasa la suscripcion en la direccion (#push=...): asi
+// basta con su icono. Se guarda en la cuenta en cuanto hay sesion.
+function takeLauncherPush() {
+  const m = location.hash.match(/[#&]push=([A-Za-z0-9_-]+)/);
+  if (!m) return;
+  try { sessionStorage.setItem("chati_launcher_push", m[1]); } catch (e) { /* nada */ }
+  history.replaceState(null, "", location.pathname + location.search);
+}
+takeLauncherPush();
+
+async function adoptLauncherPush() {
+  let raw = null;
+  try { raw = sessionStorage.getItem("chati_launcher_push"); } catch (e) { return; }
+  if (!raw) return;
+  try {
+    const sub = JSON.parse(new TextDecoder().decode(pushB64ToBytes(raw)));
+    await agentPost("/push/subscribe", { subscription: sub, device: pushDeviceName() + " (lanzador)" });
+    sessionStorage.removeItem("chati_launcher_push");
+    localStorage.setItem("ia_push", "on");  // avisa el servidor: sin avisos repetidos de la pagina
+    renderPushRow();
+  } catch (e) { /* se reintenta la proxima vez que se entre desde el lanzador */ }
 }
 
 document.getElementById("optPushBtn").addEventListener("click", async () => {
@@ -5264,6 +5287,7 @@ initSessionUI().then(() => {
     refreshBackgroundTasks();
     setInterval(refreshBackgroundTasks, 8000);
     announceOtherComputers();
+    adoptLauncherPush();
   }
   showCurrentComputer();
 });

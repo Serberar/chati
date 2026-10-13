@@ -34,6 +34,8 @@ PUBLIC_PATHS = {
     "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/manifest.webmanifest",
     # el service worker de los avisos (push.py): un script sin datos
     "/sw.js",
+    # clave publica de los avisos: la pide el lanzador del movil (otro dominio, sin sesion)
+    "/push/key",
 }
 # /llm/: pasarela de OpenCode hacia Ollama (main.py) - no lleva sesion de usuario
 PUBLIC_PATH_PREFIXES = ("/auth/security-question/", "/static/", "/llm/")

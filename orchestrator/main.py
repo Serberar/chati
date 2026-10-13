@@ -1563,9 +1563,13 @@ class PushSubscription(BaseModel):
 
 @app.get("/push/key")
 def push_key(request: Request):
-    if request.state.session["role"] == "guest":
-        return _guest_blocked()
-    return {"key": push.public_key()}
+    """Publica: la clave publica de los avisos (es publica por definicion).
+    La pide tambien el lanzador del movil (Serberar.github.io), que se
+    suscribe a los avisos de cada ordenador para no tener dos iconos."""
+    response = JSONResponse({"key": push.public_key()})
+    if request.headers.get("origin") == LAUNCHER_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"] = LAUNCHER_ORIGIN
+    return response
 
 
 @app.post("/push/subscribe")

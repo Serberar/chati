@@ -1999,3 +1999,11 @@ def test_clear_agent_history_deletes_only_own_finished_tasks():
         r = client.post("/agent/tasks/clear").json()
     assert [c.args[1] for c in delete.call_args_list] == ["hecha"]
     assert r == {"borradas": 1, "en_marcha": 2}
+
+
+def test_push_key_is_public_for_the_launcher():
+    anon = TestClient(app)
+    r = anon.get("/push/key", headers={"Origin": "https://serberar.github.io"})
+    assert r.status_code == 200 and len(r.json()["key"]) > 80
+    assert r.headers["access-control-allow-origin"] == "https://serberar.github.io"
+    assert "access-control-allow-origin" not in anon.get("/push/key", headers={"Origin": "https://otro.com"}).headers

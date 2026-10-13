@@ -186,7 +186,8 @@ def context_update_messages(current: str, diff: str, summary: str) -> list[dict]
                                     "Devuelve la ficha actualizada: mismos apartados "
                                     f"({_CONTEXT_SECTIONS}); cambia solo lo que ya no sea verdad, añade lo nuevo "
                                     "(funciones, archivos, comandos, decisiones y por que) y completa lo marcado "
-                                    "(pendiente) SOLO si se deduce de lo anterior. No inventes."},
+                                    "(pendiente) SOLO si se deduce de lo anterior. En \"Como se ejecuta\" va como se arranca el "
+                                    "programa, nunca el comando de los tests; si no hay programa, dejalo como esta. No inventes."},
     ]
 
 
@@ -370,7 +371,7 @@ def _run_hint(folder: Path) -> str:
                       ("app.py", "`python app.py`"), ("index.html", "abrir `index.html` en el navegador")):
         if (folder / name).exists():
             return how
-    return "(pendiente: no se ve un punto de entrada claro)"
+    return "No tiene un programa que arrancar (por lo que se ve, es codigo que se usa desde otro sitio o desde los tests)."
 
 
 def context_skeleton(folder: str | Path) -> str:
