@@ -240,11 +240,12 @@ async function initSessionUI() {
 
   currentMe = me;
   loadAvatar();
-  if (me.role === "admin") document.getElementById("adminBtn").style.display = "block";
-  if (me.role === "admin") document.getElementById("optErrorsBtn").style.display = "block";
+  if (me.role === "admin") document.getElementById("adminBtn").style.display = "";
+  if (me.role === "admin") document.getElementById("optErrorsBtn").style.display = "";
   // las metricas son de todo el sistema: solo el administrador
   if (me.role !== "admin") document.getElementById("optMetricsBtn").style.display = "none";
-  if (me.role === "admin") {
+  // OpenCode solo escucha en este ordenador (127.0.0.1): desde el movil el enlace no abria nada
+  if (me.role === "admin" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
     // OpenCode tiene contraseña (auditoria 2026-09-29): se copia al pulsar el enlace
     const link = document.getElementById("optCodeAgentLink");
     link.style.display = "";
@@ -3324,13 +3325,18 @@ function followAgentView(view) {
 let titleBeforeNotice = null;
 
 function noticeAgent(view, data) {
-  const state = (data.questions.length || data.permissions.length) ? "ask" : (agentDone(view, data) ? "done" : "busy");
+  const state = (data.questions.length || data.permissions.length) ? "ask"
+    : (agentDone(view, data) ? "done" : (data.atascada_min ? "stuck" : "busy"));
   const before = view.noticeState;
   view.noticeState = state;
   if (!before || before === state || state === "busy" || !document.hidden) return;
   const what = (data.title || data.task || "Tarea del agente").slice(0, 80);
-  const head = state === "ask" ? "✋ Chati necesita tu respuesta" : (data.error ? "⚠ La tarea se ha parado" : "✓ Tarea terminada");
-  const detail = state === "ask" ? "Te pide permiso o te hace una pregunta: " + what : (data.verificacion || what);
+  const head = state === "ask" ? "✋ Chati necesita tu respuesta"
+    : state === "stuck" ? "⚠ El agente parece atascado"
+    : (data.error ? "⚠ La tarea se ha parado" : "✓ Tarea terminada");
+  const detail = state === "ask" ? "Te pide permiso o te hace una pregunta: " + what
+    : state === "stuck" ? `Lleva ${data.atascada_min} min sin avanzar: ${what}`
+    : (data.verificacion || what);
   if (titleBeforeNotice === null) titleBeforeNotice = document.title;
   document.title = `${head} · Chati`;
   try {
@@ -3358,6 +3364,10 @@ function renderAgentView(view, data) {
   if (data.questions.length) { cls += " waiting"; text = "Esperando tu respuesta ↓"; }
   else if (data.permissions.length) { cls += " waiting"; text = "Necesita tu permiso para continuar ↓"; }
   else if (data.status === "retry") { text = "Reintentando: " + (data.retry_message || ""); }
+  else if (busy && data.atascada_min) {
+    cls += " failed";
+    text = `⚠ Lleva ${data.atascada_min} min sin avanzar: puede estar atascado. Puedes pulsar Detener y repetirlo.`;
+  }
   else if (busy && data.model_loading) {
     text = "Cargando el modelo del agente… un momento";
   }

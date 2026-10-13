@@ -205,3 +205,16 @@ def test_detects_a_task_that_ends_without_answering():
     assert code_checks.ended_without_answer([{"kind": "text", "text": "Miro"}, {"kind": "tool", "tool": "glob"}])
     assert not code_checks.ended_without_answer([{"kind": "tool", "tool": "glob"}, {"kind": "text", "text": "Hecho"}])
     assert not code_checks.ended_without_answer([])
+
+
+def test_rename_requests_get_the_exact_tool_call(tmp_path):
+    import main
+    assert code_checks.rename_request("Renombra la funcion precio_con_iva a con_iva") == ("precio_con_iva", "con_iva")
+    assert code_checks.rename_request("cambia el nombre de calcular por calcular_total") == ("calcular",
+                                                                                            "calcular_total")
+    assert code_checks.rename_request("renombra el archivo a algo mejor") is None
+    assert code_checks.rename_request("arregla el bug") is None
+    (tmp_path / "precios.py").write_text("def precio_con_iva(p):\n    return p\n", encoding="utf-8")
+    note = main._code_facts("Renombra la funcion precio_con_iva a con_iva", tmp_path)
+    assert 'chati_renombrar' in note and 'viejo="precio_con_iva"' in note
+    assert main._code_facts("Renombra la funcion no_existe a otra", tmp_path) == ""

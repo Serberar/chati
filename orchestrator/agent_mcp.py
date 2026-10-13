@@ -81,6 +81,15 @@ TOOLS = [
      "description": "Descarga (o actualiza) un repositorio git publico, por ejemplo de GitHub, y dice en que "
                     "carpeta queda, sus carpetas y el README. Despues se lee con read, grep y glob.",
      "inputSchema": _schema({"url": _STR}, ["url"])},
+    {"name": "ver_nombre", "fn": lambda a: t.find_symbol(a["carpeta"], a["viejo"]),
+     "description": "Antes de renombrar: dice en que archivos y lineas aparece un nombre (funcion, clase, variable) "
+                    "como palabra completa en todo el proyecto. No cambia nada.",
+     "inputSchema": _schema({"carpeta": _STR, "viejo": _STR}, ["carpeta", "viejo"])},
+    {"name": "renombrar", "fn": lambda a: t.rename_symbol(a["carpeta"], a["viejo"], a["nuevo"], apply=True),
+     "description": "Renombra una funcion, clase o variable en TODO el proyecto de una vez (solo palabras completas, "
+                    "sin tocar venv ni node_modules). Mira antes con ver_nombre. Usala en vez de bash o de editar "
+                    "archivo por archivo.",
+     "inputSchema": _schema({"carpeta": _STR, "viejo": _STR, "nuevo": _STR}, ["carpeta", "viejo", "nuevo"])},
     {"name": "lanzar_programa", "fn": lambda a: t.start_program(a["carpeta"], a["comando"], int(a.get("espera", 8))),
      "description": "Arranca un programa que se queda abierto (un servidor web, una app, npm run dev...) en la carpeta "
                     "del proyecto, SIN esperar a que termine, y devuelve lo que escribe en los primeros segundos. "

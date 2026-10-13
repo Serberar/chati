@@ -131,8 +131,8 @@ def auto_approvable(permission: str, patterns: list[str]) -> bool:
     """¿Lo puede conceder Chati solo en el modo "sin preguntar"? Editar y
     crear archivos del proyecto y los comandos normales, si; borrar, subir,
     deshacer git, desinstalar o tocar fuera del proyecto, no."""
-    # lanzar_programa ya rechaza por su cuenta los comandos peligrosos
-    if permission in ("edit", "write", "patch", "todowrite", "chati_lanzar_programa"):
+    # lanzar_programa ya rechaza por su cuenta los comandos peligrosos; renombrar es editar
+    if permission in ("edit", "write", "patch", "todowrite", "chati_lanzar_programa", "chati_renombrar"):
         return True
     if permission == "bash":
         return not any(_DANGEROUS.search(p) for p in patterns)
@@ -315,3 +315,20 @@ def ended_without_answer(steps: list[dict]) -> bool:
 def answer_nudge() -> str:
     return ("[Chati] Has terminado sin contestar al usuario. Respondele ahora con lo que has encontrado o hecho, "
             "en español y concreto (nombres, versiones, archivos). No repitas lo que ya has hecho.")
+
+
+_RENAME = re.compile(r"\b(?:renombra\w*|cambia(?:r)? el nombre(?: de)?|rename)\s+(?:(?:la|el|a la|al)\s+)?"
+                     r"(?:funci[oó]n|clase|variable|m[eé]todo|constante|campo)?\s*[`'\"]?([A-Za-z_]\w*)[`'\"]?\s+"
+                     r"(?:a|por|to|como)\s+[`'\"]?([A-Za-z_]\w*)", re.IGNORECASE)
+
+
+def rename_request(text: str) -> tuple[str, str] | None:
+    """(viejo, nuevo) si el encargo es renombrar algo ("renombra la funcion X a Y")."""
+    m = _RENAME.search(text)
+    if not m or m.group(1) == m.group(2) or m.group(1).lower() in _NOT_SYMBOL:
+        return None
+    return m.group(1), m.group(2)
+
+
+_NOT_SYMBOL = {"archivo", "fichero", "carpeta", "proyecto", "directorio", "rama", "repo", "repositorio", "todo",
+               "esto", "eso", "tabla", "columna", "pagina", "web"}

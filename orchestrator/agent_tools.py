@@ -592,3 +592,58 @@ def stop_program(prog_id: str) -> str:
 def stop_all_programs() -> None:
     for prog_id in list(_programs):
         stop_program(prog_id)
+
+
+# ---------- renombrar ----------
+# qwen renombraba a base de comandos de bash archivo por archivo: 25-40 pasos
+# y ~15 minutos para cambiar un nombre en 3 archivos (banco 2026-10-13).
+_RENAME_EXT = {".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".html", ".css", ".scss", ".md",
+               ".json", ".toml", ".yaml", ".yml", ".txt", ".cfg", ".ini", ".sql", ".sh", ".ps1", ".java", ".cs",
+               ".go", ".rs", ".php", ".rb", ".kt", ".swift", ".c", ".h", ".cpp", ".hpp"}
+_RENAME_SKIP = {"venv", ".venv", "env", "node_modules", ".git", "__pycache__", "dist", "build", ".pytest_cache"}
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def rename_symbol(folder: str, old: str, new: str, apply: bool = False) -> str:
+    """Cambia un nombre (funcion, clase, variable) por otro en todos los
+    archivos de texto del proyecto, solo como palabra completa. Sin aplicar,
+    dice donde sale; con apply=True lo cambia y dice que archivos ha tocado."""
+    root = Path(folder)
+    if not root.is_dir():
+        return f"No existe la carpeta {folder}."
+    if not _IDENT.fullmatch(old) or not _IDENT.fullmatch(new):
+        return "Solo nombres simples (letras, numeros y _, sin espacios ni puntos)."
+    if old == new:
+        return "El nombre nuevo es igual que el viejo."
+    word = re.compile(rf"\b{re.escape(old)}\b")
+    hits, changed = [], []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if not path.is_file() or path.suffix.lower() not in _RENAME_EXT or _RENAME_SKIP.intersection(rel.parts):
+            continue
+        try:
+            text = path.read_bytes().decode("utf-8")  # tal cual: read_text cambiaba los saltos de Windows
+        except (UnicodeDecodeError, OSError):
+            continue
+        if not word.search(text):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if word.search(line):
+                hits.append(f"{rel.as_posix()}:{n}: {line.strip()[:120]}")
+        if apply:
+            with open(path, "w", encoding="utf-8", newline="") as f:  # sin cambiar los saltos de linea
+                f.write(word.sub(new, text))
+            changed.append(rel.as_posix())
+    if not hits:
+        return f"'{old}' no aparece en ningun archivo de texto del proyecto."
+    shown = "\n".join(hits[:80]) + (f"\n... y {len(hits) - 80} mas" if len(hits) > 80 else "")
+    if apply:
+        return (f"Cambiado '{old}' por '{new}' en {len(hits)} sitios de {len(changed)} archivos: "
+                f"{', '.join(changed)}.\n{shown}\nAhora pasa los tests.")
+    return (f"'{old}' aparece en {len(hits)} sitios (todavia NO se ha cambiado nada). Revisa que todos sean el "
+            f"mismo nombre (no otra cosa que se llame igual) y cambialo con renombrar:\n{shown}")
+
+
+def find_symbol(folder: str, name: str) -> str:
+    """Donde aparece un nombre en el proyecto, sin cambiar nada."""
+    return rename_symbol(folder, name, name + "_")

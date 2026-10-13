@@ -1559,6 +1559,9 @@ def test_code_mode_tasks_go_to_the_project_with_the_chosen_agent(tmp_path):
         assert mock_start.call_args.args[1:] == ("revisa la estructura", "chati-code-plan", str(tmp_path), None)
         client.post("/agent/tasks", json={"task": "hazlo", "project": str(tmp_path), "rapido": True})
         assert mock_start.call_args.args[2:] == ("chati-code", str(tmp_path), main.CONFIG["opencode"]["model"])
+        # una pregunta suelta: el de planificar con el modelo rapido
+        client.post("/agent/tasks", json={"task": "¿que hace precios.py?", "project": str(tmp_path)})
+        assert mock_start.call_args.args[2:] == ("chati-code-plan", str(tmp_path), main.CONFIG["opencode"]["model"])
         assert client.post("/agent/tasks", json={"task": "x", "project": str(tmp_path / "no-existe")}).status_code == 400
     with patch.object(main.opencode_client, "continue_task") as mock_continue:
         client.post("/agent/tasks/ses_c/message", json={"text": "adelante", "code_mode": "build"})

@@ -95,7 +95,7 @@ def test_devices_per_user_and_gone_ones_are_forgotten(push_dir):
 
 def test_watch_notifies_asks_once_and_done_after_chati_checks():
     import main
-    state = {"busy": set(), "asked": set(), "done": set()}
+    state = {"busy": set(), "asked": set(), "done": set(), "progress": {}}
     rounds = iter([({"a"}, {}), (set(), {"b": "permission"}), (set(), {"b": "permission"}), (set(), {})])
     sent = []
 
@@ -123,3 +123,40 @@ def test_watch_notifies_asks_once_and_done_after_chati_checks():
         main._code_watch.pop("a", None)
     assert sent == [("✋ Chati necesita tu respuesta", "Te pide permiso: tarea b"),
                     ("✓ Tarea terminada", "tarea a · ✓ Chati ha ejecutado los tests y pasan.")]
+
+
+def test_a_task_without_progress_is_reported_as_stuck_once():
+    import main
+    state = {"busy": set(), "asked": set(), "done": set(), "progress": {}}
+    sent = []
+    clock = {"now": 1000.0}
+
+    def tick():
+        with patch.object(main.time, "time", side_effect=lambda: clock["now"]), \
+             patch.object(main.requests, "get"), \
+             patch.object(main.opencode_client, "busy_session_ids", return_value=["s"]), \
+             patch.object(main.opencode_client, "waiting_sessions", return_value={}), \
+             patch.object(main.opencode_client, "get_task_view", return_value={"steps": [1, 2]}), \
+             patch.object(main.opencode_client, "task_summary", return_value="renombrar"), \
+             patch.object(main.task_owners, "owner", return_value="u1"), \
+             patch.object(main.push, "has_devices", return_value=True), \
+             patch.object(main.push, "notify", side_effect=lambda u, t, b, tag: sent.append((t, b))):
+            main._push_tick(state)
+
+    main._llm_activity["last"] = 1000.0
+    try:
+        tick()                                  # primera vez: se apunta
+        clock["now"] += 300
+        tick()                                  # 5 min: todavia no
+        assert sent == [] and "s" not in main._stalled
+        clock["now"] += 400
+        tick()                                  # 11 min sin pasos ni modelo: atascada
+        clock["now"] += 60
+        tick()                                  # no se repite el aviso
+        assert sent == [("⚠ El agente parece atascado", "Lleva 11 min sin avanzar: renombrar. Puedes detenerlo y repetirlo.")]
+        assert "s" in main._stalled
+        main._llm_activity["last"] = clock["now"]  # el modelo vuelve a escribir
+        tick()
+        assert "s" not in main._stalled
+    finally:
+        main._stalled.clear()

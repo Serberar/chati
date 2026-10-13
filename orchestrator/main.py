@@ -548,6 +548,11 @@ def _keep_agent_model_loaded(model: str | None) -> None:
     threading.Thread(target=send, daemon=True).start()
 
 
+# ultima vez que el modelo del agente dio señales de vida (empezar una
+# respuesta o escribir un trozo): para saber si una tarea esta atascada
+_llm_activity = {"last": time.time()}
+
+
 @app.api_route("/llm/v1/{path:path}", methods=["GET", "POST"])
 async def llm_proxy_route(path: str, request: Request):
     expected = f"Bearer {opencode_client.AUTH[1]}"
@@ -568,7 +573,9 @@ async def llm_proxy_route(path: str, request: Request):
         return requests.request(request.method, target, data=body or None, headers=headers,
                                 stream=wants_stream, timeout=900)
 
+    _llm_activity["last"] = time.time()
     upstream = await run_in_threadpool(forward)
+    _llm_activity["last"] = time.time()
     if not wants_stream:
         content = upstream.content
         if upstream.ok and b"tool_calls" in content:
@@ -582,6 +589,7 @@ async def llm_proxy_route(path: str, request: Request):
     def stream():
         try:
             for line in upstream.iter_lines():
+                _llm_activity["last"] = time.time()
                 yield llm_proxy.clean_stream_line(line) + b"\n\n" if line else b""
         finally:
             upstream.close()
@@ -810,7 +818,8 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         # construir se ponia a crear un proyecto (2026-10-13, 3 de 4 veces)
         # "recuerda que..." tambien: Chati ya lo guarda y el agente solo confirma (en el banco se ponia a
         # arreglar fallos que nadie le habia pedido)
-        plan = req.plan or _is_code_question(task) or code_checks.remember_request(task) is not None
+        question = _is_code_question(task) or code_checks.remember_request(task) is not None
+        plan = req.plan or question
         # encargo grande: primero planificar y luego construir paso a paso
         # (lo encadena _watch_code_task); la primera vez en un proyecto, su ficha
         big = not plan and code_checks.is_big_task(task)
@@ -821,7 +830,10 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         if note:  # capturas que pasa el usuario: el agente las mira con chati_ver_imagen
             task += f"\n\n{note}\nSi son imagenes, miralas con chati_ver_imagen antes de responder."
         agent = CONFIG["opencode"]["agent_code_plan" if (plan or big) else "agent_code"]
-        model = CONFIG["opencode"]["model"] if req.rapido else None
+        # una pregunta suelta va al modelo rapido: mismos aciertos y la mitad de
+        # tiempo (banco 2026-10-13: 4/4, 64 s frente a ~120 s). Planificar a
+        # proposito, o construir, sigue con el grande
+        model = CONFIG["opencode"]["model"] if req.rapido or (question and not req.plan) else None
         # copia para "Deshacer", antes de que el agente toque nada
         copy = None if plan else checkpoints.take(project, req.task.strip())
         result = _opencode_call(opencode_client.start_task, task, agent, str(project), model)
@@ -855,6 +867,11 @@ def _code_facts(task: str, project: Path) -> str:
     if notes:
         notes.insert(0, "Datos comprobados por Chati en el registro de paquetes (fiate de esto, no de lo que "
                         "recuerdes; si dice NO EXISTE, dilo claramente y propone una alternativa real):")
+    rename = code_checks.rename_request(task)
+    if rename and "NO se ha cambiado" in agent_tools.find_symbol(str(project), rename[0]):
+        notes.append(f"Para este cambio de nombre usa UNA llamada: chati_renombrar con carpeta=\"{project}\", "
+                     f"viejo=\"{rename[0]}\", nuevo=\"{rename[1]}\". Lo cambia en todos los archivos a la vez. No uses "
+                     "bash ni edites archivo por archivo. Despues pasa los tests.")
     what = code_checks.remember_request(task)
     if what:
         saved = agent_tools.memory_save(what[:60], what, "proyecto", project.name)
@@ -1037,6 +1054,8 @@ def _task_view(base_url: str, session_id: str) -> dict:
     if not view["verificacion"] and session_id in _code_watch_running and not watch.get("solo_mirar"):
         view["verificacion"] = "Comprobando el trabajo…"
     view["deshacer"] = checkpoints.available(session_id)
+    stuck_since = _stalled.get(session_id)
+    view["atascada_min"] = int(time.time() - stuck_since) // 60 if stuck_since else 0
     return view
 
 
@@ -1377,6 +1396,11 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
 
 # --- Avisos al movil aunque Chati este cerrado (push.py) ---
 PUSH_POLL_SECONDS = 10
+# una tarea "trabajando" sin pasos nuevos ni nada del modelo en este tiempo
+# esta atascada: se avisa (Sergio, 2026-10-13: "pasan 40 minutos y no se
+# nada"; gpt-oss se quedo 55 min colgado sin que nadie se enterase)
+STALL_SECONDS = 600
+_stalled: dict[str, float] = {}  # tarea -> desde cuando no avanza
 
 
 def _push_tick(state: dict) -> None:
@@ -1407,6 +1431,30 @@ def _push_tick(state: dict) -> None:
                  ("Te pide permiso" if reason == "permission" else "Te hace una pregunta") + ": {tarea}")
     state["asked"] -= busy  # vuelve a trabajar: la siguiente pregunta se avisa otra vez
     state["done"] |= state["busy"] - busy - set(waiting)
+    # atascos: cuantos pasos tenia cada tarea y cuando cambiaron por ultima vez
+    now = time.time()
+    for sid in busy:
+        try:
+            count = len(opencode_client.get_task_view(base, sid)["steps"])
+        except Exception:  # noqa: BLE001 - se mira en la siguiente vuelta
+            continue
+        seen = state["progress"].get(sid)
+        if not seen or seen[0] != count:
+            state["progress"][sid] = (count, now)
+            _stalled.pop(sid, None)
+            continue
+        quiet_since = max(seen[1], _llm_activity["last"])
+        if now - quiet_since < STALL_SECONDS:
+            _stalled.pop(sid, None)  # el modelo sigue escribiendo
+        elif sid not in _stalled:
+            _stalled[sid] = quiet_since
+            minutes = int(now - quiet_since) // 60
+            log.warning("Tarea %s atascada: %d min sin avanzar", sid, minutes)
+            send(sid, "⚠ El agente parece atascado",
+                 f"Lleva {minutes} min sin avanzar: {{tarea}}. Puedes detenerlo y repetirlo.")
+    for sid in set(state["progress"]) - busy:
+        state["progress"].pop(sid, None)
+        _stalled.pop(sid, None)
     for sid in list(state["done"]):
         if sid in busy or sid in waiting:
             state["done"].discard(sid)
@@ -1419,7 +1467,7 @@ def _push_tick(state: dict) -> None:
 
 
 def _push_watch() -> None:
-    state = {"busy": set(), "asked": set(), "done": set()}
+    state = {"busy": set(), "asked": set(), "done": set(), "progress": {}}
     while True:
         time.sleep(PUSH_POLL_SECONDS)
         try:

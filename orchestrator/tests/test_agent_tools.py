@@ -127,3 +127,21 @@ def test_programs_run_in_the_background_and_can_be_read_and_stopped(tmp_path, mo
     assert "terminado" in t.program_output("p1")
     assert "no se arranca" in t.start_program(str(tmp_path), "rm -rf .")
     assert "No hay ningun programa" in t.program_output("p9")
+
+
+def test_rename_symbol_previews_then_changes_whole_words_only(tmp_path):
+    (tmp_path / "precios.py").write_text("def precio_con_iva(p):\n    return p\r\n", encoding="utf-8", newline="")
+    (tmp_path / "test_precios.py").write_text("from precios import precio_con_iva\nprecio_con_iva_viejo = 1\n",
+                                              encoding="utf-8")
+    (tmp_path / "venv").mkdir()
+    (tmp_path / "venv" / "otro.py").write_text("precio_con_iva = 2\n", encoding="utf-8")
+    preview = t.find_symbol(str(tmp_path), "precio_con_iva")
+    assert "NO se ha cambiado" in preview and "precios.py:1" in preview and "venv" not in preview
+    assert "def precio_con_iva" in (tmp_path / "precios.py").read_text(encoding="utf-8")
+    done = t.rename_symbol(str(tmp_path), "precio_con_iva", "con_iva", apply=True)
+    assert "2 archivos" in done
+    assert (tmp_path / "precios.py").read_bytes() == b"def con_iva(p):\n    return p\r\n"  # saltos intactos
+    assert "precio_con_iva_viejo = 1" in (tmp_path / "test_precios.py").read_text(encoding="utf-8")
+    assert "import con_iva" in (tmp_path / "test_precios.py").read_text(encoding="utf-8")
+    assert (tmp_path / "venv" / "otro.py").read_text(encoding="utf-8") == "precio_con_iva = 2\n"
+    assert "Solo nombres simples" in t.rename_symbol(str(tmp_path), "a.b", "c")
