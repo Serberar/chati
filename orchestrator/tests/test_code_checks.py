@@ -41,7 +41,7 @@ def test_project_context_lives_in_agents_md(tmp_path):
     assert "AGENTS.md" in code_checks.context_created_note()
     (tmp_path / "AGENTS.md").write_text("# Tienda", encoding="utf-8")
     assert code_checks.project_has_context(tmp_path)
-    assert "actualiza AGENTS.md" in code_checks.context_update_request()
+    assert "AGENTS.md" in code_checks.context_update_messages("# Tienda", "", "")[0]["content"]
 
 
 def test_choosing_an_option_is_an_approval():
@@ -87,11 +87,12 @@ def test_watch_returns_failing_tests_to_the_agent(tmp_path):
          patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
          patch.object(main.opencode_client, "get_task_view", return_value=idle), \
          patch.object(main.code_checks, "run_tests", side_effect=lambda f: next(results)), \
+         patch.object(main, "_update_context_file", return_value=True) as update, \
          patch.object(main.opencode_client, "continue_task", side_effect=lambda *a: sent.append(a[2])):
         main._watch_code_task("ses_1", folder, False, info)
-    # primero el fallo de los tests y, cuando pasan, actualizar el AGENTS.md
-    assert len(sent) == 2 and "FALLAN" in sent[0] and "assert 3 == 4" in sent[0]
-    assert "AGENTS.md" in sent[1]
+    # el fallo de los tests al agente y, cuando pasan, Chati pone al dia el AGENTS.md
+    assert len(sent) == 1 and "FALLAN" in sent[0] and "assert 3 == 4" in sent[0]
+    assert update.called
     assert info["estado"].startswith("✓") and "AGENTS.md" in info["estado"]
 
 
@@ -193,11 +194,12 @@ def test_big_changes_get_a_self_review_before_finishing(tmp_path):
          patch.object(main.code_checks, "run_tests", return_value=(True, "1 passed")), \
          patch.object(main.code_checks, "run_lint", return_value=None), \
          patch.object(main.checkpoints, "diff_since_last", return_value=big_diff), \
+         patch.object(main, "_update_context_file", return_value=True) as update, \
          patch.object(main.opencode_client, "continue_task", side_effect=lambda *a: sent.append(a[2])):
         main._watch_code_task("ses_r", folder, False, info)
-    # primero el repaso (una sola vez), despues el AGENTS.md
-    assert len(sent) == 2 and "revisa tus propios cambios" in sent[0] and "+linea 49" in sent[0]
-    assert "AGENTS.md" in sent[1]
+    # el repaso (una sola vez) y despues la ficha
+    assert len(sent) == 1 and "revisa tus propios cambios" in sent[0] and "+linea 49" in sent[0]
+    assert update.call_count == 1
     assert not main.code_checks.needs_review("diff --git a/x b/x\n+una\n-otra\n")
 
 
@@ -232,3 +234,18 @@ def test_chati_starts_the_project_card_itself(tmp_path):
     assert "`python app.py`" in card and "`python -m pytest`" in card and "venv" not in card
     assert "(pendiente)" in card  # decisiones y convenciones: las completa el agente
 
+
+
+def test_chati_updates_the_card_with_one_model_call_and_keeps_it_if_the_reply_is_bad(tmp_path):
+    import main
+    (tmp_path / "AGENTS.md").write_text("# P\n## A\nviejo\n## B\n## C\n## D\n## E\n", encoding="utf-8")
+    good = "```markdown\n# P\n## A\nnuevo\n## B\n## C\n## D\n## E\n```"
+    with patch.object(main.checkpoints, "diff_since_last", return_value="+def f(): pass"), \
+         patch.object(main.ollama, "chat", return_value=good) as chat:
+        assert main._update_context_file("s", tmp_path, "He añadido f")
+    assert "+def f(): pass" in chat.call_args.args[1][1]["content"]
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8").startswith("# P\n## A\nnuevo")
+    with patch.object(main.checkpoints, "diff_since_last", return_value=""), \
+         patch.object(main.ollama, "chat", return_value="Lo siento, no puedo"):
+        assert not main._update_context_file("s", tmp_path, "")
+    assert "nuevo" in (tmp_path / "AGENTS.md").read_text(encoding="utf-8")  # la de antes, intacta

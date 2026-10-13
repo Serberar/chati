@@ -124,7 +124,7 @@ def undo(session_id: str) -> dict:
     return {"ok": True, "archivos": files, "quedan": len(entries) - 1, "encargo": last["encargo"]}
 
 
-def diff_since_last(session_id: str, max_chars: int = 12000) -> str:
+def diff_since_last(session_id: str, max_chars: int = 12000, exclude: tuple[str, ...] = ()) -> str:
     """Lo que ha cambiado en el proyecto desde la copia del ultimo encargo
     (para que el agente revise su propio trabajo), recortado. "" si no hay."""
     entries = _load().get(session_id) or []
@@ -136,7 +136,8 @@ def diff_since_last(session_id: str, max_chars: int = 12000) -> str:
         with _lock:
             if _git(folder, "add", "-A", ".").returncode != 0:
                 return ""
-            out = _git(folder, "diff", "--cached", "--no-color", "--no-renames", last["commit"])
+            out = _git(folder, "diff", "--cached", "--no-color", "--no-renames", last["commit"], "--", ".",
+                       *(f":(exclude){name}" for name in exclude))
     except (OSError, subprocess.SubprocessError):
         return ""
     text = out.stdout if out.returncode == 0 else ""

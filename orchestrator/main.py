@@ -906,6 +906,26 @@ def _auto_approve(base: str, session_id: str) -> None:
             opencode_client.reply_permission(base, perm["id"], "once")
 
 
+def _update_context_file(session_id: str, folder: Path, summary: str) -> bool:
+    """Pone al dia el AGENTS.md del proyecto con lo que ha cambiado, con una
+    sola llamada al modelo del agente (ya cargado). False si no se pudo."""
+    path = folder / code_checks.CONTEXT_FILE
+    try:
+        current = path.read_text(encoding="utf-8") if path.exists() else code_checks.context_skeleton(folder)
+        diff = checkpoints.diff_since_last(session_id, max_chars=8000, exclude=(code_checks.CONTEXT_FILE,))
+        reply = ollama.chat(CONFIG["opencode"]["model_potente"],
+                            code_checks.context_update_messages(current, diff, summary), temperature=0.1)
+    except Exception as exc:  # noqa: BLE001 - la tarea ya esta hecha: sin ficha nueva, no pasa nada
+        log.warning("No se pudo actualizar %s en %s: %s", code_checks.CONTEXT_FILE, folder, exc)
+        return False
+    text = code_checks.clean_context(reply, current)
+    if not text:
+        log.warning("Ficha de %s descartada: el modelo no devolvio una ficha valida", folder)
+        return False
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
 def _start_code_watch(session_id: str, folder: Path, big: bool, autonomous: bool = False,
                       only_look: bool = False) -> None:
     """only_look: pregunta al agente de planificar; solo se vigila que no se
@@ -983,9 +1003,6 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
                                   "comprueba con los tests al final.", CONFIG["opencode"]["agent_code"])
             time.sleep(20)
             continue
-        if phase == "update":
-            info["estado"] = info["final"] + " Contexto (AGENTS.md) actualizado."
-            return
         changed = code_checks.changed_files(before, code_checks.folder_state(folder))
         if not changed:
             info["estado"] = ""
@@ -1009,7 +1026,7 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
                 continue
             # cambio grande: que repase su propio trabajo antes de darlo por
             # bueno (despues se vuelven a pasar los tests y el analizador)
-            diff = "" if reviewed else checkpoints.diff_since_last(session_id)
+            diff = "" if reviewed else checkpoints.diff_since_last(session_id, exclude=(code_checks.CONTEXT_FILE,))
             if diff and code_checks.needs_review(diff):
                 reviewed = True
                 info["estado"] = "Tests bien: el agente repasa sus propios cambios…"
@@ -1018,14 +1035,13 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
                 time.sleep(20)
                 continue
             # ultimo paso: que el AGENTS.md cuente lo que ha cambiado
-            info["final"] = ("✓ Chati ha ejecutado los tests y pasan." if result
-                             else "Este proyecto no tiene tests: Chati no ha podido comprobar los cambios.")
-            info["estado"] = "Actualizando el contexto del proyecto (AGENTS.md)…"
-            phase = "update"
-            opencode_client.continue_task(base, session_id, code_checks.context_update_request(),
-                                          CONFIG["opencode"]["agent_code"])
-            time.sleep(20)
-            continue
+            final = ("✓ Chati ha ejecutado los tests y pasan." if result
+                     else "Este proyecto no tiene tests: Chati no ha podido comprobar los cambios.")
+            info["estado"] = final + " Actualizando la ficha del proyecto (AGENTS.md)…"
+            texts = [s.get("text", "") for s in view.get("steps", []) if s.get("kind") == "text"]
+            updated = _update_context_file(session_id, folder, texts[-1] if texts else "")
+            info["estado"] = final + (" Ficha del proyecto (AGENTS.md) actualizada." if updated else "")
+            return
         ok, output = result
         attempts += 1
         if attempts > CODE_TEST_RETRIES:

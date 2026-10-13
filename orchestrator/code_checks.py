@@ -173,13 +173,29 @@ def project_has_context(folder: str | Path) -> bool:
     return (Path(folder) / CONTEXT_FILE).exists()
 
 
-def context_update_request() -> str:
-    """Lo que Chati pide al terminar un encargo: actualizar el contexto."""
-    return (f"[Chati] Tarea terminada. Ultimo paso: actualiza {CONTEXT_FILE} con lo que ha cambiado en esta tarea "
-            "(estructura, comandos, decisiones nuevas y por que, convenciones) y completa lo marcado como "
-            "(pendiente) que ya sepas por lo que has leido. Cambia solo lo que ya no sea verdad o falte; no lo "
-            f"reescribas entero ni toques ningun otro archivo. Si no existe, crealo con: {_CONTEXT_SECTIONS}. "
-            "Contesta en una linea que has actualizado.")
+def context_update_messages(current: str, diff: str, summary: str) -> list[dict]:
+    """Lo que se le pide al modelo para poner al dia la ficha al acabar un
+    encargo. Antes se lo pedia al agente dentro de la tarea y tardaba ~3,5 min
+    (herramientas, leer, editar); asi es una sola respuesta (2026-10-13)."""
+    return [
+        {"role": "system", "content": "Mantienes la ficha AGENTS.md de un proyecto de software. Escribes en "
+                                      "español, breve y concreto. Devuelves SOLO el archivo completo en Markdown, "
+                                      "sin explicaciones ni bloques ```."},
+        {"role": "user", "content": f"Ficha actual:\n{current}\n\nCambios de esta tarea (diff):\n{diff or '(ninguno)'}"
+                                    f"\n\nLo que dice el agente que ha hecho:\n{summary[:3000] or '(nada)'}\n\n"
+                                    "Devuelve la ficha actualizada: mismos apartados "
+                                    f"({_CONTEXT_SECTIONS}); cambia solo lo que ya no sea verdad, añade lo nuevo "
+                                    "(funciones, archivos, comandos, decisiones y por que) y completa lo marcado "
+                                    "(pendiente) SOLO si se deduce de lo anterior. No inventes."},
+    ]
+
+
+def clean_context(text: str, current: str) -> str | None:
+    """La ficha que devuelve el modelo, o None si no vale (se queda la que habia)."""
+    text = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", text.strip())
+    if not text.startswith("# ") or text.count("\n## ") < 4 or len(text) < len(current) // 2:
+        return None
+    return text.rstrip() + "\n"
 
 
 _APPROVAL = re.compile(
