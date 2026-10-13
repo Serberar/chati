@@ -27,7 +27,7 @@ PUBLIC_PATHS = {
     "/", "/health", "/favicon.ico",
     "/auth/login", "/auth/guest", "/auth/register", "/auth/reset-password",
     # vincular un dispositivo (el movil): se llega sin sesion, con el codigo
-    "/pair", "/pair/claim",
+    "/pair", "/pair/claim", "/pair/check",
     # errores de la pantalla: pueden pasar antes de iniciar sesion
     "/client-log",
     # icono y manifiesto de la app del movil: el iPhone los pide sin sesion

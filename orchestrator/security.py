@@ -26,7 +26,7 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 # las del ordenador en Tailscale (p.ej. "msi.tailcdce77.ts.net"); las pone main.py
 REMOTE_HOSTS: set[str] = set()
 # lo unico que ve un dispositivo sin vincular
-PAIR_PATHS = {"/pair", "/pair/claim", "/static/js/pair.js", "/favicon.ico", "/client-log",
+PAIR_PATHS = {"/pair", "/pair/claim", "/pair/check", "/static/js/pair.js", "/favicon.ico", "/client-log",
               # el iPhone pide el icono de la pantalla de inicio sin la cookie
               # del dispositivo: rechazado, se quedaba sin icono (2026-10-08)
               "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/manifest.webmanifest",

@@ -1296,8 +1296,31 @@ def pair_claim(body: PairClaim, request: Request):
         return JSONResponse({"detail": "Codigo no valido o caducado. Pide otro en el ordenador."},
                             status_code=403)
     resp = JSONResponse({"ok": True})
+    _set_device_cookie(resp, token)
+    return resp
+
+
+def _set_device_cookie(resp, token: str) -> None:
+    """La llave del dispositivo. SameSite=Lax y no Strict: entrando desde la
+    pantalla de inicio de la app (serberar.github.io, otra web) el iPhone no
+    mandaba una cookie Strict y pedia el codigo cada vez (Sergio, 2026-10-08).
+    Lax solo la manda en la navegacion normal (GET); lo que cambia datos sigue
+    protegido por la comprobacion de origen (security.origin_allowed)."""
     resp.set_cookie(devices.COOKIE_NAME, token, max_age=400 * 24 * 3600, httponly=True, secure=True,
-                    samesite="strict", path="/")
+                    samesite="lax", path="/")
+
+
+@app.get("/pair/check")
+def pair_check(request: Request):
+    """¿Este dispositivo ya esta vinculado? La pagina de vincular lo pregunta
+    al cargar: si llego ahi solo porque la cookie (Strict, las de antes) no
+    viajo desde otra web, aqui si viaja (misma web), se renueva como Lax y se
+    entra sin volver a pedir el codigo."""
+    device = getattr(request.state, "device", None)
+    if device is None:
+        return {"paired": False}
+    resp = JSONResponse({"paired": True})
+    _set_device_cookie(resp, request.cookies.get(devices.COOKIE_NAME, ""))
     return resp
 
 

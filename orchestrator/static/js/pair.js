@@ -21,6 +21,13 @@ function show(text, cls) {
   msg.className = cls || "";
 }
 
+// Ya vinculado, pero la llave no llego (entrando desde la pantalla de inicio
+// de la app, que es otra web): aqui si llega; se renueva y se entra.
+fetch("/pair/check", { cache: "no-store" })
+  .then((r) => r.json())
+  .then((d) => { if (d.paired) location.replace("/"); })
+  .catch(() => {});
+
 async function claim(code) {
   goBtn.disabled = true;
   show("Vinculando…");
