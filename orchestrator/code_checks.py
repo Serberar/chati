@@ -131,7 +131,8 @@ def auto_approvable(permission: str, patterns: list[str]) -> bool:
     """¿Lo puede conceder Chati solo en el modo "sin preguntar"? Editar y
     crear archivos del proyecto y los comandos normales, si; borrar, subir,
     deshacer git, desinstalar o tocar fuera del proyecto, no."""
-    if permission in ("edit", "write", "patch", "todowrite"):
+    # lanzar_programa ya rechaza por su cuenta los comandos peligrosos
+    if permission in ("edit", "write", "patch", "todowrite", "chati_lanzar_programa"):
         return True
     if permission == "bash":
         return not any(_DANGEROUS.search(p) for p in patterns)
@@ -226,3 +227,58 @@ def folder_state(folder: Path) -> dict:
         if p.is_file() and not ignore.intersection(p.relative_to(folder).parts):
             state[p.relative_to(folder).as_posix()] = hashlib.sha1(p.read_bytes()).hexdigest()
     return state
+
+
+# Datos que Chati comprueba el mismo antes de pasar el encargo al agente: el
+# modelo local a veces contestaba sobre una libreria inventada sin mirar si
+# existia, y no guardaba lo que se le pedia recordar (banco 2026-10-13).
+_PKG_CONTEXT = re.compile(r"librer[ií]a|paquete|m[oó]dulo|package|library|\bpip\b|\bnpm\b|instal", re.IGNORECASE)
+_PKG_NAME = re.compile(
+    r"['\"`«]([A-Za-z0-9][A-Za-z0-9_.\-/@]{1,60})['\"`»]|"
+    r"(?:librer[ií]a|paquete|m[oó]dulo|package|library)\s+(?:de\s+(?:python|npm|node)\s+)?"
+    r"([A-Za-z0-9][A-Za-z0-9_.\-]*[\-_.0-9][A-Za-z0-9_.\-]*|[a-z][a-z0-9]{2,})|"
+    r"(?:pip|npm)\s+install\s+([A-Za-z0-9@][A-Za-z0-9_.\-/]+)", re.IGNORECASE)
+_NOT_PKG = {"que", "para", "con", "python", "npm", "node", "javascript", "excel", "una", "esta", "este", "cual",
+            "mejor", "buena", "recomiendas", "nueva", "parecida", "como"}
+_NPM_HINT = re.compile(r"\bnpm\b|node|javascript|\bjs\b|typescript|react|vue", re.IGNORECASE)
+
+
+def package_mentions(text: str) -> list[tuple[str, str]]:
+    """(nombre, ecosistema) de las librerias concretas que nombra el encargo."""
+    if not _PKG_CONTEXT.search(text):
+        return []
+    eco = "npm" if _NPM_HINT.search(text) else "python"
+    names = []
+    for m in _PKG_NAME.finditer(text):
+        name = next(g for g in m.groups() if g).strip(".")
+        if name.lower() not in _NOT_PKG and name not in names and not name.endswith((".py", ".js", ".txt")):
+            names.append(name)
+    return [(n, eco) for n in names[:3]]
+
+
+_REMEMBER = re.compile(r"^\W*(recuerda|acu[eé]rdate de|ap[uú]nta(te)?|no olvides|guarda en (la )?memoria|memoriza)\b"
+                       r"\s*(que|esto|lo siguiente|de que)?\s*[:,]?\s*(?P<what>.+)", re.IGNORECASE | re.DOTALL)
+
+
+def remember_request(text: str) -> str | None:
+    """Lo que el usuario pide recordar ("recuerda que ..."), o None."""
+    m = _REMEMBER.match(text.strip())
+    return m.group("what").strip() if m and "?" not in text and len(m.group("what").strip()) > 5 else None
+
+
+# qwen3-coder a veces escribe la llamada a una herramienta como texto
+# ("<function=chati_info_paquete> <parameter=...") en vez de hacerla, y la tarea
+# se queda parada ahi (banco 2026-10-13, 2 de 2 en "libreria_inventada").
+_TEXT_TOOL_CALL = re.compile(r"<function=[\w.-]+>|<tool_call>|</tool_call>")
+TOOL_CALL_NUDGES = 2
+
+
+def broken_tool_call(steps: list[dict]) -> bool:
+    """¿La tarea ha acabado con una llamada a herramienta escrita como texto?"""
+    last = next((s for s in reversed(steps) if s.get("kind") in ("text", "tool", "user")), None)
+    return bool(last and last.get("kind") == "text" and _TEXT_TOOL_CALL.search(last.get("text", "")))
+
+
+def tool_call_nudge() -> str:
+    return ("[Chati] Tu ultima llamada a una herramienta ha salido como texto (<function=...>) y no se ha "
+            "ejecutado. Vuelve a llamarla de verdad, como herramienta, y sigue con la tarea.")

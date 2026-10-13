@@ -510,3 +510,85 @@ def look_at_image(path: str, question: str = "") -> str:
         Image.open(io.BytesIO(data)).convert("RGB").save(buf, format="PNG")
         data = buf.getvalue()
     return _describe_image(data, question)
+
+
+# ---------- programas en marcha ----------
+# El bash de OpenCode espera a que el comando termine: un servidor o una app
+# que se queda abierta lo dejaba colgado. Estas arrancan el programa aparte,
+# guardan lo que escribe y dejan leerlo despues (Sergio, 2026-10-13: "arrancar
+# tu programa y mirar sus errores"). Viven lo que vive el servidor MCP.
+PROGRAMS_DIR = DATA_DIR / "agente_programas"
+MAX_PROGRAMS = 3
+_programs: dict[str, dict] = {}
+
+
+def _program_status(prog: dict) -> str:
+    code = prog["proc"].poll()
+    return "en marcha" if code is None else f"terminado (codigo {code})"
+
+
+def _tail(path: Path, lines: int) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.splitlines()[-lines:])[-PAGE_CHARS:]
+
+
+def start_program(folder: str, command: str, wait: int = 8) -> str:
+    """Arranca un programa que se queda abierto (servidor, app) en la carpeta
+    del proyecto y devuelve lo que ha escrito en los primeros segundos."""
+    import time
+    import code_checks
+    path = Path(folder)
+    if not path.is_dir():
+        return f"No existe la carpeta {folder}."
+    if code_checks._DANGEROUS.search(command):
+        return "Ese comando no se arranca desde aqui (borra, sube o toca el sistema). Pideselo al usuario."
+    running = [k for k, p in _programs.items() if p["proc"].poll() is None]
+    if len(running) >= MAX_PROGRAMS:
+        return f"Ya hay {MAX_PROGRAMS} programas en marcha ({', '.join(running)}): para alguno con parar_programa."
+    PROGRAMS_DIR.mkdir(parents=True, exist_ok=True)
+    prog_id = f"p{len(_programs) + 1}"
+    log = PROGRAMS_DIR / f"{prog_id}_{int(time.time())}.log"
+    out = open(log, "w", encoding="utf-8", errors="replace")  # noqa: SIM115 - lo escribe el programa
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        proc = subprocess.Popen(command, shell=True, cwd=path, stdout=out, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, creationflags=flags,
+                                env={**__import__("os").environ, "PYTHONUNBUFFERED": "1"})
+    except OSError as exc:
+        out.close()
+        return f"No se pudo arrancar: {exc}"
+    _programs[prog_id] = {"proc": proc, "log": log, "command": command, "out": out}
+    time.sleep(max(1, min(wait, 60)))
+    return (f"Programa {prog_id} ({command}): {_program_status(_programs[prog_id])}.\n"
+            f"Lo que ha escrito hasta ahora:\n{_tail(log, 60) or '(nada todavia)'}\n\n"
+            f"Leelo despues con ver_salida('{prog_id}') y paralo con parar_programa('{prog_id}') al terminar.")
+
+
+def program_output(prog_id: str, lines: int = 80) -> str:
+    prog = _programs.get(prog_id)
+    if not prog:
+        return f"No hay ningun programa {prog_id}. En marcha: {', '.join(_programs) or 'ninguno'}."
+    return f"{prog_id} ({prog['command']}): {_program_status(prog)}.\n{_tail(prog['log'], lines) or '(sin salida)'}"
+
+
+def stop_program(prog_id: str) -> str:
+    prog = _programs.get(prog_id)
+    if not prog:
+        return f"No hay ningun programa {prog_id}."
+    if prog["proc"].poll() is None:
+        # con /T tambien sus hijos (npm run dev arranca node, python arranca workers)
+        subprocess.run(["taskkill", "/PID", str(prog["proc"].pid), "/T", "/F"], capture_output=True)
+        try:
+            prog["proc"].wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            prog["proc"].kill()
+    prog["out"].close()
+    return f"Parado {prog_id}. Ultimas lineas:\n{_tail(prog['log'], 20)}"
+
+
+def stop_all_programs() -> None:
+    for prog_id in list(_programs):
+        stop_program(prog_id)

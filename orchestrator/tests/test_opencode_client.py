@@ -394,3 +394,15 @@ def test_replies_go_to_the_folder_that_has_the_request(mock_post, monkeypatch):
     mock_post.side_effect = [not_found, ok]
     opencode_client.reply_permission(BASE, "per_9", "once")
     assert [c.kwargs.get("params") for c in mock_post.call_args_list] == [None, {"directory": "C:/proyecto"}]
+
+
+def test_the_agent_todo_list_is_the_latest_one():
+    def todo(*items):
+        return {"type": "tool", "tool": "todowrite",
+                "state": {"input": {"todos": [{"content": c, "status": st} for c, st in items]}}}
+    messages = [{"info": {"role": "assistant"}, "parts": [todo(("leer", "in_progress"), ("editar", "pending"))]},
+                {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "hecho"},
+                                                          todo(("leer", "completed"), ("editar", "in_progress"))]}]
+    assert opencode_client._latest_todos(messages) == [{"text": "leer", "status": "completed"},
+                                                       {"text": "editar", "status": "in_progress"}]
+    assert opencode_client._latest_todos([]) == []

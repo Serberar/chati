@@ -1421,7 +1421,7 @@ def test_agent_follow_up_goes_to_the_same_task():
 def test_agent_shortcuts_per_user_and_blocked_for_guests():
     assert client.get("/agent/shortcuts").status_code == 200
     saved = client.put("/agent/shortcuts", json={"shortcuts": [{"name": "Mi atajo", "task": "haz algo"}]}).json()
-    assert saved == [{"name": "Mi atajo", "task": "haz algo", "potente": False}]
+    assert saved == [{"name": "Mi atajo", "task": "haz algo", "potente": False, "donde": "agente"}]
     assert client.get("/agent/shortcuts").json() == saved
     assert client.put("/agent/shortcuts", json={"shortcuts": [{"name": "", "task": "x"}]}).status_code == 400
     uname, other = _other_user_client()

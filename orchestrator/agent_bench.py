@@ -166,7 +166,7 @@ def _check_excel(folder, run, before):
 
 def _check_memoria(folder, run, before):
     index = agent_tools.memory_index()
-    ok = "pytest" in index.lower() and _used(run, "memoria_guardar")
+    ok = "pytest" in index.lower()  # lo guarda Chati al ver "recuerda que..." o el agente
     return ok and _unchanged(folder, before), "guardado en memoria" if ok else "no lo ha guardado"
 
 

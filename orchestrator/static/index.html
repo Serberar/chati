@@ -338,6 +338,11 @@
     background: var(--panel-2); color: var(--text); cursor: pointer; }
   .agent-stop:hover { border-color: var(--error); color: var(--error); }
   .agent-steps { display: flex; flex-direction: column; gap: 6px; }
+  .agent-todos { margin: 6px 0 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .agent-todos .todo-head { font-weight: 600; margin-bottom: 4px; }
+  .agent-todos .todo { padding: 2px 0; }
+  .agent-todos .todo.completed { opacity: .6; text-decoration: line-through; }
+  .agent-todos .todo.in_progress { font-weight: 600; }
   .agent-tool { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; color: var(--muted); }
   .agent-tool .ic { width: 14px; flex-shrink: 0; text-align: center; }
   .agent-tool code { font-size: 11.5px; background: var(--panel-2); padding: 1px 6px; border-radius: 5px;
@@ -530,6 +535,8 @@
     border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 12px; }
   .code-welcome .files { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); margin: 6px 0; line-height: 1.6; }
   .agent-follow .do-it { background: var(--accent); color: #fff; border: none; }
+  .agent-follow .undo-it { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .agent-undo-note { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--accent); font-size: 13px; opacity: .85; }
   #agentShortcutsRow.show { display: flex; }
   #agentShortcutsRow button { font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 999px; cursor: pointer;
     border: 1px solid var(--border); background: var(--panel-2); color: var(--text); max-width: 220px;
@@ -541,8 +548,9 @@
   .sc-row input, .sc-row textarea { background: var(--panel); border: 1px solid var(--border); color: var(--text);
     border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; }
   .sc-row textarea { min-height: 54px; resize: vertical; }
-  .sc-row .sc-foot { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .sc-row .sc-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
   .sc-row .sc-foot label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .sc-row .sc-foot select { font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
   .sc-row .sc-del { background: none; border: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }
   .sc-row .sc-del:hover { color: var(--error); }
   .agent-save-sc { align-self: flex-start; background: none; border: none; color: var(--muted); cursor: pointer;
@@ -923,7 +931,8 @@
   @media (max-width: 760px) {
     .pc-chip { display: block; position: fixed; top: calc(12px + env(safe-area-inset-top)); right: 10px; z-index: 40;
                font-size: 11px; color: var(--muted); padding: 3px 9px; border-radius: 999px; background: var(--panel-2);
-               border: 1px solid var(--border); pointer-events: none; }
+               border: 1px solid var(--border); pointer-events: none;
+               max-width: 86px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     html, body { height: 100%; overflow: hidden; }
     body { height: 100dvh; }
     /* la barra lateral: menu deslizante por encima del chat */
@@ -951,6 +960,8 @@
     }
     #topbar::-webkit-scrollbar { display: none; }
     #profileSelectLabel, #modelSelectLabel, #personaSelectLabel { display: none !important; }
+    /* la etiqueta del ordenador va fija arriba a la derecha: la barra no se mete debajo */
+    body:has(#pcChip:not(:empty)) #topbar { margin-right: 104px; }
     #topbar:not(.show) + #planPanel, #topbar:not(.show) ~ #log { padding-top: 56px; }
     #log { padding: 12px 12px 8px; }
     #emptyState { margin-top: 6vh; padding: 0 8px; }
@@ -1697,7 +1708,7 @@
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/js/theme.js?v=20261013e"></script>
+<script src="/static/js/theme.js?v=20261013g"></script>
 <style>
   html[data-theme="light"] {
     --bg: #f5f6f8;
@@ -1712,6 +1723,6 @@
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
 </style>
-<script src="/static/js/app.js?v=20261013e"></script>
+<script src="/static/js/app.js?v=20261013g"></script>
 </body>
 </html>

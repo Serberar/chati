@@ -1813,12 +1813,25 @@ const CODE_SHORTCUTS = [
     text: "Mira git status y git diff y haz un commit con lo cambiado. Mensaje en español: primera línea corta con qué " +
       "cambia, y debajo por qué. Si hay archivos que no deberían ir (contraseñas, .env, temporales, carpetas venv o " +
       "node_modules), no los añadas y avísame. No hagas push." },
+  { icon: "🌿", title: "Rama nueva", mode: "build", desc: "Trabajar aparte sin tocar la rama principal",
+    text: "Crea una rama nueva de git para el trabajo que vamos a hacer, con un nombre corto en minúsculas y guiones " +
+      "que lo describa (si no sabes de qué va, pregúntamelo antes). Usa git switch -c. Si hay cambios sin guardar, " +
+      "dímelo antes de cambiar de rama. Al terminar dime en qué rama estamos." },
+  { icon: "🚀", title: "Subir y crear PR", mode: "build", desc: "Sube la rama y prepara la pull request en GitHub",
+    text: "Prepara una pull request de la rama actual: mira con git log y git diff qué cambia respecto a la rama " +
+      "principal y escribe un título corto y una descripción en español (qué cambia, por qué y cómo probarlo). " +
+      "Enséñamelos y espera a que te diga que sí. Después haz git push -u origin con la rama y crea la PR con " +
+      "gh pr create. Si estás en la rama principal, no hay remoto o no está instalado gh, dímelo y no subas nada." },
 ];
 
 function renderCodeShortcuts() {
   const menu = document.getElementById("codeShortcutsMenu");
   menu.innerHTML = "";
-  for (const sc of CODE_SHORTCUTS) {
+  // los fijos y, debajo, los que se ha creado el usuario para el modo Codigo
+  const own = agentShortcuts.filter((x) => x.donde === "plan" || x.donde === "build")
+    .map((x) => ({ icon: "⭐", title: x.name, mode: x.donde, text: x.task,
+                   desc: x.donde === "plan" ? "Tuyo · solo mira y propone" : "Tuyo · hace cambios" }));
+  for (const sc of [...CODE_SHORTCUTS, ...own]) {
     const b = document.createElement("button");
     b.className = "item";
     b.textContent = `${sc.icon} ${sc.title}`;
@@ -1831,12 +1844,23 @@ function renderCodeShortcuts() {
     });
     menu.appendChild(b);
   }
+  const add = document.createElement("button");
+  add.className = "item";
+  add.textContent = "＋ Crear o editar mis atajos";
+  add.addEventListener("click", () => {
+    menu.classList.remove("show");
+    openShortcutsModal({ donde: "build" });
+  });
+  menu.appendChild(add);
 }
 
 document.getElementById("codeShortcutsBtn").addEventListener("click", (e) => {
   e.stopPropagation();
   const menu = document.getElementById("codeShortcutsMenu");
-  if (menu.classList.toggle("show")) renderCodeShortcuts();
+  if (menu.classList.toggle("show")) {
+    renderCodeShortcuts();
+    if (!agentShortcuts.length) loadAgentShortcuts().then(renderCodeShortcuts);
+  }
 });
 document.getElementById("codeShortcutsMenu").addEventListener("click", (e) => e.stopPropagation());
 document.addEventListener("click", () => document.getElementById("codeShortcutsMenu").classList.remove("show"));
@@ -1906,7 +1930,7 @@ async function loadAgentShortcuts() {
 
 function renderAgentShortcuts() {
   agentShortcutsRow.innerHTML = "";
-  for (const sc of agentShortcuts) {
+  for (const sc of agentShortcuts.filter((x) => (x.donde || "agente") === "agente")) {
     const b = document.createElement("button");
     b.textContent = "⚡ " + sc.name + (sc.potente ? " 🧠" : "");
     b.title = sc.task + (sc.potente ? "\n(con el modelo potente)" : "");
@@ -2891,11 +2915,21 @@ function shortcutRow(sc) {
   chk.checked = !!sc.potente;
   chk.style.width = "auto";
   lbl.append(chk, document.createTextNode("Usar el modelo potente"));
+  const where = document.createElement("select");
+  where.className = "sc-donde";
+  where.title = "Dónde sale el atajo";
+  for (const [value, text] of [["agente", "Modo Agente"], ["plan", "Código · solo mirar y proponer"],
+                               ["build", "Código · hacer cambios"]]) {
+    where.add(new Option(text, value, false, (sc.donde || "agente") === value));
+  }
+  const syncWhere = () => { lbl.style.display = where.value === "agente" ? "" : "none"; };
+  where.addEventListener("change", syncWhere);
+  syncWhere();
   const del = document.createElement("button");
   del.className = "sc-del";
   del.textContent = "Borrar";
   del.addEventListener("click", () => row.remove());
-  foot.append(lbl, del);
+  foot.append(where, lbl, del);
   row.append(name, task, foot);
   return row;
 }
@@ -2926,6 +2960,7 @@ document.getElementById("saveShortcutsBtn").addEventListener("click", async () =
     name: r.querySelector(".sc-name").value.trim(),
     task: r.querySelector(".sc-task").value.trim(),
     potente: r.querySelector(".sc-potente").checked,
+    donde: r.querySelector(".sc-donde").value,
   })).filter((sc) => sc.name || sc.task);  // filas vacias: se ignoran
   const resp = await fetch("/agent/shortcuts", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shortcuts: list }),
@@ -3035,6 +3070,7 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
   card.innerHTML =
     '<div class="agent-head"><span class="agent-status">Conectando con el agente...</span>' +
     '<button class="agent-stop" style="display:none;">Detener</button></div>' +
+    '<div class="agent-todos" style="display:none;"></div>' +
     '<div class="agent-steps"></div><div class="agent-asks"></div>' +
     '<div class="agent-changes" style="display:none;"></div>' +
     '<div class="agent-follow" style="display:none;"><input type="text" placeholder="Corregir o continuar la tarea… (p.ej. no, ponlo en la carpeta Trabajo)">' +
@@ -3048,6 +3084,7 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
     statusEl: card.querySelector(".agent-status"),
     stopBtn: card.querySelector(".agent-stop"),
     stepsEl: card.querySelector(".agent-steps"),
+    todosEl: card.querySelector(".agent-todos"), todosKey: null,
     asksEl: card.querySelector(".agent-asks"),
     followEl: card.querySelector(".agent-follow"),
     changesEl: card.querySelector(".agent-changes"), changesKey: null,
@@ -3067,6 +3104,31 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
     doIt.addEventListener("click", () => sendFollowUp("Adelante: hazlo tal como lo has propuesto.", "build"));
     view.followEl.appendChild(doIt);
     view.doItBtn = doIt;
+    // deja el proyecto como estaba antes del ultimo encargo (copia de Chati)
+    const undo = document.createElement("button");
+    undo.className = "undo-it";
+    undo.textContent = "↩ Deshacer";
+    undo.title = "Deja el proyecto como estaba antes del último encargo";
+    undo.style.display = "none";
+    undo.addEventListener("click", async () => {
+      if (!confirm("¿Dejar el proyecto como estaba antes del último encargo? Se pierden los cambios del agente desde entonces.")) return;
+      undo.disabled = true;
+      try {
+        const r = await agentPost(`/agent/tasks/${sessionId}/undo`);
+        const note = document.createElement("div");
+        note.className = "agent-undo-note";
+        const files = r.archivos.length ? r.archivos.join(", ") : "no había cambios en los archivos";
+        note.textContent = `↩ Deshecho «${r.encargo}»: ${files}.`;
+        view.stepsEl.after(note);
+        undo.style.display = r.quedan ? "" : "none";
+      } catch (err) {
+        alert("No se pudo deshacer: " + (err.message || err));
+      } finally {
+        undo.disabled = false;
+      }
+    });
+    view.followEl.appendChild(undo);
+    view.undoBtn = undo;
   }
   const sendFollowUp = async (presetText, presetMode) => {
     const text = presetText || followInput.value.trim();
@@ -3249,6 +3311,8 @@ function renderAgentView(view, data) {
   view.statusEl.textContent = text;
   view.stopBtn.style.display = busy ? "inline-block" : "none";
   view.stopBtn.disabled = false;
+  renderAgentTodos(view, data.todos || []);
+  if (view.undoBtn && !view.undoBtn.disabled) view.undoBtn.style.display = !busy && data.deshacer ? "" : "none";
 
   const stepsKey = JSON.stringify(data.steps);
   const streaming = data.streaming_text || "";
@@ -3339,6 +3403,30 @@ function buildAgentTerminal(step, view, idx) {
   return box;
 }
 
+// La lista de pasos del agente (su todowrite), tachandose sobre la marcha
+const TODO_MARKS = { completed: "✅", in_progress: "⏳", cancelled: "✗", pending: "☐" };
+
+function renderAgentTodos(view, todos) {
+  const key = JSON.stringify(todos);
+  if (key === view.todosKey) return;
+  view.todosKey = key;
+  const el = view.todosEl;
+  el.style.display = todos.length ? "block" : "none";
+  el.innerHTML = "";
+  if (!todos.length) return;
+  const done = todos.filter((t) => t.status === "completed").length;
+  const head = document.createElement("div");
+  head.className = "todo-head";
+  head.textContent = `Plan del agente · ${done} de ${todos.length}`;
+  el.appendChild(head);
+  todos.forEach((t) => {
+    const row = document.createElement("div");
+    row.className = "todo " + (t.status || "pending");
+    row.textContent = `${TODO_MARKS[t.status] || "☐"} ${t.text}`;
+    el.appendChild(row);
+  });
+}
+
 // --- Ver cambios / Deshacer (n.º 6 del roadmap) ---
 // OpenCode solo registra lo que la tarea cambia dentro de su carpeta de
 // trabajo (Documentos/Chati); lo de otras carpetas no se puede deshacer.
@@ -3416,6 +3504,13 @@ function renderAgentChanges(view, data, busy) {
       list.style.display = "flex";
       b.textContent = "Ocultar cambios";
     });
+    if (view.undoBtn) {
+      // modo Codigo: su propio "↩ Deshacer" (encargo a encargo, con o sin git)
+      bar.append(msg, seeBtn);
+      note.textContent = "Para volver atrás, «↩ Deshacer» deja el proyecto como estaba antes del último encargo.";
+      el.append(bar, note, list);
+      return;
+    }
     bar.append(msg, seeBtn, button("Deshacer", (b) => act(b, "revert",
       `¿Deshacer lo que ha hecho esta tarea en ${where}?\n\n` +
       "Los archivos vuelven a como estaban antes. Podrás rehacerlo mientras no continúes la tarea.")));

@@ -136,7 +136,7 @@ def test_agent_shortcuts_defaults_until_saved_then_encrypted_roundtrip():
     saved = profile_store.save_agent_shortcuts(
         [{"name": "  Fotos  ", "task": "ordena mis fotos por año", "potente": True}], "u1", dek, 1)
 
-    assert saved == [{"name": "Fotos", "task": "ordena mis fotos por año", "potente": True}]
+    assert saved == [{"name": "Fotos", "task": "ordena mis fotos por año", "potente": True, "donde": "agente"}]
     assert profile_store.get_agent_shortcuts("u1", dek, 1) == saved
     on_disk = (profile_store.PROFILE_DIR / "u1" / "agent_shortcuts.json.enc").read_bytes()
     assert b"fotos" not in on_disk.lower()
@@ -147,3 +147,11 @@ def test_agent_shortcuts_defaults_until_saved_then_encrypted_roundtrip():
 def test_agent_shortcuts_need_name_and_task():
     with pytest.raises(ValueError):
         profile_store.save_agent_shortcuts([{"name": "x", "task": " "}], "u1", Fernet.generate_key(), 1)
+
+
+def test_code_shortcuts_keep_where_they_go():
+    dek = Fernet.generate_key()
+    saved = profile_store.save_agent_shortcuts(
+        [{"name": "Seguridad", "task": "revisa", "donde": "plan"}, {"name": "X", "task": "y", "donde": "raro"}],
+        "u2", dek, 1)
+    assert [s["donde"] for s in saved] == ["plan", "agente"]

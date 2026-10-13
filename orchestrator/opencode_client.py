@@ -304,6 +304,20 @@ def _simplify_parts(messages: list) -> tuple[list, str | None]:
     return steps, error
 
 
+def _latest_todos(messages: list) -> list[dict]:
+    """La lista de pasos que lleva el agente (su ultimo todowrite): se ve en
+    la tarjeta como una lista que se va tachando (Sergio, 2026-10-13)."""
+    todos = []
+    for msg in messages:
+        for part in msg.get("parts", []):
+            if part.get("type") == "tool" and part.get("tool") == "todowrite":
+                found = ((part.get("state") or {}).get("input") or {}).get("todos")
+                if isinstance(found, list):
+                    todos = found
+    return [{"text": str(t.get("content", ""))[:200], "status": t.get("status", "pending")}
+            for t in todos if isinstance(t, dict) and t.get("content")][:30]
+
+
 def get_task_view(base_url: str, session_id: str) -> dict:
     """Todo lo que la interfaz necesita para pintar una tarea en un solo
     viaje: estado, pasos (texto y herramientas usadas), y las preguntas y
@@ -329,6 +343,7 @@ def get_task_view(base_url: str, session_id: str) -> dict:
         "status": status.get("type", "idle"),
         "retry_message": status.get("message"),
         "steps": steps,
+        "todos": _latest_todos(messages),
         "error": error,
         "questions": [{"id": q["id"], "questions": q.get("questions", [])} for q in questions],
         "permissions": [{

@@ -81,6 +81,20 @@ TOOLS = [
      "description": "Descarga (o actualiza) un repositorio git publico, por ejemplo de GitHub, y dice en que "
                     "carpeta queda, sus carpetas y el README. Despues se lee con read, grep y glob.",
      "inputSchema": _schema({"url": _STR}, ["url"])},
+    {"name": "lanzar_programa", "fn": lambda a: t.start_program(a["carpeta"], a["comando"], int(a.get("espera", 8))),
+     "description": "Arranca un programa que se queda abierto (un servidor web, una app, npm run dev...) en la carpeta "
+                    "del proyecto, SIN esperar a que termine, y devuelve lo que escribe en los primeros segundos. "
+                    "Para comandos que acaban solos usa bash. Paralo con parar_programa al terminar.",
+     "inputSchema": _schema({"carpeta": _STR, "comando": _STR,
+                             "espera": {"type": "integer", "description": "Segundos a esperar antes de leer (8)"}},
+                            ["carpeta", "comando"])},
+    {"name": "ver_salida", "fn": lambda a: t.program_output(a["id"], int(a.get("lineas", 80))),
+     "description": "Lo ultimo que ha escrito un programa arrancado con lanzar_programa (errores incluidos) y si "
+                    "sigue en marcha.",
+     "inputSchema": _schema({"id": _STR, "lineas": {"type": "integer"}}, ["id"])},
+    {"name": "parar_programa", "fn": lambda a: t.stop_program(a["id"]),
+     "description": "Para un programa arrancado con lanzar_programa.",
+     "inputSchema": _schema({"id": _STR}, ["id"])},
 ]
 _BY_NAME = {tool["name"]: tool for tool in TOOLS}
 
@@ -133,4 +147,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:  # al cerrarse OpenCode, no dejar servidores del agente sueltos
+        t.stop_all_programs()

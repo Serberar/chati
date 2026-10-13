@@ -30,6 +30,7 @@ import devices
 import auth_sessions
 import face_detect
 import agent_tools
+import checkpoints
 import code_checks
 import computers
 import face_swap
@@ -804,23 +805,29 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         # una pregunta va al agente de planificar, que no puede crear ni editar
         # archivos: con la pregunta "¿que libreria me recomiendas?" el de
         # construir se ponia a crear un proyecto (2026-10-13, 3 de 4 veces)
-        plan = req.plan or _is_code_question(task)
+        # "recuerda que..." tambien: Chati ya lo guarda y el agente solo confirma (en el banco se ponia a
+        # arreglar fallos que nadie le habia pedido)
+        plan = req.plan or _is_code_question(task) or code_checks.remember_request(task) is not None
         # encargo grande: primero planificar y luego construir paso a paso
         # (lo encadena _watch_code_task); la primera vez en un proyecto, su ficha
         big = not plan and code_checks.is_big_task(task)
         if not plan and not code_checks.project_has_context(project):
             task += code_checks.context_request()
+        task += _code_facts(task, project)
         note = agent_attachments.task_note(req.attachments)
         if note:  # capturas que pasa el usuario: el agente las mira con chati_ver_imagen
             task += f"\n\n{note}\nSi son imagenes, miralas con chati_ver_imagen antes de responder."
         agent = CONFIG["opencode"]["agent_code_plan" if (plan or big) else "agent_code"]
         model = CONFIG["opencode"]["model"] if req.rapido else None
+        # copia para "Deshacer", antes de que el agente toque nada
+        copy = None if plan else checkpoints.take(project, req.task.strip())
         result = _opencode_call(opencode_client.start_task, task, agent, str(project), model)
         if isinstance(result, JSONResponse):
             return result
         task_owners.record(result, request.state.session["user_id"])
-        if not plan:
-            _start_code_watch(result, project, big, req.autonomo)
+        if copy:
+            checkpoints.record(result, project, copy, req.task.strip())
+        _start_code_watch(result, project, big, req.autonomo, only_look=plan)
         return {"session_id": result}
     if not req.potente and not req.confirmed:
         choice = _assess_for_fast_agent(task)
@@ -833,6 +840,25 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         return result
     task_owners.record(result, request.state.session["user_id"])
     return {"session_id": result}
+
+
+def _code_facts(task: str, project: Path) -> str:
+    """Lo que Chati comprueba por su cuenta antes de pasar el encargo: si
+    existen las librerias que nombra y, si pide recordar algo, guardarlo ya
+    (el modelo local se lo saltaba: banco 2026-10-13)."""
+    notes = []
+    for name, eco in code_checks.package_mentions(task):
+        notes.append(agent_tools.package_info(name, eco).splitlines()[0])
+    if notes:
+        notes.insert(0, "Datos comprobados por Chati en el registro de paquetes (fiate de esto, no de lo que "
+                        "recuerdes; si dice NO EXISTE, dilo claramente y propone una alternativa real):")
+    what = code_checks.remember_request(task)
+    if what:
+        saved = agent_tools.memory_save(what[:60], what, "proyecto", project.name)
+        log.info("Modo Codigo: %s", saved)
+        notes.append(f"Chati ya lo ha guardado en tu memoria ({saved}). Confirmalo en una linea; no hace falta "
+                     "que lo guardes otra vez ni que toques archivos.")
+    return ("\n\n[Nota de Chati]\n" + "\n".join(notes)) if notes else ""
 
 
 CODE_TEST_RETRIES = 2
@@ -852,9 +878,13 @@ def _auto_approve(base: str, session_id: str) -> None:
             opencode_client.reply_permission(base, perm["id"], "once")
 
 
-def _start_code_watch(session_id: str, folder: Path, big: bool, autonomous: bool = False) -> None:
+def _start_code_watch(session_id: str, folder: Path, big: bool, autonomous: bool = False,
+                      only_look: bool = False) -> None:
+    """only_look: pregunta al agente de planificar; solo se vigila que no se
+    quede parado con una llamada a herramienta escrita como texto."""
     info = {"estado": "Planificando antes de construir…" if big else "", "final": "",
-            "autonomo": autonomous or (_code_watch.get(session_id) or {}).get("autonomo", False)}
+            "autonomo": autonomous or (_code_watch.get(session_id) or {}).get("autonomo", False),
+            "solo_mirar": only_look, "pausa_hasta": 0}
     _code_watch[session_id] = info
     _code_watch_running.add(session_id)
 
@@ -881,9 +911,12 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
     attempts = 0
     deadline = time.time() + CODE_WATCH_HOURS * 3600
     autonomous = info.get("autonomo", False)
+    nudges = 0
     time.sleep(3 if autonomous else 20)  # que OpenCode marque la tarea como ocupada
     while time.time() < deadline:
         time.sleep(3 if autonomous else 10)
+        if time.time() < info.get("pausa_hasta", 0):
+            continue  # acaba de llegar un mensaje del usuario: que OpenCode lo empiece
         try:
             if autonomous:
                 _auto_approve(base, session_id)
@@ -897,6 +930,17 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
         if view.get("error"):
             info["estado"] = ""
             return
+        if code_checks.broken_tool_call(view.get("steps", [])) and nudges < code_checks.TOOL_CALL_NUDGES:
+            nudges += 1
+            log.info("Modo Codigo: llamada a herramienta escrita como texto, se le pide repetirla (%d)", nudges)
+            agent = "agent_code_plan" if info.get("solo_mirar") or phase == "plan" else "agent_code"
+            opencode_client.continue_task(base, session_id, code_checks.tool_call_nudge(), CONFIG["opencode"][agent])
+            time.sleep(20)
+            continue
+        if info.get("solo_mirar"):
+            return
+        if info.pop("construir", False):
+            phase = "build"  # el usuario ya ha elegido y pedido construir
         if phase == "plan":
             phase = "build"
             info["estado"] = "Plan hecho: construyendolo paso a paso…"
@@ -968,6 +1012,7 @@ def _task_view(base_url: str, session_id: str) -> dict:
     view["model_loading"] = view["status"] != "idle" and task_model not in ollama.running_models()
     # lo que hace Chati por su cuenta con la tarea (plan -> construir, tests)
     view["verificacion"] = (_code_watch.get(session_id) or {}).get("estado", "")
+    view["deshacer"] = checkpoints.available(session_id)
     return view
 
 
@@ -1249,6 +1294,23 @@ class AgentFollowUp(BaseModel):
     code_mode: str | None = None
 
 
+@app.post("/agent/tasks/{session_id}/undo")
+def agent_undo(request: Request, session_id: str):
+    """Boton "Deshacer" del modo Codigo: el proyecto vuelve a como estaba
+    antes del ultimo encargo de esta tarea."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
+    if session_id in opencode_client.busy_session_ids(CONFIG["opencode"]["base_url"]):
+        return JSONResponse({"detail": "El agente sigue trabajando: paralo antes de deshacer."}, status_code=409)
+    result = checkpoints.undo(session_id)
+    if not result["ok"]:
+        return JSONResponse({"detail": result["detail"]}, status_code=400)
+    log.info("Modo Codigo: deshecho '%s' (%d archivos)", result["encargo"][:60], len(result["archivos"]))
+    return result
+
+
 @app.post("/agent/tasks/{session_id}/message")
 def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
     """Seguir la misma tarea ("corregir o continuar"), sin empezar de cero."""
@@ -1270,13 +1332,22 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
     if code_mode == "build" and req.code_mode == "plan":
         text = (f"{text}\n\n[Chati] El usuario ha elegido. Hazlo ahora paso a paso, marcando cada paso con "
                 "todowrite, y comprueba con los tests al final.")
+    folder = opencode_client.session_dir(CONFIG["opencode"]["base_url"], session_id) if code_mode else None
+    if folder and Path(folder).is_dir():
+        text += _code_facts(text, Path(folder))
+        if code_mode == "build":
+            checkpoints.snapshot(session_id, Path(folder), req.text.strip())
     result = _opencode_call(opencode_client.continue_task, session_id, text, agent)
     if isinstance(result, JSONResponse):
         return result
-    if code_mode == "build" and session_id not in _code_watch_running:
-        folder = opencode_client.session_dir(CONFIG["opencode"]["base_url"], session_id)
-        if folder and Path(folder).is_dir():
-            _start_code_watch(session_id, Path(folder), False)
+    if code_mode in ("plan", "build") and folder and Path(folder).is_dir():
+        watch = _code_watch.get(session_id) if session_id in _code_watch_running else None
+        if watch:  # ya vigilada: que espere a que OpenCode empiece y, si pasa a construir, comprobarlo
+            watch["pausa_hasta"] = time.time() + 20
+            if code_mode == "build":
+                watch["solo_mirar"], watch["construir"] = False, True
+        else:
+            _start_code_watch(session_id, Path(folder), False, only_look=code_mode == "plan")
     return {"ok": True, "mode": code_mode}
 
 

@@ -419,6 +419,7 @@ $opencodeConfig = @'
   },
   "model": "ollama/qwen3-coder:30b-mixto",
   "small_model": "ollama/qwen3-coder:30b-mixto",
+  "compaction": { "auto": true, "prune": true },
   "shell": "powershell",
   "instructions": ["AGENTS.md", "__MEMORY_INDEX__"],
   "mcp": {
@@ -428,6 +429,7 @@ $opencodeConfig = @'
     "edit": "ask",
     "webfetch": "ask",
     "todowrite": "allow",
+    "chati_lanzar_programa": "ask",
     "bash": {
       "*": "ask",
       "python -m pytest*": "allow", "pytest*": "allow",
@@ -467,7 +469,8 @@ $opencodeConfig = @'
       "description": "Chati modo Codigo: analiza el proyecto y propone, sin cambiar nada (planificar)",
       "mode": "primary", "model": "ollama/qwen3-coder:30b-mixto", "temperature": 0.1,
       "prompt": "{file:./chati_code_plan_prompt.md}",
-      "tools": { "task": false, "webfetch": false, "skill": false, "edit": false, "write": false, "patch": false }
+      "tools": { "task": false, "webfetch": false, "skill": false, "edit": false, "write": false, "patch": false,
+                 "chati_lanzar_programa": false }
     }
   }
 }

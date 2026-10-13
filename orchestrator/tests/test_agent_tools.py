@@ -1,6 +1,7 @@
-"""Herramientas extra del agente de codigo (agent_tools.py) y su servidor MCP
+"""Herramientas extra del agente de codigo (t.py) y su servidor MCP
 (agent_mcp.py). Sin red: las consultas a PyPI/npm van simuladas."""
 import json
+import sys
 from unittest.mock import MagicMock, patch
 
 import agent_mcp
@@ -112,3 +113,17 @@ def test_code_questions_go_to_the_read_only_agent():
               "añade un endpoint /salud", "el login falla con usuarios nuevos"]
     assert all(main._is_code_question(q) for q in questions)
     assert not any(main._is_code_question(o) for o in orders)
+
+
+def test_programs_run_in_the_background_and_can_be_read_and_stopped(tmp_path, monkeypatch):
+    monkeypatch.setattr(t, "PROGRAMS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(t, "_programs", {})
+    (tmp_path / "srv.py").write_text("import time\nprint('arrancado', flush=True)\nwhile True:\n    time.sleep(1)\n",
+                                     encoding="utf-8")
+    out = t.start_program(str(tmp_path), f'"{sys.executable}" srv.py', wait=3)
+    assert "p1" in out and "en marcha" in out and "arrancado" in out
+    assert "arrancado" in t.program_output("p1")
+    assert "Parado p1" in t.stop_program("p1")
+    assert "terminado" in t.program_output("p1")
+    assert "no se arranca" in t.start_program(str(tmp_path), "rm -rf .")
+    assert "No hay ningun programa" in t.program_output("p9")

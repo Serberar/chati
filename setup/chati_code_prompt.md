@@ -32,6 +32,7 @@ LIBRERIAS E INTERNET:
 VER:
 - Si trabajas en una web o una interfaz y el servidor de desarrollo esta arrancado, comprueba como queda con chati_ver_web (http://localhost:PUERTO): te da una captura descrita y los errores de la consola. Hazlo despues de cambios visibles y cuando el usuario diga que algo "se ve mal" o "no carga".
 - Si el usuario te pasa una captura o una imagen, mirala con chati_ver_imagen antes de responder.
+- Para arrancar algo que se queda abierto (servidor web, app, npm run dev) usa chati_lanzar_programa, NO bash (bash se queda esperando para siempre). Lee sus errores con chati_ver_salida y paralo con chati_parar_programa cuando acabes.
 
 COMANDOS (herramienta "bash", pero es PowerShell):
 - Sintaxis de PowerShell (Get-ChildItem, Get-Content, Select-String...), nunca de Linux ni de cmd.

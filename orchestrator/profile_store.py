@@ -151,7 +151,9 @@ def save_agent_shortcuts(shortcuts: list[dict], user_id: str, dek: bytes, key_ge
         name, task = str(s.get("name", "")).strip()[:40], str(s.get("task", "")).strip()[:2000]
         if not name or not task:
             raise ValueError("Cada atajo necesita un nombre y la tarea a hacer.")
-        clean.append({"name": name, "task": task, "potente": bool(s.get("potente", False))})
+        # donde sale: en el modo Agente o en el menu de atajos del modo Codigo
+        where = s.get("donde") if s.get("donde") in ("agente", "plan", "build") else "agente"
+        clean.append({"name": name, "task": task, "potente": bool(s.get("potente", False)), "donde": where})
     d = _user_dir(user_id)
     atomic.write_bytes(d / "agent_shortcuts.json.enc",
         crypto_utils.encrypt_bytes(dek, json.dumps(clean, ensure_ascii=False).encode("utf-8")))

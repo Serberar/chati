@@ -112,3 +112,54 @@ def test_lint_finds_undefined_names_only(tmp_path):
     ok, out = code_checks.run_lint(tmp_path, ["mal.py"])
     assert not ok and "nombre_sin_definir" in out
     assert code_checks.run_lint(tmp_path, ["notas.txt"]) is None
+
+
+def test_package_mentions_and_remember_requests():
+    assert code_checks.package_mentions("¿Existe la libreria de Python 'excel-turbo-reader-pro'?") == \
+        [("excel-turbo-reader-pro", "python")]
+    assert code_checks.package_mentions("¿Esta al dia el paquete react-query de npm?") == [("react-query", "npm")]
+    assert code_checks.package_mentions("¿Que libreria me recomiendas para leer Excel?") == []
+    assert code_checks.package_mentions("arregla el bug de precios.py") == []
+    assert code_checks.remember_request("Recuerda que los tests se lanzan con: pytest -q") == \
+        "los tests se lanzan con: pytest -q"
+    assert code_checks.remember_request("¿recuerdas como se lanzaban?") is None
+    assert code_checks.remember_request("recuerdas como se lanzaban") is None
+
+
+def test_code_facts_checks_packages_and_saves_memory(tmp_path):
+    import main
+    with patch.object(main.agent_tools, "package_info", return_value="NO EXISTE ningun paquete llamado 'x-y'"), \
+         patch.object(main.agent_tools, "memory_save", return_value="Guardado el recuerdo 'z'.") as save:
+        note = main._code_facts("¿Existe la libreria 'x-y'?", tmp_path)
+        assert "NO EXISTE" in note and not save.called
+        note = main._code_facts("Recuerda que se arranca con make run", tmp_path)
+        assert "ya lo ha guardado" in note and save.call_args[0][1] == "se arranca con make run"
+    assert main._code_facts("arregla el bug", tmp_path) == ""
+
+
+def test_detects_a_tool_call_written_as_text():
+    broken = [{"kind": "text", "text": "Voy a mirarlo.\n<function=chati_info_paquete>\n<parameter=nombre>\nx\n"
+                                       "</parameter>\n</function>\n</tool_call>"}]
+    assert code_checks.broken_tool_call(broken)
+    assert not code_checks.broken_tool_call(broken + [{"kind": "tool", "tool": "read"}])
+    assert not code_checks.broken_tool_call([{"kind": "text", "text": "Todo listo."}])
+    assert not code_checks.broken_tool_call([])
+
+
+def test_watch_asks_to_repeat_a_tool_call_written_as_text(tmp_path):
+    """En una pregunta (solo mirar), si se queda parada con la llamada escrita
+    como texto se le pide repetirla; despues la vigilancia acaba."""
+    import main
+    broken = {"permissions": [], "questions": [], "status": "idle", "error": None,
+              "steps": [{"kind": "text", "text": "<function=chati_info_paquete>"}]}
+    fine = {**broken, "steps": [{"kind": "text", "text": "No existe."}]}
+    views = iter([broken, fine])
+    sent = []
+    info = {"estado": "", "final": "", "solo_mirar": True}
+    with patch.object(main.time, "sleep"), \
+         patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
+         patch.object(main.opencode_client, "get_task_view", side_effect=lambda *a: next(views)), \
+         patch.object(main.opencode_client, "continue_task", side_effect=lambda *a: sent.append(a)):
+        main._watch_code_task("ses_1", tmp_path, False, info)
+    assert len(sent) == 1 and "como texto" in sent[0][2]
+    assert sent[0][3] == main.CONFIG["opencode"]["agent_code_plan"]
