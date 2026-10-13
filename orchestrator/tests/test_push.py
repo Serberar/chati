@@ -153,10 +153,30 @@ def test_a_task_without_progress_is_reported_as_stuck_once():
         tick()                                  # 11 min sin pasos ni modelo: atascada
         clock["now"] += 60
         tick()                                  # no se repite el aviso
-        assert sent == [("⚠ El agente parece atascado", "Lleva 11 min sin avanzar: renombrar. Puedes detenerlo y repetirlo.")]
+        assert sent == [("⚠ El agente parece atascado", "Lleva 11 min sin avanzar: renombrar. Abre Chati y pulsa Reintentar.")]
         assert "s" in main._stalled
         main._llm_activity["last"] = clock["now"]  # el modelo vuelve a escribir
         tick()
         assert "s" not in main._stalled
     finally:
         main._stalled.clear()
+
+
+def test_long_images_and_videos_are_notified_quick_ones_are_not():
+    import main
+    sent = []
+    resp_ok = main.ChatResponse(agent_used="image_edit", response="Hecho", verifier_gated=False, file_url="/media/x")
+    resp_ask = main.ChatResponse(agent_used="image_edit", response="¿Qué quieres cambiar?", verifier_gated=False)
+    token = main.comfyui_client.current_owner.set("u1")
+    try:
+        with patch.object(main.push, "notify", side_effect=lambda u, t, b, tag: sent.append((u, t, b))), \
+             patch.object(main.time, "monotonic", return_value=1000.0):
+            main._notice_media("image_edit", 1000.0 - 30, resp_ok, "ponle gafas")   # 30 s: no
+            main._notice_media("image_edit", 1000.0 - 150, resp_ok, "ponle gafas")  # 2,5 min: si
+            main._notice_media("video", 1000.0 - 400, resp_ask, "un gato")
+            main._notice_media("text", 1000.0 - 400, resp_ok, "hola")               # no es imagen
+    finally:
+        main.comfyui_client.current_owner.reset(token)
+    assert sent == [("u1", "✏ Foto editada", "ponle gafas"),
+                    ("u1", "💬 Chati te ha contestado", "¿Qué quieres cambiar?")]
+

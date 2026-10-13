@@ -38,7 +38,7 @@ def test_runs_the_tests_and_reports_failures(tmp_path):
 def test_project_context_lives_in_agents_md(tmp_path):
     """Sergio, 2026-10-13: el contexto del proyecto en su AGENTS.md, a la vista."""
     assert not code_checks.project_has_context(tmp_path)
-    assert "AGENTS.md" in code_checks.context_request()
+    assert "AGENTS.md" in code_checks.context_created_note()
     (tmp_path / "AGENTS.md").write_text("# Tienda", encoding="utf-8")
     assert code_checks.project_has_context(tmp_path)
     assert "actualiza AGENTS.md" in code_checks.context_update_request()
@@ -218,3 +218,17 @@ def test_rename_requests_get_the_exact_tool_call(tmp_path):
     note = main._code_facts("Renombra la funcion precio_con_iva a con_iva", tmp_path)
     assert 'chati_renombrar' in note and 'viejo="precio_con_iva"' in note
     assert main._code_facts("Renombra la funcion no_existe a otra", tmp_path) == ""
+
+
+def test_chati_starts_the_project_card_itself(tmp_path):
+    (tmp_path / "README.md").write_text("# Tienda\nCalcula precios.\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("flask==3.0\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+    (tmp_path / "test_app.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+    (tmp_path / "venv").mkdir()
+    (tmp_path / "venv" / "x.py").write_text("", encoding="utf-8")
+    card = code_checks.context_skeleton(tmp_path)
+    assert "Tienda Calcula precios." in card and "Python (2)" in card and "flask" in card
+    assert "`python app.py`" in card and "`python -m pytest`" in card and "venv" not in card
+    assert "(pendiente)" in card  # decisiones y convenciones: las completa el agente
+

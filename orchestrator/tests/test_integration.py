@@ -1961,3 +1961,28 @@ def test_all_conversations_of_the_user_can_be_deleted_at_once():
     assert resp.status_code == 200 and resp.json() == {"ok": True, "deleted": 2}
     assert ls.call_args.kwargs["user_id"]  # solo las del usuario, nunca las de todos
     assert [c.args[1] for c in delete.call_args_list] == ["a", "b"]
+
+
+def test_first_task_in_a_project_gets_the_card_after_the_undo_copy(tmp_path):
+    """La primera vez en un proyecto Chati crea el AGENTS.md (y "Deshacer" lo quita)."""
+    (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+    with patch.object(main.opencode_client, "start_task", return_value="ses_ficha") as start, \
+         patch.object(main, "_start_code_watch"):
+        client.post("/agent/tasks", json={"task": "añade un saludo", "project": str(tmp_path)})
+    assert (tmp_path / "AGENTS.md").exists()
+    assert "Chati ha creado uno" in start.call_args.args[1]
+    assert main.checkpoints.undo("ses_ficha")["ok"]
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_retry_cuts_the_stuck_answer_and_continues_the_same_task():
+    """Boton "Reintentar" de una tarea atascada: corta y sigue en la misma tarea."""
+    with patch.object(main, "_owns_task", return_value=True), \
+         patch.object(main.opencode_client, "abort") as abort, \
+         patch.object(main.opencode_client, "continue_task") as cont, \
+         patch.object(main.time, "sleep"):
+        main._stalled["ses_r"] = 1.0
+        assert client.post("/agent/tasks/ses_r/retry").json() == {"ok": True}
+    assert abort.call_args.args[1:] == ("ses_r",)
+    assert cont.call_args.args[1] == "ses_r" and "colgada" in cont.call_args.args[2]
+    assert "ses_r" not in main._stalled

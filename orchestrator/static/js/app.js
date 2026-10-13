@@ -3144,7 +3144,9 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
   card.className = "agent-card";
   card.innerHTML =
     '<div class="agent-head"><span class="agent-status">Conectando con el agente...</span>' +
-    '<button class="agent-stop" style="display:none;">Detener</button></div>' +
+    '<span class="agent-head-btns"><button class="agent-retry" style="display:none;" ' +
+    'title="Corta la respuesta colgada y le pide seguir donde lo dejó">↻ Reintentar</button>' +
+    '<button class="agent-stop" style="display:none;">Detener</button></span></div>' +
     '<div class="agent-todos" style="display:none;"></div>' +
     '<div class="agent-steps"></div><div class="agent-asks"></div>' +
     '<div class="agent-changes" style="display:none;"></div>' +
@@ -3158,6 +3160,7 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
     openedAt: Date.now(),
     statusEl: card.querySelector(".agent-status"),
     stopBtn: card.querySelector(".agent-stop"),
+    retryBtn: card.querySelector(".agent-retry"),
     stepsEl: card.querySelector(".agent-steps"),
     todosEl: card.querySelector(".agent-todos"), todosKey: null,
     asksEl: card.querySelector(".agent-asks"),
@@ -3241,6 +3244,16 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
   followBtn.addEventListener("click", () => sendFollowUp());
   followInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendFollowUp(); });
   agentViews[sessionId] = view;
+  view.retryBtn.addEventListener("click", async () => {
+    view.retryBtn.disabled = true;
+    try {
+      await agentPost(`/agent/tasks/${sessionId}/retry`);
+    } catch (err) {
+      alert("No se pudo reintentar: " + (err.message || err));
+    }
+    view.retryBtn.disabled = false;
+    followAgentView(view);
+  });
   view.stopBtn.addEventListener("click", async () => {
     view.stopBtn.disabled = true;
     try { await agentPost(`/agent/tasks/${sessionId}/abort`); } catch (e) { /* el siguiente sondeo mostrara el estado real */ }
@@ -3366,7 +3379,7 @@ function renderAgentView(view, data) {
   else if (data.status === "retry") { text = "Reintentando: " + (data.retry_message || ""); }
   else if (busy && data.atascada_min) {
     cls += " failed";
-    text = `⚠ Lleva ${data.atascada_min} min sin avanzar: puede estar atascado. Puedes pulsar Detener y repetirlo.`;
+    text = `⚠ Lleva ${data.atascada_min} min sin avanzar: puede estar atascado. Pulsa Reintentar.`;
   }
   else if (busy && data.model_loading) {
     text = "Cargando el modelo del agente… un momento";
@@ -3394,6 +3407,7 @@ function renderAgentView(view, data) {
   view.statusEl.className = cls;
   view.statusEl.textContent = text;
   view.stopBtn.style.display = busy ? "inline-block" : "none";
+  view.retryBtn.style.display = busy && data.atascada_min ? "inline-block" : "none";
   view.stopBtn.disabled = false;
   renderAgentTodos(view, data.todos || []);
   if (view.undoBtn && !view.undoBtn.disabled) view.undoBtn.style.display = !busy && data.deshacer ? "" : "none";

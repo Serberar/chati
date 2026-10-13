@@ -823,8 +823,10 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         # encargo grande: primero planificar y luego construir paso a paso
         # (lo encadena _watch_code_task); la primera vez en un proyecto, su ficha
         big = not plan and code_checks.is_big_task(task)
-        if not plan and not code_checks.project_has_context(project):
-            task += code_checks.context_request()
+        # la primera vez en el proyecto, Chati empieza su ficha (AGENTS.md)
+        new_context = not plan and not code_checks.project_has_context(project)
+        if new_context:
+            task += code_checks.context_created_note()
         task += _code_facts(task, project)
         note = agent_attachments.task_note(req.attachments)
         if note:  # capturas que pasa el usuario: el agente las mira con chati_ver_imagen
@@ -836,6 +838,12 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         model = CONFIG["opencode"]["model"] if req.rapido or (question and not req.plan) else None
         # copia para "Deshacer", antes de que el agente toque nada
         copy = None if plan else checkpoints.take(project, req.task.strip())
+        if new_context:  # despues de la copia: "Deshacer" tambien la quita
+            try:
+                (project / code_checks.CONTEXT_FILE).write_text(code_checks.context_skeleton(project),
+                                                                encoding="utf-8")
+            except OSError as exc:
+                log.warning("No se pudo crear %s en %s: %s", code_checks.CONTEXT_FILE, project, exc)
         result = _opencode_call(opencode_client.start_task, task, agent, str(project), model)
         if isinstance(result, JSONResponse):
             return result
@@ -1167,6 +1175,38 @@ def agent_task_unrevert(request: Request, session_id: str):
     return result if isinstance(result, JSONResponse) else {"ok": True}
 
 
+RETRY_MESSAGE = ("[Chati] Tu ultima respuesta se quedo colgada y la he cortado. Sigue con la tarea donde lo "
+                 "dejaste: no repitas lo que ya esta hecho.")
+
+
+@app.post("/agent/tasks/{session_id}/retry")
+def agent_retry(request: Request, session_id: str):
+    """Boton "Reintentar" de una tarea atascada: corta la respuesta colgada y
+    le pide seguir, en la misma tarea (sin empezar de cero)."""
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    if not _owns_task(request, session_id):
+        return _not_your_task()
+    base = CONFIG["opencode"]["base_url"]
+    watch = _code_watch.get(session_id) if session_id in _code_watch_running else None
+    if watch:  # que el vigilante no la de por terminada en el hueco entre cortar y seguir
+        watch["pausa_hasta"] = time.time() + 30
+    if session_id in _code_watch:
+        agent = CONFIG["opencode"]["agent_code_plan" if (watch or {}).get("solo_mirar") else "agent_code"]
+    else:
+        agent = CONFIG["opencode"]["agent"]
+    result = _opencode_call(opencode_client.abort, session_id)
+    if isinstance(result, JSONResponse):
+        return result
+    time.sleep(1)
+    result = _opencode_call(opencode_client.continue_task, session_id, RETRY_MESSAGE, agent)
+    if isinstance(result, JSONResponse):
+        return result
+    _stalled.pop(session_id, None)
+    log.info("Tarea %s atascada: reintentada por el usuario", session_id)
+    return {"ok": True}
+
+
 @app.post("/agent/tasks/{session_id}/abort")
 def agent_abort(request: Request, session_id: str):
     if request.state.session["role"] == "guest":
@@ -1451,7 +1491,7 @@ def _push_tick(state: dict) -> None:
             minutes = int(now - quiet_since) // 60
             log.warning("Tarea %s atascada: %d min sin avanzar", sid, minutes)
             send(sid, "⚠ El agente parece atascado",
-                 f"Lleva {minutes} min sin avanzar: {{tarea}}. Puedes detenerlo y repetirlo.")
+                 f"Lleva {minutes} min sin avanzar: {{tarea}}. Abre Chati y pulsa Reintentar.")
     for sid in set(state["progress"]) - busy:
         state["progress"].pop(sid, None)
         _stalled.pop(sid, None)
@@ -2443,11 +2483,12 @@ def _stream_vision_chat(message: str, image_base64: str, session_id: str | None,
     # modo Imagen con foto: siempre se edita (en el automatico, solo si pide un cambio)
     if name and (agent_override == "image" or _wants_photo_edit(message)):
         yield from _stream_with_progress(lambda: _photo_edit_reply(message, name, session_id, auth_session),
-                                         "image_edit", session_id)
+                                         "image_edit", session_id, message)
         return
     if agent_override == "image":
         yield from _stream_with_progress(
-            lambda: _image_mode_without_editor(message, image_base64, session_id, auth_session), "image", session_id)
+            lambda: _image_mode_without_editor(message, image_base64, session_id, auth_session), "image", session_id,
+            message)
         return
     yield json.dumps({"type": "start", "agent_used": "vision", "session_id": session_id}) + "\n"
     _ensure_active_model(vision_agent.model)
@@ -2515,7 +2556,8 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
     followup = _photo_followup(auth_session, message, agent_override, session_id)
     if followup and followup[0] != "nueva":
         yield from _stream_with_progress(
-            lambda: _photo_followup_reply(message, *followup, session_id, auth_session), "image_edit", session_id)
+            lambda: _photo_followup_reply(message, *followup, session_id, auth_session), "image_edit", session_id,
+            message)
         return
     if followup:  # una imagen nueva con una foto en marcha: al generador, sin pasar por el router
         agent_override = "image"
@@ -2540,8 +2582,10 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
 
     if agent_name not in AGENTS:
         # imagen, video, o un agente desconocido: sin streaming real, se reutiliza el pipeline normal
+        media_start = time.monotonic()
         resp = _generate_response(message, agent_name, is_factual, session_id, auth_session, model_profile,
                                    verify, image_model, video_model)
+        _notice_media(agent_name, media_start, resp, message)
         metrics.log_event(resp.agent_used, (time.perf_counter() - stream_start) * 1000, resp.verifier_gated)
         yield json.dumps({"type": "done", **resp.model_dump()}) + "\n"
         return
@@ -3447,11 +3491,33 @@ def _report(text: str) -> None:
 STREAM_HEARTBEAT_SECONDS = 10
 
 
-def _stream_with_progress(work, agent_used: str, session_id: str):
+# imagenes, ediciones y videos que tardan: aviso al movil al terminar (las
+# rapidas no, con la pagina delante sobra). Se manda desde donde se hace el
+# trabajo y no desde la respuesta: con el movil bloqueado la conexion se
+# corta y la respuesta ya no llega a ningun sitio
+MEDIA_NOTICE_SECONDS = 60
+_MEDIA_TITLES = {"image": "🖼 Imagen lista", "image_edit": "✏ Foto editada", "video": "🎬 Vídeo listo"}
+
+
+def _notice_media(agent: str, started: float, resp, request_text: str) -> None:
+    owner = comfyui_client.current_owner.get()
+    if agent not in _MEDIA_TITLES or not owner or owner.startswith("invitado:") \
+            or time.monotonic() - started < MEDIA_NOTICE_SECONDS:
+        return
+    what = " ".join(request_text.split())[:90] or "Tu petición"
+    if resp is not None and getattr(resp, "file_url", None):
+        push.notify(owner, _MEDIA_TITLES[agent], what, tag="chati-media")
+    else:  # no ha salido: te pregunta algo o te cuenta por que
+        detail = getattr(resp, "response", "") if resp is not None else "Ha fallado; míralo en Chati."
+        push.notify(owner, "💬 Chati te ha contestado", (detail or what)[:200], tag="chati-media")
+
+
+def _stream_with_progress(work, agent_used: str, session_id: str, request_text: str = ""):
     """Ejecuta work() (que devuelve un ChatResponse) en un hilo y va mandando
     sus avisos de _report como eventos "status" del streaming."""
     events: queue.Queue = queue.Queue()
     result: dict = {}
+    started = time.monotonic()
 
     def run():
         _progress.set(events.put)
@@ -3463,6 +3529,7 @@ def _stream_with_progress(work, agent_used: str, session_id: str):
         except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
             log.exception("Fallo editando la foto")
             result["error"] = exc
+        _notice_media(agent_used, started, result.get("resp"), request_text)
 
     yield json.dumps({"type": "start", "agent_used": agent_used, "session_id": session_id}) + "\n"
     # copy_context: el hilo hereda el dueño de las generaciones (comfyui_client.current_owner)

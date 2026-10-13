@@ -173,19 +173,13 @@ def project_has_context(folder: str | Path) -> bool:
     return (Path(folder) / CONTEXT_FILE).exists()
 
 
-def context_request() -> str:
-    """Lo que se añade al primer encargo en un proyecto sin AGENTS.md."""
-    return (f"\n\n[Nota de Chati] Este proyecto no tiene {CONTEXT_FILE}. ANTES de la tarea, miralo y crealo en la "
-            f"raiz, corto y en español, con estos apartados: {_CONTEXT_SECTIONS}. Solo lo que hayas visto, sin "
-            "inventar; lo que no sepas, dejalo como pendiente. Despues haz la tarea.")
-
-
 def context_update_request() -> str:
     """Lo que Chati pide al terminar un encargo: actualizar el contexto."""
     return (f"[Chati] Tarea terminada. Ultimo paso: actualiza {CONTEXT_FILE} con lo que ha cambiado en esta tarea "
-            "(estructura, comandos, decisiones nuevas y por que, convenciones). Cambia solo lo que ya no sea "
-            f"verdad o falte; no lo reescribas entero ni toques ningun otro archivo. Si no existe, crealo con: "
-            f"{_CONTEXT_SECTIONS}. Contesta en una linea que has actualizado.")
+            "(estructura, comandos, decisiones nuevas y por que, convenciones) y completa lo marcado como "
+            "(pendiente) que ya sepas por lo que has leido. Cambia solo lo que ya no sea verdad o falte; no lo "
+            f"reescribas entero ni toques ningun otro archivo. Si no existe, crealo con: {_CONTEXT_SECTIONS}. "
+            "Contesta en una linea que has actualizado.")
 
 
 _APPROVAL = re.compile(
@@ -332,3 +326,85 @@ def rename_request(text: str) -> tuple[str, str] | None:
 
 _NOT_SYMBOL = {"archivo", "fichero", "carpeta", "proyecto", "directorio", "rama", "repo", "repositorio", "todo",
                "esto", "eso", "tabla", "columna", "pagina", "web"}
+
+
+# La ficha (AGENTS.md) la empieza Chati: lo que se sabe sin modelo (lenguajes,
+# carpetas, dependencias, como se prueba y se arranca) sale al momento; el
+# agente tardaba varios minutos en escribirla antes de empezar el encargo
+# (banco 2026-10-13). Lo que necesita entender el codigo lo completa al final.
+_LANGS = {".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript (React)", ".ts": "TypeScript",
+          ".tsx": "TypeScript (React)", ".vue": "Vue", ".java": "Java", ".cs": "C#", ".go": "Go", ".rs": "Rust",
+          ".php": "PHP", ".rb": "Ruby", ".kt": "Kotlin", ".swift": "Swift", ".cpp": "C++", ".c": "C",
+          ".html": "HTML", ".css": "CSS", ".sql": "SQL", ".ps1": "PowerShell"}
+_SKELETON_SKIP = {"venv", ".venv", "env", "node_modules", ".git", "__pycache__", "dist", "build", ".pytest_cache",
+                  ".mypy_cache", ".ruff_cache", ".idea", ".vscode"}
+
+
+def _run_hint(folder: Path) -> str:
+    package = folder / "package.json"
+    if package.exists():
+        try:
+            scripts = (json.loads(package.read_text(encoding="utf-8")).get("scripts") or {})
+        except ValueError:
+            scripts = {}
+        for name in ("dev", "start", "serve"):
+            if name in scripts:
+                return f"`npm run {name}` ({scripts[name]})"
+    for name, how in (("manage.py", "`python manage.py runserver`"), ("main.py", "`python main.py`"),
+                      ("app.py", "`python app.py`"), ("index.html", "abrir `index.html` en el navegador")):
+        if (folder / name).exists():
+            return how
+    return "(pendiente: no se ve un punto de entrada claro)"
+
+
+def context_skeleton(folder: str | Path) -> str:
+    """El AGENTS.md inicial de un proyecto, solo con lo que se ve sin leer el codigo."""
+    import agent_tools
+    folder = Path(folder)
+    counts: dict[str, int] = {}
+    files = 0
+    for p in folder.rglob("*"):
+        rel = p.relative_to(folder).parts
+        if p.is_file() and not _SKELETON_SKIP.intersection(rel):
+            files += 1
+            lang = _LANGS.get(p.suffix.lower())
+            if lang:
+                counts[lang] = counts.get(lang, 0) + 1
+            if files > 5000:
+                break
+    langs = ", ".join(f"{name} ({n})" for name, n in sorted(counts.items(), key=lambda x: -x[1])[:5]) or "(pendiente)"
+    entries = sorted((p for p in folder.iterdir() if p.name not in _SKELETON_SKIP and not p.name.startswith(".")),
+                     key=lambda p: (p.is_file(), p.name.lower()))
+    tree = "\n".join(f"- `{p.name}{'/' if p.is_dir() else ''}`" for p in entries[:40]) or "- (vacio)"
+    try:
+        deps = agent_tools._project_dependencies(folder)
+    except (OSError, ValueError):
+        deps = []
+    deps_text = ", ".join(name for _, name, _ in deps[:25]) or "(ninguna declarada)"
+    cmd = test_command(folder)
+    if not cmd:
+        tests = "(no tiene tests todavia)"
+    else:
+        tests = "`npm test`" if "npm" in Path(cmd[0]).name.lower() else "`python -m pytest`"
+    readme = next((p for p in folder.glob("README*") if p.is_file()), None)
+    purpose = "(pendiente)"
+    if readme:
+        lines = [ln.strip("# ").strip() for ln in readme.read_text(encoding="utf-8", errors="replace").splitlines()
+                 if ln.strip() and not ln.startswith("![")]
+        purpose = " ".join(lines[:3])[:400] or "(pendiente)"
+    return (f"# {folder.name}\n\n"
+            "Ficha del proyecto para quien programe en el (personas o el agente de Chati). La empezo Chati con lo "
+            "que se ve desde fuera; lo marcado como pendiente se completa al trabajar en el.\n\n"
+            f"## Para que sirve\n{purpose}\n\n"
+            f"## Lenguaje y librerias principales\n- Lenguajes (archivos): {langs}\n- Dependencias: {deps_text}\n\n"
+            f"## Estructura\n{tree}\n\n"
+            f"## Como se ejecuta\n{_run_hint(folder)}\n\n"
+            f"## Como se prueba\n{tests}\n\n"
+            "## Decisiones tomadas y por que\n(pendiente)\n\n"
+            "## Convenciones\n(pendiente)\n")
+
+
+def context_created_note() -> str:
+    return (f"\n\n[Nota de Chati] Este proyecto no tenia {CONTEXT_FILE}: Chati ha creado uno con lo basico "
+            "(lenguajes, carpetas, dependencias, como se prueba). Leelo para situarte. NO lo completes ahora: "
+            "haz directamente la tarea; al final te pedire actualizarlo.")
