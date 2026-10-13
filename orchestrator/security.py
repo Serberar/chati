@@ -30,6 +30,8 @@ PAIR_PATHS = {"/pair", "/pair/claim", "/pair/check", "/static/js/pair.js", "/fav
               # el iPhone pide el icono de la pantalla de inicio sin la cookie
               # del dispositivo: rechazado, se quedaba sin icono (2026-10-08)
               "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/manifest.webmanifest", "/sw.js", "/push/key",
+              # iconos del manifiesto: el iPhone los pide sin cookie al añadir a la pantalla de inicio
+              "/static/icon-192.png", "/static/icon-512.png",
               # la otra Chati (casa/trabajo) pregunta si esta esta encendida (computers.py)
               "/health"}
 # ninguna peticion legitima pasa de esto (10 adjuntos del agente de 20 MB);
