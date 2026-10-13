@@ -66,6 +66,7 @@ from router import Router
 from verifier import Verifier
 import people
 import profile_store
+import push
 import memory
 import file_access
 import finetune_export
@@ -273,6 +274,7 @@ async def _lifespan(_app):
     purged = memory.purge_guest_messages(older_than_hours=24)
     if purged:
         log.info("Mensajes de invitado antiguos borrados: %d", purged)
+    threading.Thread(target=_push_watch, daemon=True).start()
     log.info("Orquestador arrancado")
     yield
 
@@ -380,6 +382,7 @@ def _delete_user_data(user_id: str) -> None:
     session_docs.delete_all_for_user(user_id)
     persona_trainer.delete_all_for_user(user_id)
     task_owners.forget_user(user_id)
+    push.forget_user(user_id)
 
 
 routes_auth.configure(on_login=_on_login, delete_user_data=_delete_user_data)
@@ -912,6 +915,7 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
     deadline = time.time() + CODE_WATCH_HOURS * 3600
     autonomous = info.get("autonomo", False)
     nudges = 0
+    reviewed = False
     time.sleep(3 if autonomous else 20)  # que OpenCode marque la tarea como ocupada
     while time.time() < deadline:
         time.sleep(3 if autonomous else 10)
@@ -930,11 +934,16 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
         if view.get("error"):
             info["estado"] = ""
             return
-        if code_checks.broken_tool_call(view.get("steps", [])) and nudges < code_checks.TOOL_CALL_NUDGES:
+        steps = view.get("steps", [])
+        stuck = code_checks.broken_tool_call(steps) or code_checks.ended_without_answer(steps)
+        if stuck and nudges < code_checks.TOOL_CALL_NUDGES:
             nudges += 1
-            log.info("Modo Codigo: llamada a herramienta escrita como texto, se le pide repetirla (%d)", nudges)
+            broken = code_checks.broken_tool_call(steps)
+            log.info("Modo Codigo: %s, se le pide seguir (%d)",
+                     "llamada a herramienta escrita como texto" if broken else "acabo sin contestar", nudges)
             agent = "agent_code_plan" if info.get("solo_mirar") or phase == "plan" else "agent_code"
-            opencode_client.continue_task(base, session_id, code_checks.tool_call_nudge(), CONFIG["opencode"][agent])
+            message = code_checks.tool_call_nudge() if broken else code_checks.answer_nudge()
+            opencode_client.continue_task(base, session_id, message, CONFIG["opencode"][agent])
             time.sleep(20)
             continue
         if info.get("solo_mirar"):
@@ -970,6 +979,16 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
                                  f"{CODE_TEST_RETRIES})…"
                 opencode_client.continue_task(base, session_id,
                                               code_checks.lint_message(lint[1], attempts, CODE_TEST_RETRIES),
+                                              CONFIG["opencode"]["agent_code"])
+                time.sleep(20)
+                continue
+            # cambio grande: que repase su propio trabajo antes de darlo por
+            # bueno (despues se vuelven a pasar los tests y el analizador)
+            diff = "" if reviewed else checkpoints.diff_since_last(session_id)
+            if diff and code_checks.needs_review(diff):
+                reviewed = True
+                info["estado"] = "Tests bien: el agente repasa sus propios cambios…"
+                opencode_client.continue_task(base, session_id, code_checks.review_request(diff),
                                               CONFIG["opencode"]["agent_code"])
                 time.sleep(20)
                 continue
@@ -1356,6 +1375,105 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
     return {"ok": True, "mode": code_mode}
 
 
+# --- Avisos al movil aunque Chati este cerrado (push.py) ---
+PUSH_POLL_SECONDS = 10
+
+
+def _push_tick(state: dict) -> None:
+    """Una vuelta del vigilante de avisos: a quien le pide algo una tarea y
+    que tareas han terminado (si Chati aun las comprueba, se espera a que
+    acabe para avisar con el resultado)."""
+    base = CONFIG["opencode"]["base_url"]
+    try:
+        requests.get(f"{base}/session/status", auth=opencode_client.AUTH, timeout=3).raise_for_status()
+    except requests.RequestException:
+        return  # OpenCode caido: sin datos fiables, nada de "terminado" falsos
+    busy = set(opencode_client.busy_session_ids(base))
+    waiting = opencode_client.waiting_sessions(base)
+
+    def send(sid: str, title: str, body: str) -> None:
+        owner = task_owners.owner(sid)
+        if owner and push.has_devices(owner):
+            try:
+                what = opencode_client.task_summary(base, sid)
+            except requests.RequestException:
+                what = ""
+            push.notify(owner, title, body.format(tarea=what or "Tarea del agente"), tag=f"chati-{sid}")
+
+    for sid, reason in waiting.items():
+        if sid not in state["asked"]:
+            state["asked"].add(sid)
+            send(sid, "✋ Chati necesita tu respuesta",
+                 ("Te pide permiso" if reason == "permission" else "Te hace una pregunta") + ": {tarea}")
+    state["asked"] -= busy  # vuelve a trabajar: la siguiente pregunta se avisa otra vez
+    state["done"] |= state["busy"] - busy - set(waiting)
+    for sid in list(state["done"]):
+        if sid in busy or sid in waiting:
+            state["done"].discard(sid)
+        elif sid not in _code_watch_running:
+            state["done"].discard(sid)
+            result = (_code_watch.get(sid) or {}).get("estado", "")
+            title = "⚠ Revisa la tarea" if result.startswith("✗") else "✓ Tarea terminada"
+            send(sid, title, "{tarea}" + (f" · {result}" if result else ""))
+    state["busy"] = busy
+
+
+def _push_watch() -> None:
+    state = {"busy": set(), "asked": set(), "done": set()}
+    while True:
+        time.sleep(PUSH_POLL_SECONDS)
+        try:
+            _push_tick(state)
+        except Exception as exc:  # noqa: BLE001 - el vigilante no se puede caer
+            log.warning("Vigilante de avisos: %s", exc)
+
+
+class PushSubscription(BaseModel):
+    subscription: dict
+    device: str = ""
+
+
+@app.get("/push/key")
+def push_key(request: Request):
+    if request.state.session["role"] == "guest":
+        return _guest_blocked()
+    return {"key": push.public_key()}
+
+
+@app.post("/push/subscribe")
+def push_subscribe(request: Request, req: PushSubscription):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    try:
+        push.subscribe(session["user_id"], req.subscription, req.device)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    log.info("Avisos al movil activados en %s", req.device or "un dispositivo")
+    return {"ok": True}
+
+
+@app.post("/push/unsubscribe")
+def push_unsubscribe(request: Request, req: PushSubscription):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    push.unsubscribe(session["user_id"], str(req.subscription.get("endpoint", "")))
+    return {"ok": True}
+
+
+@app.post("/push/test")
+def push_test(request: Request):
+    session = request.state.session
+    if session["role"] == "guest":
+        return _guest_blocked()
+    if not push.has_devices(session["user_id"]):
+        return JSONResponse({"detail": "No hay ningun dispositivo con los avisos activados."}, status_code=400)
+    push.notify(session["user_id"], "🔔 Avisos de Chati", "Así te avisaré cuando el agente termine o te necesite.",
+                tag="chati-prueba")
+    return {"ok": True}
+
+
 @app.post("/agent/questions/{request_id}")
 def agent_reply_question(request: Request, request_id: str, req: AgentQuestionReply):
     if request.state.session["role"] == "guest":
@@ -1491,6 +1609,13 @@ def apple_touch_icon():
 @app.get("/favicon.ico")
 def favicon():
     return FileResponse(Path(__file__).parent / "static" / "logo.ico", media_type="image/x-icon")
+
+
+@app.get("/sw.js")
+def service_worker():
+    """Desde la raiz para que valga para toda la pagina (avisos al movil)."""
+    return FileResponse(Path(__file__).parent / "static" / "sw.js", media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/manifest.webmanifest")

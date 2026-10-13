@@ -282,3 +282,36 @@ def broken_tool_call(steps: list[dict]) -> bool:
 def tool_call_nudge() -> str:
     return ("[Chati] Tu ultima llamada a una herramienta ha salido como texto (<function=...>) y no se ha "
             "ejecutado. Vuelve a llamarla de verdad, como herramienta, y sigue con la tarea.")
+
+
+# Repaso del propio trabajo: tras un cambio grande, con los tests y el
+# analizador ya bien, se le enseña al agente lo que ha cambiado para que lo
+# revise como lo haria otra persona (Sergio, 2026-10-13).
+REVIEW_MIN_LINES = 40
+REVIEW_MIN_FILES = 3
+
+
+def needs_review(diff: str) -> bool:
+    lines = [ln for ln in diff.splitlines() if ln[:1] in "+-" and not ln.startswith(("+++", "---"))]
+    files = sum(ln.startswith("diff --git") for ln in diff.splitlines())
+    return len(lines) >= REVIEW_MIN_LINES or files >= REVIEW_MIN_FILES
+
+
+def review_request(diff: str) -> str:
+    return ("[Chati] Antes de darlo por terminado, revisa tus propios cambios como si fueran de otra persona. "
+            "Busca: fallos de logica, casos que no contemplas (vacios, nulos, errores de red o de archivo), "
+            "cosas que rompan lo que ya funcionaba, codigo que sobra y problemas de seguridad. Si encuentras algo, "
+            "arreglalo y di que has cambiado y por que; si esta bien, dilo en una linea. No cambies nada mas."
+            f"\n\nTus cambios:\n```diff\n{diff}\n```")
+
+
+def ended_without_answer(steps: list[dict]) -> bool:
+    """¿Ha acabado despues de usar herramientas sin decir nada al usuario?
+    (gpt-oss a veces se para asi: banco 2026-10-13, "actualizaciones")."""
+    last = next((s for s in reversed(steps) if s.get("kind") in ("text", "tool", "user")), None)
+    return bool(last and last.get("kind") == "tool")
+
+
+def answer_nudge() -> str:
+    return ("[Chati] Has terminado sin contestar al usuario. Respondele ahora con lo que has encontrado o hecho, "
+            "en español y concreto (nombres, versiones, archivos). No repitas lo que ya has hecho.")

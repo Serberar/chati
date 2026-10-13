@@ -27,3 +27,17 @@ def test_undo_restores_edits_and_removes_new_files(tmp_path):
         assert (project / "venv" / "otro.py").exists()  # lo ignorado no se toca
         assert sorted(result["archivos"]) == ["borrado nuevo.py", "recuperado borrame.txt", "restaurado app.py"]
         assert checkpoints.available("ses") == 0
+
+
+def test_diff_since_last_shows_what_the_agent_changed(tmp_path):
+    project = tmp_path / "p"
+    project.mkdir()
+    (project / "a.py").write_text("x = 1\n", encoding="utf-8")
+    with patch.object(checkpoints, "COPIES_DIR", tmp_path / "copias"), \
+         patch.object(checkpoints, "SESSIONS_FILE", tmp_path / "copias" / "s.json"):
+        assert checkpoints.diff_since_last("ses") == ""
+        checkpoints.snapshot("ses", project, "cambia x")
+        (project / "a.py").write_text("x = 2\n", encoding="utf-8")
+        (project / "b.py").write_text("y = 3\n", encoding="utf-8")
+        diff = checkpoints.diff_since_last("ses")
+    assert "-x = 1" in diff and "+x = 2" in diff and "+y = 3" in diff

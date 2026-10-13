@@ -1054,7 +1054,7 @@ function noticeBackground(p) {
   const waiting = new Set((p.waiting_tasks || []).map((t) => t.session_id));
   const before = bgSeen;
   bgSeen = { working, waiting };
-  if (!before || !document.hidden || !window.Notification || Notification.permission !== "granted") return;
+  if (!before || !document.hidden || !window.Notification || Notification.permission !== "granted" || pushOn()) return;  // con push avisa el servidor
   try {
     for (const t of p.waiting_tasks || []) {
       if (!before.waiting.has(t.session_id)) {
@@ -2131,6 +2131,80 @@ async function announceOtherComputers() {
   document.getElementById("otherComputerClose").addEventListener("click", dismiss);
   open.addEventListener("click", dismiss);
 }
+
+// --- Avisos al movil aunque Chati este cerrado (push.py y /sw.js) ---
+function pushOn() {
+  try { return localStorage.getItem("ia_push") === "on"; } catch (e) { return false; }
+}
+
+function pushB64ToBytes(text) {
+  const b64 = (text + "=".repeat((4 - (text.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+}
+
+function pushDeviceName() {
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return "iPhone";
+  if (/iPad/.test(ua)) return "iPad";
+  if (/Android/.test(ua)) return "Android";
+  return /Windows/.test(ua) ? "Ordenador (Windows)" : "Ordenador";
+}
+
+function renderPushRow() {
+  document.getElementById("optPushText").textContent =
+    pushOn() ? "Avisos en este dispositivo: activados ✓" : "Avisos en este dispositivo";
+}
+
+async function enablePush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !window.Notification) {
+    const iphone = /iPhone|iPad/.test(navigator.userAgent);
+    alert(iphone
+      ? "En el iPhone los avisos solo funcionan con Chati instalado: en Safari pulsa Compartir → «Añadir a pantalla de inicio», abre Chati desde ese icono y vuelve aquí."
+      : "Este navegador no admite avisos.");
+    return;
+  }
+  if (await Notification.requestPermission() !== "granted") {
+    alert("Sin permiso no te puedo avisar. Puedes darlo en los ajustes del navegador (o del iPhone: Ajustes → Notificaciones → Chati).");
+    return;
+  }
+  const reg = await navigator.serviceWorker.register("/sw.js");
+  await navigator.serviceWorker.ready;
+  const { key } = await (await fetch("/push/key")).json();
+  const sub = await reg.pushManager.getSubscription()
+    || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushB64ToBytes(key) });
+  await agentPost("/push/subscribe", { subscription: sub.toJSON(), device: pushDeviceName() });
+  try { localStorage.setItem("ia_push", "on"); } catch (e) { /* nada */ }
+  await agentPost("/push/test");
+}
+
+async function disablePush() {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration("/");
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) {
+      await agentPost("/push/unsubscribe", { subscription: { endpoint: sub.endpoint } });
+      await sub.unsubscribe();
+    }
+  } finally {
+    try { localStorage.removeItem("ia_push"); } catch (e) { /* nada */ }
+  }
+}
+
+document.getElementById("optPushBtn").addEventListener("click", async () => {
+  try {
+    if (!pushOn()) {
+      await enablePush();
+    } else if (confirm("Los avisos están activados en este dispositivo.\n\nAceptar: mandar un aviso de prueba\nCancelar: dejarlo como está")) {
+      await agentPost("/push/test");
+    } else if (confirm("¿Desactivar los avisos en este dispositivo?")) {
+      await disablePush();
+    }
+  } catch (err) {
+    alert("No se pudieron activar los avisos: " + (err.message || err));
+  }
+  renderPushRow();
+});
+renderPushRow();
 
 document.getElementById("optDevicesBtn").addEventListener("click", () => {
   optionsModal.style.display = "none";
@@ -3260,7 +3334,7 @@ function noticeAgent(view, data) {
   if (titleBeforeNotice === null) titleBeforeNotice = document.title;
   document.title = `${head} · Chati`;
   try {
-    if (window.Notification && Notification.permission === "granted") {
+    if (window.Notification && Notification.permission === "granted" && !pushOn()) {
       const n = new Notification(head, { body: detail, icon: "/static/icon-192.png", tag: "chati-" + view.sessionId });
       n.onclick = () => { window.focus(); n.close(); };
     }

@@ -177,3 +177,31 @@ def test_task_view_says_checking_while_the_watch_runs():
         finally:
             main._code_watch_running.discard("ses_v")
         assert main._task_view("http://x", "ses_v")["verificacion"] == ""
+
+
+def test_big_changes_get_a_self_review_before_finishing(tmp_path):
+    import main
+    folder = _project(tmp_path, True)
+    idle = {"permissions": [], "questions": [], "status": "idle", "error": None, "steps": []}
+    big_diff = "diff --git a/x b/x\n" + "".join(f"+linea {i}\n" for i in range(50))
+    sent = []
+    info = {"estado": "", "final": ""}
+    with patch.object(main.time, "sleep"), \
+         patch.object(main.code_checks, "folder_state", side_effect=[{}, {"a": 1}, {"a": 2}, {"a": 2}]), \
+         patch.object(main.opencode_client, "busy_session_ids", return_value=[]), \
+         patch.object(main.opencode_client, "get_task_view", return_value=idle), \
+         patch.object(main.code_checks, "run_tests", return_value=(True, "1 passed")), \
+         patch.object(main.code_checks, "run_lint", return_value=None), \
+         patch.object(main.checkpoints, "diff_since_last", return_value=big_diff), \
+         patch.object(main.opencode_client, "continue_task", side_effect=lambda *a: sent.append(a[2])):
+        main._watch_code_task("ses_r", folder, False, info)
+    # primero el repaso (una sola vez), despues el AGENTS.md
+    assert len(sent) == 2 and "revisa tus propios cambios" in sent[0] and "+linea 49" in sent[0]
+    assert "AGENTS.md" in sent[1]
+    assert not main.code_checks.needs_review("diff --git a/x b/x\n+una\n-otra\n")
+
+
+def test_detects_a_task_that_ends_without_answering():
+    assert code_checks.ended_without_answer([{"kind": "text", "text": "Miro"}, {"kind": "tool", "tool": "glob"}])
+    assert not code_checks.ended_without_answer([{"kind": "tool", "tool": "glob"}, {"kind": "text", "text": "Hecho"}])
+    assert not code_checks.ended_without_answer([])

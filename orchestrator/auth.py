@@ -32,6 +32,8 @@ PUBLIC_PATHS = {
     "/client-log",
     # icono y manifiesto de la app del movil: el iPhone los pide sin sesion
     "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/manifest.webmanifest",
+    # el service worker de los avisos (push.py): un script sin datos
+    "/sw.js",
 }
 # /llm/: pasarela de OpenCode hacia Ollama (main.py) - no lleva sesion de usuario
 PUBLIC_PATH_PREFIXES = ("/auth/security-question/", "/static/", "/llm/")
