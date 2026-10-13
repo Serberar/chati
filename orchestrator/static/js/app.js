@@ -2260,14 +2260,43 @@ async function enablePush() {
     alert("Sin permiso no te puedo avisar. Puedes darlo en los ajustes del navegador (o del iPhone: Ajustes → Notificaciones → Chati).");
     return;
   }
+  await syncPushSubscription();
+  try { localStorage.setItem("ia_push", "on"); } catch (e) { /* nada */ }
+  await agentPost("/push/test");
+}
+
+function pushBytesToB64(buf) {
+  let bin = "";
+  new Uint8Array(buf).forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// La suscripcion de este dispositivo, al dia y guardada en el servidor: si
+// Chati cambio sus claves, la de antes ya no vale (Apple la rechaza) y se
+// rehace; si el servidor la perdio, se le vuelve a dar.
+async function syncPushSubscription() {
   const reg = await navigator.serviceWorker.register("/sw.js");
   await navigator.serviceWorker.ready;
   const { key } = await (await fetch("/push/key")).json();
-  const sub = await reg.pushManager.getSubscription()
-    || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushB64ToBytes(key) });
+  let sub = await reg.pushManager.getSubscription();
+  const used = sub && sub.options && sub.options.applicationServerKey;
+  if (used && pushBytesToB64(used) !== key) {
+    await sub.unsubscribe();
+    sub = null;
+  }
+  sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushB64ToBytes(key) });
   await agentPost("/push/subscribe", { subscription: sub.toJSON(), device: pushDeviceName() });
-  try { localStorage.setItem("ia_push", "on"); } catch (e) { /* nada */ }
-  await agentPost("/push/test");
+}
+
+// al abrir Chati con los avisos activados: se revisa la suscripcion en silencio
+async function repairPush() {
+  if (!pushOn() || !("serviceWorker" in navigator) || !window.Notification) return;
+  if (Notification.permission !== "granted") {  // quitado en los ajustes del movil
+    try { localStorage.removeItem("ia_push"); } catch (e) { /* nada */ }
+    renderPushRow();
+    return;
+  }
+  try { await syncPushSubscription(); } catch (e) { /* sin red o sin servicio de avisos: la proxima vez */ }
 }
 
 async function disablePush() {
@@ -5288,6 +5317,7 @@ initSessionUI().then(() => {
     setInterval(refreshBackgroundTasks, 8000);
     announceOtherComputers();
     adoptLauncherPush();
+    repairPush();
   }
   showCurrentComputer();
 });
