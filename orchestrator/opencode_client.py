@@ -245,6 +245,7 @@ def _tool_detail(tool: str, inp: dict) -> str:
 # actualizacion por linea) y en state.output al acabar. Se manda solo el final,
 # que es lo que se ve en la tarjeta.
 TERMINAL_MAX_CHARS = 4000
+PERMISSION_DIFF_CHARS = 20000  # el cambio propuesto que se enseña al pedir permiso para editar
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
@@ -334,6 +335,9 @@ def get_task_view(base_url: str, session_id: str) -> dict:
             "id": p["id"],
             "permission": p.get("permission", ""),
             "patterns": p.get("patterns", []),
+            # al editar, el cambio propuesto (diff): se ve ANTES de decir que si
+            # (Sergio, 2026-10-13: "no me entero de lo que ha hecho")
+            "diff": str((p.get("metadata") or {}).get("diff") or "")[:PERMISSION_DIFF_CHARS],
         } for p in permissions],
         "changes": _changes_summary(messages),
         "reverted": bool(session.get("revert")),

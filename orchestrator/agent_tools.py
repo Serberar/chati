@@ -334,3 +334,179 @@ def read_repo(url: str) -> str:
     intro = readme.read_text(encoding="utf-8", errors="replace")[:3000] if readme else "(sin README)"
     return (f"Repositorio en: {target}\nLeelo con read/grep/glob en esa carpeta.\n\nCarpetas (2 niveles):\n"
             + "\n".join(tree[:200]) + f"\n\nREADME:\n{intro}")
+
+
+# ---------- buscar en el codigo por significado ----------
+
+INDEX_DIR = DATA_DIR / "agente_indices"
+EMBED_MODEL = "nomic-embed-text"
+OLLAMA_URL = "http://127.0.0.1:11434"
+CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".cs", ".go", ".rs", ".rb", ".php", ".c", ".h",
+                   ".cpp", ".hpp", ".kt", ".swift", ".sql", ".html", ".css", ".scss", ".vue", ".svelte", ".md",
+                   ".yaml", ".yml", ".toml", ".json", ".ps1", ".sh"}
+SKIP_DIRS = {"venv", ".venv", "env", "node_modules", ".git", "__pycache__", "dist", "build", ".next", "target",
+             ".pytest_cache", ".mypy_cache", "coverage"}
+CHUNK_LINES, CHUNK_OVERLAP = 60, 10
+MAX_FILE_BYTES = 300_000
+MAX_CHUNKS = 5000
+
+
+def _embed(texts: list[str]) -> list[list[float]]:
+    # en el procesador: la tarjeta grafica es del modelo del agente
+    resp = requests.post(f"{OLLAMA_URL}/api/embed", json={"model": EMBED_MODEL, "input": texts,
+                                                          "options": {"num_gpu": 0}}, timeout=600)
+    resp.raise_for_status()
+    return resp.json()["embeddings"]
+
+
+def _chunks(path: Path) -> list[tuple[int, int, str]]:
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    out, start = [], 0
+    while start < len(lines):
+        end = min(len(lines), start + CHUNK_LINES)
+        text = "\n".join(lines[start:end]).strip()
+        if text:
+            out.append((start + 1, end, text))
+        if end == len(lines):
+            break
+        start = end - CHUNK_OVERLAP
+    return out
+
+
+def _index_path(folder: Path) -> Path:
+    import hashlib
+    return INDEX_DIR / (hashlib.sha1(str(folder.resolve()).lower().encode()).hexdigest()[:16] + ".json")
+
+
+def _update_index(folder: Path) -> list[dict]:
+    """Indice del proyecto (trozos con su vector), recalculando solo los
+    archivos que han cambiado desde la ultima vez."""
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = _index_path(folder)
+    cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.exists() else {}
+    files = {}
+    for path in folder.rglob("*"):
+        if (path.is_file() and path.suffix.lower() in CODE_EXTENSIONS and not SKIP_DIRS.intersection(path.parts)
+                and path.stat().st_size <= MAX_FILE_BYTES):
+            files[path.relative_to(folder).as_posix()] = path
+    fresh, pending = {}, []
+    for rel, path in files.items():
+        mtime = path.stat().st_mtime_ns
+        old = cache.get(rel)
+        if old and old["mtime"] == mtime:
+            fresh[rel] = old
+        else:
+            fresh[rel] = {"mtime": mtime, "chunks": []}
+            pending += [(rel, a, b, text) for a, b, text in _chunks(path)]
+    pending = pending[:MAX_CHUNKS]
+    for i in range(0, len(pending), 32):
+        batch = pending[i:i + 32]
+        vectors = _embed([f"search_document: {rel}\n{text[:2000]}" for rel, _, _, text in batch])
+        for (rel, a, b, text), vec in zip(batch, vectors):
+            fresh[rel]["chunks"].append({"start": a, "end": b, "vec": [round(v, 5) for v in vec]})
+    cache_file.write_text(json.dumps(fresh), encoding="utf-8")
+    return [{"file": rel, **chunk} for rel, entry in fresh.items() for chunk in entry["chunks"]]
+
+
+def code_search(folder: str, query: str, n: int = 6) -> str:
+    """Los trozos de codigo del proyecto mas relacionados con lo que se busca
+    (por significado, no por palabras exactas: "donde se valida el login")."""
+    import numpy as np
+    root = Path(folder)
+    if not root.is_dir():
+        return f"No existe la carpeta {folder}."
+    try:
+        chunks = _update_index(root)
+        if not chunks:
+            return "No hay archivos de codigo en esa carpeta."
+        q = np.array(_embed([f"search_query: {query}"])[0])
+    except (requests.RequestException, KeyError, ValueError) as exc:
+        return f"No se pudo buscar (¿esta Ollama con {EMBED_MODEL}?): {exc}"
+    vecs = np.array([c["vec"] for c in chunks])
+    scores = vecs @ q / (np.linalg.norm(vecs, axis=1) * np.linalg.norm(q) + 1e-9)
+    out = []
+    for i in np.argsort(-scores)[:n]:
+        c = chunks[i]
+        lines = (root / c["file"]).read_text(encoding="utf-8", errors="replace").splitlines()[c["start"] - 1:c["end"]]
+        preview = "\n".join(lines[:15])
+        out.append(f"== {c['file']} lineas {c['start']}-{c['end']} (parecido {scores[i]:.2f})\n{preview}")
+    return "\n\n".join(out) + "\n\nPara ver un trozo entero, lee el archivo en esas lineas."
+
+
+# ---------- ver: la web en desarrollo y capturas ----------
+
+VISION_MODEL = "qwen2.5vl:7b-cpu"  # en el procesador: la tarjeta grafica es del modelo del agente
+SHOTS_DIR = DATA_DIR / "agente_capturas"
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"}
+
+
+def _describe_image(png: bytes, question: str) -> str:
+    import base64
+    prompt = ("Eres los ojos de un programador. Describe en español, concreto y ordenado, lo que se ve en esta "
+              "imagen de una aplicación: estructura de la pantalla, textos importantes, mensajes de error visibles y "
+              f"cualquier cosa que parezca rota, descolocada o vacía. {question}".strip())
+    try:
+        resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
+            "model": VISION_MODEL, "stream": False, "keep_alive": "2m",
+            "messages": [{"role": "user", "content": prompt, "images": [base64.b64encode(png).decode()]}]},
+            timeout=900)
+        resp.raise_for_status()
+        return resp.json()["message"]["content"].strip()
+    except (requests.RequestException, KeyError, ValueError) as exc:
+        return f"(No se pudo describir la imagen con {VISION_MODEL}: {exc})"
+
+
+def look_at_local_page(url: str, question: str = "") -> str:
+    """Abre la web que se esta desarrollando (solo en este ordenador), hace una
+    captura, junta los errores de la consola de JavaScript y la describe."""
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    if parsed.hostname not in _LOCAL_HOSTS:
+        return ("Solo se pueden mirar webs de este ordenador (http://localhost:PUERTO). Para paginas de internet, "
+                "usa chati_leer_web.")
+    from playwright.sync_api import sync_playwright
+    SHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    errors: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = pw.chromium.launch(channel="msedge", headless=True)
+            except Exception:  # noqa: BLE001 - sin Edge: el Chromium de Playwright
+                browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 800})
+                page.on("console", lambda m: errors.append(f"consola {m.type}: {m.text}")
+                        if m.type in ("error", "warning") else None)
+                page.on("pageerror", lambda e: errors.append(f"error de JavaScript: {e}"))
+                page.on("requestfailed", lambda r: errors.append(f"no cargo {r.url}: {r.failure}"))
+                resp = page.goto(parsed.geturl(), timeout=30000, wait_until="networkidle")
+                page.wait_for_timeout(1000)
+                status = resp.status if resp else "?"
+                title = page.title()
+                png = page.screenshot(full_page=True)
+            finally:
+                browser.close()
+    except Exception as exc:  # noqa: BLE001 - servidor apagado, puerto mal...
+        return f"No se pudo abrir {parsed.geturl()}: {exc}. ¿Esta arrancado el servidor de desarrollo?"
+    shot = SHOTS_DIR / f"captura_{date.today().isoformat()}_{abs(hash(url)) % 10000}.png"
+    shot.write_bytes(png)
+    description = _describe_image(png, question)
+    found = "\n".join(errors[:30]) if errors else "ninguno"
+    return (f"Pagina {parsed.geturl()} (respuesta {status}, titulo «{title}»). Captura guardada en {shot}.\n\n"
+            f"Errores de la consola y de carga:\n{found}\n\nLo que se ve:\n{description}")
+
+
+def look_at_image(path: str, question: str = "") -> str:
+    """Describe una captura o imagen que ha dejado el usuario (o una del proyecto)."""
+    file = Path(path)
+    if not file.is_file():
+        return f"No existe la imagen {path}."
+    if file.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
+        return "Solo imagenes (png, jpg, webp, bmp, gif)."
+    data = file.read_bytes()
+    if file.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.open(io.BytesIO(data)).convert("RGB").save(buf, format="PNG")
+        data = buf.getvalue()
+    return _describe_image(data, question)

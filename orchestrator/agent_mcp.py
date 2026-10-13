@@ -59,6 +59,24 @@ TOOLS = [
      "description": "Compara las dependencias de un proyecto (requirements*.txt, pyproject.toml, package.json) con "
                     "la ultima version publicada de cada una.",
      "inputSchema": _schema({"carpeta": _STR}, ["carpeta"])},
+    {"name": "buscar_codigo", "fn": lambda a: t.code_search(a["carpeta"], a["consulta"], int(a.get("cantidad", 6))),
+     "description": "Busca en el codigo de un proyecto por SIGNIFICADO, no por palabras exactas (\"donde se valida "
+                    "el login\", \"que calcula los descuentos\"). Devuelve archivo, lineas y el principio de cada "
+                    "trozo. Usala para encontrar donde esta algo antes de abrir archivos; para un nombre exacto, grep "
+                    "es mejor. La primera vez en un proyecto grande tarda unos minutos en prepararse.",
+     "inputSchema": _schema({"carpeta": _STR, "consulta": _STR, "cantidad": {"type": "integer"}},
+                            ["carpeta", "consulta"])},
+    {"name": "ver_web", "fn": lambda a: t.look_at_local_page(a["url"], a.get("pregunta", "")),
+     "description": "Abre en un navegador la web que estas desarrollando (solo de este ordenador: "
+                    "http://localhost:PUERTO), hace una captura y te dice lo que se ve y los errores de la consola de "
+                    "JavaScript. Usala para comprobar como queda una pagina o por que falla. El servidor de desarrollo "
+                    "tiene que estar arrancado. Tarda 1-2 minutos.",
+     "inputSchema": _schema({"url": _STR, "pregunta": {"type": "string", "description": "Algo concreto que mirar"}},
+                            ["url"])},
+    {"name": "ver_imagen", "fn": lambda a: t.look_at_image(a["ruta"], a.get("pregunta", "")),
+     "description": "Describe una imagen o captura de pantalla (la ruta de un archivo), por ejemplo una que te pase "
+                    "el usuario para enseñarte un error. Tarda 1-2 minutos.",
+     "inputSchema": _schema({"ruta": _STR, "pregunta": {"type": "string"}}, ["ruta"])},
     {"name": "leer_repo", "fn": lambda a: t.read_repo(a["url"]),
      "description": "Descarga (o actualiza) un repositorio git publico, por ejemplo de GitHub, y dice en que "
                     "carpeta queda, sus carpetas y el README. Despues se lee con read, grep y glob.",

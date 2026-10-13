@@ -99,7 +99,8 @@ def test_task_view_simplifies_steps_and_filters_pending_by_session(mock_get):
             {"id": "que_2", "sessionID": "ses_otra", "questions": []},
         ],
         "/permission": [
-            {"id": "per_1", "sessionID": "ses_1", "permission": "edit", "patterns": ["hola.txt"]},
+            {"id": "per_1", "sessionID": "ses_1", "permission": "edit", "patterns": ["hola.txt"],
+             "metadata": {"filepath": "hola.txt", "diff": "@@ -0,0 +1 @@\n+hola"}},
             {"id": "per_2", "sessionID": "ses_otra", "permission": "bash", "patterns": ["rm *"]},
         ],
     })
@@ -117,7 +118,9 @@ def test_task_view_simplifies_steps_and_filters_pending_by_session(mock_get):
          "output": "", "exit": None},
     ]
     assert [q["id"] for q in view["questions"]] == ["que_1"]
-    assert view["permissions"] == [{"id": "per_1", "permission": "edit", "patterns": ["hola.txt"]}]
+    # el cambio propuesto viaja con el permiso: se ve antes de decir que si (2026-10-13)
+    assert view["permissions"] == [{"id": "per_1", "permission": "edit", "patterns": ["hola.txt"],
+                                    "diff": "@@ -0,0 +1 @@\n+hola"}]
 
 
 @patch("opencode_client.requests.get")

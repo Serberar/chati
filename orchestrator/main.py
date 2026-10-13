@@ -29,6 +29,8 @@ import auth
 import devices
 import auth_sessions
 import face_detect
+import agent_tools
+import code_checks
 import computers
 import face_swap
 import access
@@ -520,6 +522,28 @@ def computers_list():
 # usuario: solo la usa OpenCode, que manda su contraseña como clave ("apiKey":
 # "{env:OPENCODE_SERVER_PASSWORD}" en opencode.json). Antes era publica y
 # cualquier programa o web podia usar los modelos por aqui (auditoria 2026-09-29).
+AGENT_KEEP_ALIVE = "30m"
+_keep_alive_sent: dict[str, float] = {}
+
+
+def _keep_agent_model_loaded(model: str | None) -> None:
+    """Que Ollama no descargue el modelo del agente a los 5 minutos: volver a
+    cargarlo costaba ~20 s en la siguiente tarea (2026-10-13). Como mucho un
+    aviso por minuto; para una imagen se descarga igual (_free_memory_for_generation)."""
+    if not model or model not in _agent_models() or time.time() - _keep_alive_sent.get(model, 0) < 60:
+        return
+    _keep_alive_sent[model] = time.time()
+
+    def send():
+        try:
+            requests.post(f"{CONFIG['ollama']['base_url']}/api/generate",
+                          json={"model": model, "keep_alive": AGENT_KEEP_ALIVE}, timeout=900)
+        except requests.RequestException:
+            pass
+
+    threading.Thread(target=send, daemon=True).start()
+
+
 @app.api_route("/llm/v1/{path:path}", methods=["GET", "POST"])
 async def llm_proxy_route(path: str, request: Request):
     expected = f"Bearer {opencode_client.AUTH[1]}"
@@ -532,6 +556,7 @@ async def llm_proxy_route(path: str, request: Request):
     target = f"{CONFIG['ollama']['base_url']}/v1/{path}"
     body = llm_proxy.disable_thinking(await request.body(), set(CONFIG["opencode"].get("no_think_models", [])))
     body = llm_proxy.cpu_when_gpu_busy(body, comfyui_client.gpu_busy(CONFIG["comfyui"]["base_url"]))
+    _keep_agent_model_loaded(llm_proxy.model_of(body))
     headers = {"Content-Type": request.headers.get("content-type", "application/json")}
     wants_stream = b'"stream":true' in body.replace(b" ", b"")
 
@@ -652,6 +677,9 @@ class AgentTaskRequest(BaseModel):
     project: str | None = None
     plan: bool = False
     rapido: bool = False
+    # "sin preguntar": Chati concede los permisos normales de la tarea (editar,
+    # tests...) y solo pregunta lo peligroso (code_checks.auto_approvable)
+    autonomo: bool = False
 
 
 IMAGE_DESCRIBE_PROMPT = ("Describe en una sola frase, en español, que se ve en esta imagen, para poder "
@@ -777,12 +805,22 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         # archivos: con la pregunta "¿que libreria me recomiendas?" el de
         # construir se ponia a crear un proyecto (2026-10-13, 3 de 4 veces)
         plan = req.plan or _is_code_question(task)
-        agent = CONFIG["opencode"]["agent_code_plan" if plan else "agent_code"]
+        # encargo grande: primero planificar y luego construir paso a paso
+        # (lo encadena _watch_code_task); la primera vez en un proyecto, su ficha
+        big = not plan and code_checks.is_big_task(task)
+        if not plan and not code_checks.project_has_context(project):
+            task += code_checks.context_request()
+        note = agent_attachments.task_note(req.attachments)
+        if note:  # capturas que pasa el usuario: el agente las mira con chati_ver_imagen
+            task += f"\n\n{note}\nSi son imagenes, miralas con chati_ver_imagen antes de responder."
+        agent = CONFIG["opencode"]["agent_code_plan" if (plan or big) else "agent_code"]
         model = CONFIG["opencode"]["model"] if req.rapido else None
         result = _opencode_call(opencode_client.start_task, task, agent, str(project), model)
         if isinstance(result, JSONResponse):
             return result
         task_owners.record(result, request.state.session["user_id"])
+        if not plan:
+            _start_code_watch(result, project, big, req.autonomo)
         return {"session_id": result}
     if not req.potente and not req.confirmed:
         choice = _assess_for_fast_agent(task)
@@ -795,6 +833,123 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
         return result
     task_owners.record(result, request.state.session["user_id"])
     return {"session_id": result}
+
+
+CODE_TEST_RETRIES = 2
+CODE_WATCH_HOURS = 3
+_code_watch: dict[str, dict] = {}  # tarea del modo Codigo -> {"estado": texto para la interfaz}
+
+
+_code_watch_running: set[str] = set()
+
+
+def _auto_approve(base: str, session_id: str) -> None:
+    """Modo "sin preguntar": concede los permisos normales de la tarea; lo
+    peligroso (borrar, subir, deshacer git...) se queda para el usuario."""
+    for perm in opencode_client.get_task_view(base, session_id)["permissions"]:
+        if code_checks.auto_approvable(perm["permission"], perm["patterns"]):
+            log.info("Modo Codigo sin preguntar: concedido %s %s", perm["permission"], perm["patterns"][:2])
+            opencode_client.reply_permission(base, perm["id"], "once")
+
+
+def _start_code_watch(session_id: str, folder: Path, big: bool, autonomous: bool = False) -> None:
+    info = {"estado": "Planificando antes de construir…" if big else "", "final": "",
+            "autonomo": autonomous or (_code_watch.get(session_id) or {}).get("autonomo", False)}
+    _code_watch[session_id] = info
+    _code_watch_running.add(session_id)
+
+    def run():
+        try:
+            _watch_code_task(session_id, folder, big, info)
+        finally:
+            _code_watch_running.discard(session_id)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> None:
+    """Vigila un encargo del modo Codigo hasta que acaba (Sergio, 2026-10-13:
+    que Chati compruebe el trabajo en vez de fiarse del modelo):
+    - encargo grande: cuando el agente de planificar termina su plan, se le
+      pasa al de construir para que lo haga paso a paso;
+    - al terminar, si cambio archivos, Chati ejecuta los tests del proyecto y,
+      si fallan, se lo devuelve (hasta CODE_TEST_RETRIES veces).
+    Mientras espera un permiso o una pregunta del usuario, no hace nada."""
+    base = CONFIG["opencode"]["base_url"]
+    before = code_checks.folder_state(folder)
+    phase = "plan" if big else "build"
+    attempts = 0
+    deadline = time.time() + CODE_WATCH_HOURS * 3600
+    autonomous = info.get("autonomo", False)
+    time.sleep(3 if autonomous else 20)  # que OpenCode marque la tarea como ocupada
+    while time.time() < deadline:
+        time.sleep(3 if autonomous else 10)
+        try:
+            if autonomous:
+                _auto_approve(base, session_id)
+            if session_id in opencode_client.busy_session_ids(base):
+                continue
+            view = opencode_client.get_task_view(base, session_id)
+        except Exception:  # noqa: BLE001 - OpenCode reiniciandose: se reintenta
+            continue
+        if view["permissions"] or view["questions"] or view["status"] != "idle":
+            continue
+        if view.get("error"):
+            info["estado"] = ""
+            return
+        if phase == "plan":
+            phase = "build"
+            info["estado"] = "Plan hecho: construyendolo paso a paso…"
+            opencode_client.continue_task(
+                base, session_id, "[Chati] Adelante: haz ese plan paso a paso, marcando cada paso con todowrite, y "
+                                  "comprueba con los tests al final.", CONFIG["opencode"]["agent_code"])
+            time.sleep(20)
+            continue
+        if phase == "update":
+            info["estado"] = info["final"] + " Contexto (AGENTS.md) actualizado."
+            return
+        changed = code_checks.changed_files(before, code_checks.folder_state(folder))
+        if not changed:
+            info["estado"] = ""
+            return  # no ha cambiado nada: nada que comprobar
+        info["estado"] = "Comprobando con los tests…"
+        result = code_checks.run_tests(folder)
+        if result is None or result[0]:
+            # tests bien (o no hay): el analizador de errores en lo cambiado
+            lint = code_checks.run_lint(folder, changed)
+            if lint is not None and not lint[0]:
+                attempts += 1
+                if attempts > CODE_TEST_RETRIES:
+                    info["estado"] = "✗ El analizador sigue encontrando errores despues de devolverselo al agente."
+                    return
+                info["estado"] = f"✗ El analizador encuentra errores: se lo devuelvo al agente ({attempts} de " \
+                                 f"{CODE_TEST_RETRIES})…"
+                opencode_client.continue_task(base, session_id,
+                                              code_checks.lint_message(lint[1], attempts, CODE_TEST_RETRIES),
+                                              CONFIG["opencode"]["agent_code"])
+                time.sleep(20)
+                continue
+            # ultimo paso: que el AGENTS.md cuente lo que ha cambiado
+            info["final"] = ("✓ Chati ha ejecutado los tests y pasan." if result
+                             else "Este proyecto no tiene tests: Chati no ha podido comprobar los cambios.")
+            info["estado"] = "Actualizando el contexto del proyecto (AGENTS.md)…"
+            phase = "update"
+            opencode_client.continue_task(base, session_id, code_checks.context_update_request(),
+                                          CONFIG["opencode"]["agent_code"])
+            time.sleep(20)
+            continue
+        ok, output = result
+        attempts += 1
+        if attempts > CODE_TEST_RETRIES:
+            info["estado"] = "✗ Los tests siguen fallando despues de devolverselo al agente: revisalo."
+            return
+        info["estado"] = f"✗ Los tests fallan: se lo devuelvo al agente ({attempts} de {CODE_TEST_RETRIES})…"
+        log.info("Modo Codigo: tests fallan en %s, se lo devuelvo al agente (%d)", folder, attempts)
+        opencode_client.continue_task(base, session_id,
+                                      code_checks.failure_message(output, attempts, CODE_TEST_RETRIES),
+                                      CONFIG["opencode"]["agent_code"])
+        time.sleep(20)
+    info["estado"] = ""
 
 
 @app.get("/agent/tasks/{session_id}")
@@ -811,6 +966,8 @@ def _task_view(base_url: str, session_id: str) -> dict:
     # trabajando pero con su modelo aun sin cargar en Ollama: esta cargandolo
     task_model = view.get("model") or CONFIG["opencode"]["model"]
     view["model_loading"] = view["status"] != "idle" and task_model not in ollama.running_models()
+    # lo que hace Chati por su cuenta con la tarea (plan -> construir, tests)
+    view["verificacion"] = (_code_watch.get(session_id) or {}).get("estado", "")
     return view
 
 
@@ -1102,10 +1259,25 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
     if not req.text.strip():
         return JSONResponse({"detail": "Escribe que quieres que haga."}, status_code=400)
     agent = None
-    if req.code_mode in ("plan", "build"):
-        agent = CONFIG["opencode"]["agent_code_plan" if req.code_mode == "plan" else "agent_code"]
-    result = _opencode_call(opencode_client.continue_task, session_id, req.text.strip(), agent)
-    return result if isinstance(result, JSONResponse) else {"ok": True}
+    code_mode = req.code_mode
+    # contestar a las opciones del plan eligiendo una ("la 2", "adelante") es
+    # pasar a construir, aunque el selector siga en Planificar (2026-10-13)
+    if code_mode == "plan" and code_checks.is_approval(req.text):
+        code_mode = "build"
+    if code_mode in ("plan", "build"):
+        agent = CONFIG["opencode"]["agent_code_plan" if code_mode == "plan" else "agent_code"]
+    text = req.text.strip()
+    if code_mode == "build" and req.code_mode == "plan":
+        text = (f"{text}\n\n[Chati] El usuario ha elegido. Hazlo ahora paso a paso, marcando cada paso con "
+                "todowrite, y comprueba con los tests al final.")
+    result = _opencode_call(opencode_client.continue_task, session_id, text, agent)
+    if isinstance(result, JSONResponse):
+        return result
+    if code_mode == "build" and session_id not in _code_watch_running:
+        folder = opencode_client.session_dir(CONFIG["opencode"]["base_url"], session_id)
+        if folder and Path(folder).is_dir():
+            _start_code_watch(session_id, Path(folder), False)
+    return {"ok": True, "mode": code_mode}
 
 
 @app.post("/agent/questions/{request_id}")

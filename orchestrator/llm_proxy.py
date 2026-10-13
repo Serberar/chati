@@ -99,3 +99,12 @@ def cpu_when_gpu_busy(body: bytes, gpu_busy: bool) -> bytes:
         return body
     data["model"] = model.removesuffix(MIXED_SUFFIX) + "-cpu"
     return json.dumps(data, ensure_ascii=False).encode("utf-8")
+
+
+def model_of(body: bytes) -> str | None:
+    try:
+        data = json.loads(body) if body else None
+    except ValueError:
+        return None
+    model = data.get("model") if isinstance(data, dict) else None
+    return model if isinstance(model, str) else None

@@ -455,12 +455,12 @@
   .agent-changes .diff-list { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
   .agent-changes .turn { font-size: 11.5px; font-style: italic; }
   .agent-changes .file-head { color: var(--text); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
-  .agent-changes pre { margin: 3px 0 0; padding: 6px 0; max-height: 260px; overflow: auto; background: #0d1117;
+  .agent-changes pre, .perm-diff pre { margin: 3px 0 0; padding: 6px 0; max-height: 260px; overflow: auto; background: #0d1117;
     color: #d6dde6; border-radius: var(--radius-sm); font-size: 11.5px; line-height: 1.45; }
-  .agent-changes pre div { padding: 0 10px; white-space: pre-wrap; word-break: break-all; }
-  .agent-changes pre .add { background: rgba(63, 185, 80, .18); }
-  .agent-changes pre .del { background: rgba(248, 81, 73, .18); }
-  .agent-changes pre .hunk { color: #79c0ff; }
+  .agent-changes pre div, .perm-diff pre div { padding: 0 10px; white-space: pre-wrap; word-break: break-all; }
+  .agent-changes pre .add, .perm-diff pre .add { background: rgba(63, 185, 80, .18); }
+  .agent-changes pre .del, .perm-diff pre .del { background: rgba(248, 81, 73, .18); }
+  .agent-changes pre .hunk, .perm-diff pre .hunk { color: #79c0ff; }
   /* terminal en directo: salida de los comandos que ejecuta el agente */
   .agent-term { margin: 2px 0 0 22px; font-size: 12px; }
   .agent-term summary { cursor: pointer; color: var(--muted); user-select: none; }
@@ -513,6 +513,14 @@
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px;
     box-shadow: 0 8px 24px rgba(0,0,0,.35); }
   #codeProjectMenu.show { display: block; }
+  #codeShortcutsMenu { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 6px; z-index: 30;
+    width: 360px; max-width: calc(100vw - 32px); background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  #codeShortcutsMenu.show { display: block; }
+  #codeShortcutsMenu .item { display: block; width: 100%; text-align: left; border: none !important;
+    background: none !important; padding: 7px 8px !important; border-radius: 6px !important; }
+  #codeShortcutsMenu .item:hover { background: var(--panel-2) !important; }
+  #codeShortcutsMenu .item small { display: block; color: var(--muted); font-weight: 400; }
   #codeProjectMenu .item { display: block; width: 100%; text-align: left; border: none !important; background: none !important;
     padding: 7px 8px !important; border-radius: 6px !important; }
   #codeProjectMenu .item:hover { background: var(--panel-2) !important; }
@@ -1201,8 +1209,11 @@
         <div class="code-seg" title="Planificar: mira el proyecto y te propone, sin cambiar nada. Construir: hace los cambios (pidiendo permiso).">
           <button data-code-mode="plan">🧭 Planificar</button><button data-code-mode="build">🛠 Construir</button>
         </div>
-        <label title="Usa qwen3:8b en la GPU: varias veces más rápido, pero menos listo. Sin marcar, qwen3-coder 30B (CPU)."><input type="checkbox" id="codeFast"> Rápido</label>
+        <label title="Usa qwen3:8b: más rápido, pero bastante menos listo. Sin marcar, qwen3-coder 30B (parte en la tarjeta gráfica)."><input type="checkbox" id="codeFast"> Rápido</label>
+        <label title="Chati da él mismo los permisos normales (editar y crear archivos del proyecto, ejecutar tests, instalar paquetes) y solo te pregunta lo peligroso: borrar, git push o reset, desinstalar, publicar o tocar fuera del proyecto. Al acabar puedes ver y deshacer los cambios."><input type="checkbox" id="codeAuto"> 🚀 Sin preguntar</label>
         <button id="codeAnalyzeBtn" title="Lee el proyecto y escribe un AGENTS.md con su estructura y cómo se trabaja en él: el agente lo leerá en cada conversación">📋 Analizar proyecto</button>
+        <button id="codeShortcutsBtn" title="Tareas habituales con instrucciones pensadas para cada una">⚡ Atajos ▾</button>
+        <div id="codeShortcutsMenu"></div>
         <span id="codeGitWarn" style="display:none;">Sin git: no se podrán ver ni deshacer los cambios · <a id="codeGitInit">Activar</a></span>
       </div>
       <div id="agentAttachRow"></div>
@@ -1686,7 +1697,7 @@
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/js/theme.js?v=20261008b"></script>
+<script src="/static/js/theme.js?v=20261013e"></script>
 <style>
   html[data-theme="light"] {
     --bg: #f5f6f8;
@@ -1701,6 +1712,6 @@
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
 </style>
-<script src="/static/js/app.js?v=20261008b"></script>
+<script src="/static/js/app.js?v=20261013e"></script>
 </body>
 </html>

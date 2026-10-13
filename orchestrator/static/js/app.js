@@ -531,7 +531,7 @@ const MODES = {
   image: { desc: "Crear imágenes", endpoint: "/chat/stream", agent: "image", showTopbar: true, allowAttach: true, faceEndpoint: "/image_with_face", modelsEndpoint: "/models/image", credits: ["comfyui"] },
   video: { desc: "Crear vídeos", endpoint: "/chat/stream", agent: "video", showTopbar: true, allowAttach: true, faceEndpoint: "/video_with_face", modelsEndpoint: "/models/video", credits: ["comfyui"] },
   agente: { desc: "Tareas con tus archivos", isAgent: true, allowAttach: true, credits: ["opencode", "ollama"] },
-  codigo: { desc: "Programar en tus proyectos", isAgent: true, isCode: true, credits: ["opencode", "ollama"] },
+  codigo: { desc: "Programar en tus proyectos", isAgent: true, isCode: true, allowAttach: true, credits: ["opencode", "ollama"] },
   voice: { desc: "Habla y te responde con voz", isVoice: true, credits: ["whisper", "ollama", "piper"] },
 };
 
@@ -935,7 +935,8 @@ function applyMode(mode) {
   const plainAgent = !!m.isAgent && !m.isCode;
   document.getElementById("agentPowerLabel").classList.toggle("show", plainAgent);
   agentShortcutsRow.classList.toggle("show", plainAgent);
-  document.getElementById("agentAttachRow").style.display = plainAgent ? "" : "none";
+  // tambien en Codigo: una captura de un error para que el agente la mire (chati_ver_imagen)
+  document.getElementById("agentAttachRow").style.display = m.isAgent ? "" : "none";
   document.getElementById("codeBar").classList.toggle("show", !!m.isCode);
   if (plainAgent) loadAgentShortcuts();
   setModeDesc(m);
@@ -1046,9 +1047,34 @@ function bgRow(what, state, stateClass, actions) {
   return row;
 }
 
+let bgSeen = null;  // tareas del agente vistas en la ultima consulta (para avisar al terminar)
+
+function noticeBackground(p) {
+  const working = new Set(p.agent_tasks.map((t) => t.session_id));
+  const waiting = new Set((p.waiting_tasks || []).map((t) => t.session_id));
+  const before = bgSeen;
+  bgSeen = { working, waiting };
+  if (!before || !document.hidden || !window.Notification || Notification.permission !== "granted") return;
+  try {
+    for (const t of p.waiting_tasks || []) {
+      if (!before.waiting.has(t.session_id)) {
+        new Notification("✋ Chati necesita tu respuesta", { body: t.title || "Tarea del agente", tag: "chati-" + t.session_id,
+                                                             icon: "/static/icon-192.png" });
+      }
+    }
+    for (const sid of before.working) {
+      if (!working.has(sid) && !waiting.has(sid)) {
+        new Notification("✓ Tarea del agente terminada", { body: "Abre Chati para ver lo que ha hecho.", tag: "chati-" + sid,
+                                                          icon: "/static/icon-192.png" });
+      }
+    }
+  } catch (e) { /* nada */ }
+}
+
 async function refreshBackgroundTasks() {
   const p = await fetchPendingWork();
   if (!p) return;
+  noticeBackground(p);
   const waiting = p.waiting_tasks || [];
   const working = p.agent_tasks.length + p.generations_running + p.generations_queued;
   const total = working + waiting.length;
@@ -1608,6 +1634,7 @@ function renderCodeBar() {
   document.getElementById("codeFast").checked = codeState.fast;
   document.getElementById("codeGitWarn").style.display = p && !p.git ? "inline" : "none";
   document.getElementById("codeAnalyzeBtn").style.display = p ? "inline-block" : "none";
+  document.getElementById("codeShortcutsBtn").style.display = p ? "inline-block" : "none";
   document.getElementById("codeAnalyzeBtn").textContent = p && p.agents_md ? "📋 Actualizar AGENTS.md" : "📋 Analizar proyecto";
 }
 
@@ -1744,6 +1771,14 @@ document.getElementById("codeFast").addEventListener("change", (e) => {
   try { localStorage.setItem("ia_code_fast", codeState.fast ? "on" : "off"); } catch (err) { /* nada */ }
   prepareModelsForMode();
 });
+// "sin preguntar": se recuerda en este navegador
+(() => {
+  const auto = document.getElementById("codeAuto");
+  try { auto.checked = localStorage.getItem("ia_code_auto") === "on"; } catch (e) { /* nada */ }
+  auto.addEventListener("change", () => {
+    try { localStorage.setItem("ia_code_auto", auto.checked ? "on" : "off"); } catch (e) { /* nada */ }
+  });
+})();
 document.getElementById("codeGitInit").addEventListener("click", async () => {
   const p = codeState.project;
   if (!p || !confirm(`¿Activar git en «${p.name}»?\n\nSe crea una carpeta oculta .git en el proyecto. Sirve para que Chati pueda enseñarte y deshacer los cambios del agente. No se sube nada a internet.`)) return;
@@ -1752,6 +1787,60 @@ document.getElementById("codeGitInit").addEventListener("click", async () => {
     renderCodeBar();
   } catch (err) { alert(err.message || err); }
 });
+// Atajos del modo Codigo: tareas habituales con instrucciones pensadas para
+// cada una (con un modelo pequeño, una peticion bien guiada acierta mucho mas
+// que una libre). Sergio, 2026-10-13.
+const CODE_SHORTCUTS = [
+  { icon: "🔎", title: "Explícame el proyecto", mode: "plan", desc: "Para qué sirve, cómo está organizado y por dónde empezar",
+    text: "Explícame este proyecto: para qué sirve, cómo está organizado (carpetas y archivos importantes), qué " +
+      "tecnologías usa, cómo se ejecuta y cómo se prueba, y por qué archivos empezar a leer. Con ejemplos reales del " +
+      "proyecto. No cambies nada." },
+  { icon: "🧐", title: "Revisa mis cambios", mode: "plan", desc: "Lista de posibles fallos en lo que has cambiado",
+    text: "Revisa los cambios sin guardar en git de este proyecto (git status y git diff; si no hay, el último " +
+      "commit con git show). Busca fallos de lógica, casos que no se contemplan, errores que rompan algo, problemas " +
+      "de seguridad y tests que falten. Dame una lista ordenada de más grave a menos, cada punto con archivo, línea, " +
+      "qué pasa y cómo lo arreglarías. Si no ves nada importante, dilo. No cambies nada." },
+  { icon: "🧪", title: "Escribe tests", mode: "build", desc: "Tests para lo importante que no tiene",
+    text: "Mira qué partes importantes del proyecto no tienen tests y escribe tests para ellas, con el sistema de " +
+      "tests que ya use el proyecto (si no tiene ninguno, pytest para Python). Prueba el comportamiento real, casos " +
+      "normales y casos límite. No cambies el código que se prueba. Ejecuta los tests y dime cuáles has añadido y " +
+      "si pasan; si alguno falla por un fallo real del código, dímelo en vez de cambiar el test." },
+  { icon: "📦", title: "¿Dependencias al día?", mode: "plan", desc: "Versiones nuevas y cuáles pueden romper cosas",
+    text: "Revisa si las dependencias de este proyecto están al día (usa chati_revisar_actualizaciones). Dime cuáles " +
+      "tienen versión nueva, cuáles son cambios de versión mayor que pueden romper cosas y, para las importantes, qué " +
+      "cambia (busca sus notas de versión). No actualices nada." },
+  { icon: "💾", title: "Haz commit", mode: "build", desc: "Mensaje claro de qué y por qué, sin subir nada",
+    text: "Mira git status y git diff y haz un commit con lo cambiado. Mensaje en español: primera línea corta con qué " +
+      "cambia, y debajo por qué. Si hay archivos que no deberían ir (contraseñas, .env, temporales, carpetas venv o " +
+      "node_modules), no los añadas y avísame. No hagas push." },
+];
+
+function renderCodeShortcuts() {
+  const menu = document.getElementById("codeShortcutsMenu");
+  menu.innerHTML = "";
+  for (const sc of CODE_SHORTCUTS) {
+    const b = document.createElement("button");
+    b.className = "item";
+    b.textContent = `${sc.icon} ${sc.title}`;
+    const small = document.createElement("small");
+    small.textContent = sc.desc;
+    b.appendChild(small);
+    b.addEventListener("click", () => {
+      menu.classList.remove("show");
+      startAgentTask(sc.text, { codeMode: sc.mode });
+    });
+    menu.appendChild(b);
+  }
+}
+
+document.getElementById("codeShortcutsBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const menu = document.getElementById("codeShortcutsMenu");
+  if (menu.classList.toggle("show")) renderCodeShortcuts();
+});
+document.getElementById("codeShortcutsMenu").addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", () => document.getElementById("codeShortcutsMenu").classList.remove("show"));
+
 document.getElementById("codeAnalyzeBtn").addEventListener("click", () => {
   startAgentTask("Analiza este proyecto: para qué sirve, estructura de carpetas, tecnologías, cómo se ejecuta y cómo " +
     "se prueba, y las convenciones del código. Después crea (o actualiza, si ya existe) el archivo AGENTS.md en la raíz " +
@@ -2888,6 +2977,7 @@ async function uploadAgentAttachments(files) {
 }
 
 async function startAgentTask(text, opts = {}) {
+  askNotificationPermission();  // para avisar cuando termine (la pide una sola vez)
   const files = agentPendingFiles;
   agentPendingFiles = [];
   renderAgentAttachments();
@@ -2918,7 +3008,8 @@ async function startAgentTask(text, opts = {}) {
     if (MODES[currentMode].isCode) {
       if (!codeState.project) throw new Error("Primero abre un proyecto (📁 abajo a la izquierda).");
       Object.assign(body, { project: codeState.project.path, plan: (opts.codeMode || codeState.mode) === "plan",
-                            rapido: codeState.fast, potente: false });
+                            rapido: codeState.fast, potente: false,
+                            autonomo: document.getElementById("codeAuto").checked });
     }
     const data = await agentPost("/agent/tasks", body);
     if (data.needs_choice) renderAgentChoice(data.task, data.reason, data.attachments || []);
@@ -2987,7 +3078,13 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
       body.code_mode = view.codeMode;
     }
     try {
-      await agentPost(`/agent/tasks/${sessionId}/message`, body);
+      const reply = await agentPost(`/agent/tasks/${sessionId}/message`, body);
+      // elegir una opcion del plan ("la 2", "adelante") pasa a Construir
+      if (view.codeMode === "plan" && reply.mode === "build") {
+        view.codeMode = codeState.mode = "build";
+        try { localStorage.setItem("ia_code_mode", "build"); } catch (e) { /* nada */ }
+        renderCodeBar();
+      }
     } catch (err) {
       alert("No se pudo mandar: " + (err.message || err));
       followInput.disabled = followBtn.disabled = false;
@@ -3038,7 +3135,10 @@ async function pollAgentView(view) {
 function agentDone(view, data) {
   const settled = data.status === "idle" &&
     (data.steps.length > view.stepsAtSend || data.error || Date.now() - (view.sentAt || view.openedAt) > 20000);
-  return settled && !data.questions.length && !data.permissions.length;
+  // Chati sigue con la tarea por su cuenta (plan -> construir, tests que
+  // fallan y se le devuelven): estado que acaba en "…" = todavia no ha acabado
+  const chatiWorking = (data.verificacion || "").endsWith("…");
+  return settled && !chatiWorking && !data.questions.length && !data.permissions.length;
 }
 
 // Seguir la tarea EN DIRECTO (n.º 3 del roadmap): el servidor reenvia los
@@ -3082,7 +3182,41 @@ function followAgentView(view) {
   }
 }
 
+// Aviso cuando una tarea del agente termina o se para a preguntar y no se
+// esta mirando Chati: notificacion del sistema (si se dio permiso) y el titulo
+// de la pestaña. Las tareas largas duran 10-20 min (Sergio, 2026-10-13).
+let titleBeforeNotice = null;
+
+function noticeAgent(view, data) {
+  const state = (data.questions.length || data.permissions.length) ? "ask" : (agentDone(view, data) ? "done" : "busy");
+  const before = view.noticeState;
+  view.noticeState = state;
+  if (!before || before === state || state === "busy" || !document.hidden) return;
+  const what = (data.title || data.task || "Tarea del agente").slice(0, 80);
+  const head = state === "ask" ? "✋ Chati necesita tu respuesta" : (data.error ? "⚠ La tarea se ha parado" : "✓ Tarea terminada");
+  const detail = state === "ask" ? "Te pide permiso o te hace una pregunta: " + what : (data.verificacion || what);
+  if (titleBeforeNotice === null) titleBeforeNotice = document.title;
+  document.title = `${head} · Chati`;
+  try {
+    if (window.Notification && Notification.permission === "granted") {
+      const n = new Notification(head, { body: detail, icon: "/static/icon-192.png", tag: "chati-" + view.sessionId });
+      n.onclick = () => { window.focus(); n.close(); };
+    }
+  } catch (e) { /* sin notificaciones: queda el titulo */ }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && titleBeforeNotice !== null) { document.title = titleBeforeNotice; titleBeforeNotice = null; }
+});
+
+function askNotificationPermission() {
+  try {
+    if (window.Notification && Notification.permission === "default") Notification.requestPermission();
+  } catch (e) { /* nada */ }
+}
+
 function renderAgentView(view, data) {
+  noticeAgent(view, data);
   const busy = data.status !== "idle";
   let cls = "agent-status", text;
   if (data.questions.length) { cls += " waiting"; text = "Esperando tu respuesta ↓"; }
@@ -3096,7 +3230,7 @@ function renderAgentView(view, data) {
     if (view.startedAt) {
       const secs = Math.floor((Date.now() - view.startedAt) / 1000);
       const elapsed = secs >= 60 ? `${Math.floor(secs / 60)} min ${secs % 60}s` : `${secs}s`;
-      text = `Trabajando... ${elapsed}` + (secs > 40 ? " (el modelo corre en CPU, es normal que tarde)" : "");
+      text = `Trabajando... ${elapsed}` + (secs > 40 ? " (el modelo local tarda, es normal)" : "");
     } else {
       text = "Trabajando...";
     }
@@ -3107,6 +3241,9 @@ function renderAgentView(view, data) {
   else if (data.steps.length <= view.stepsAtSend && Date.now() - (view.sentAt || view.openedAt) < 20000) {
     text = "Empezando…";
   }
+  else if ((data.verificacion || "").endsWith("…")) { text = data.verificacion; }
+  else if ((data.verificacion || "").startsWith("✗")) { cls += " failed"; text = data.verificacion; }
+  else if (data.verificacion) { cls += " done"; text = "Terminado. " + data.verificacion; }
   else { cls += " done"; text = "Terminado ✓"; }
   view.statusEl.className = cls;
   view.statusEl.textContent = text;
@@ -3292,6 +3429,22 @@ function renderAgentChanges(view, data, busy) {
   el.append(bar, note);
 }
 
+// Las lineas de un parche (diff) con color: añadidas, quitadas y cabeceras de
+// trozo. Se quitan las cabeceras del archivo (Index:, ===, ---, +++).
+function buildPatchPre(patch) {
+  const pre = document.createElement("pre");
+  for (const line of (patch || "").split("\n")) {
+    if (/^(Index:|={5,}|--- |\+\+\+ )/.test(line) || line === "") continue;
+    const div = document.createElement("div");
+    div.textContent = line.replace(/\r$/, "");
+    if (line.startsWith("@@")) div.className = "hunk";
+    else if (line.startsWith("+")) div.className = "add";
+    else if (line.startsWith("-")) div.className = "del";
+    pre.appendChild(div);
+  }
+  return pre;
+}
+
 function renderAgentDiffs(list, info) {
   list.innerHTML = "";
   const turns = info.turns.filter((t) => t.files.length);
@@ -3316,18 +3469,7 @@ function renderAgentDiffs(list, info) {
       minus.className = "minus";
       minus.textContent = `−${f.deletions}`;
       head.append(plus, minus);
-      const pre = document.createElement("pre");
-      // se quitan las cabeceras del parche (Index:, ===, ---, +++): solo lineas
-      for (const line of (f.patch || "").split("\n")) {
-        if (/^(Index:|={5,}|--- |\+\+\+ )/.test(line) || line === "") continue;
-        const div = document.createElement("div");
-        div.textContent = line.replace(/\r$/, "");
-        if (line.startsWith("@@")) div.className = "hunk";
-        else if (line.startsWith("+")) div.className = "add";
-        else if (line.startsWith("-")) div.className = "del";
-        pre.appendChild(div);
-      }
-      box.append(head, pre);
+      box.append(head, buildPatchPre(f.patch));
       list.appendChild(box);
     }
   }
@@ -3460,6 +3602,16 @@ function buildPermissionCard(view, perm) {
     code.className = "pattern";
     code.textContent = pattern;
     box.appendChild(code);
+  }
+  // al editar: el cambio que va a hacer, para decidir antes de permitirlo
+  if (perm.diff) {
+    const label = document.createElement("div");
+    label.className = "q";
+    label.textContent = "Cambio propuesto:";
+    const wrap = document.createElement("div");
+    wrap.className = "diff-list perm-diff";
+    wrap.appendChild(buildPatchPre(perm.diff));
+    box.append(label, wrap);
   }
   const opts = document.createElement("div");
   opts.className = "opts";
