@@ -502,7 +502,18 @@
   #agentAttachRow .aa-chip button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 13px; }
   #agentAttachRow .aa-chip button:hover { color: var(--error); }
   .agent-attach-list { font-size: 12px; color: var(--muted); margin-top: 6px; }
-  #agentShortcutsRow { display: none; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  #agentShortcutsRow { display: none; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; position: relative; }
+  .pop-menu { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 6px; z-index: 30;
+    width: 320px; max-width: calc(100vw - 32px); background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  .pop-menu.show { display: block; }
+  .pop-menu .item, #codeShortcutsMenu .item.toggle { display: flex; align-items: center; gap: 6px; width: 100%;
+    text-align: left; border: none; background: none; color: var(--text); font: inherit; font-size: 13px;
+    padding: 8px; border-radius: 6px; cursor: pointer; box-sizing: border-box; }
+  .pop-menu .item:hover { background: var(--panel-2); }
+  #agentShortcutsRow .pop-menu .item { border: none; border-radius: 6px; background: none; padding: 8px; font-size: 13px; }
+  #agentShortcutsRow .pop-menu .item:hover { background: var(--panel-2); }
+  .pop-menu .item.toggle input, #codeShortcutsMenu .item.toggle input { width: auto; margin: 0; }
   /* modo Codigo: barra del proyecto */
   #codeBar { display: none; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; position: relative; }
   #codeBar.show { display: flex; }
@@ -987,6 +998,16 @@
     #inputFooter { flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; }
     #inputFooter .hint { display: none; }
     #codeBar { flex-wrap: wrap; }
+    /* lo que se usa poco va dentro del menu de atajos (renderCodeShortcuts) */
+    #codeBar > label, #codeAnalyzeBtn { display: none !important; }
+    #codeProjectName { display: inline-block; max-width: 19vw; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; vertical-align: bottom; }
+    #codeShortcutsBtn .lbl { display: none; }
+    #codeBar { gap: 6px; }
+    #codeBar .code-seg button { padding: 5px 7px; }
+    #codeBar #codeShortcutsBtn, #codeBar #codeProjectBtn { padding: 5px 8px; }
+    /* "Modelo potente" esta dentro del menu de atajos del modo Agente */
+    #agentPowerLabel.show { display: none; }
     input, select, textarea { font-size: 16px; }
     #topbar select { font-size: 14px; }
     /* ventanas: a pantalla completa (muchas llevan margenes en linea) */
@@ -1230,7 +1251,7 @@
         <label title="Usa qwen3:8b: más rápido, pero bastante menos listo. Sin marcar, qwen3-coder 30B (parte en la tarjeta gráfica)."><input type="checkbox" id="codeFast"> Rápido</label>
         <label title="Chati da él mismo los permisos normales (editar y crear archivos del proyecto, ejecutar tests, instalar paquetes) y solo te pregunta lo peligroso: borrar, git push o reset, desinstalar, publicar o tocar fuera del proyecto. Al acabar puedes ver y deshacer los cambios."><input type="checkbox" id="codeAuto"> 🚀 Sin preguntar</label>
         <button id="codeAnalyzeBtn" title="Lee el proyecto y escribe un AGENTS.md con su estructura y cómo se trabaja en él: el agente lo leerá en cada conversación">📋 Analizar proyecto</button>
-        <button id="codeShortcutsBtn" title="Tareas habituales con instrucciones pensadas para cada una">⚡ Atajos ▾</button>
+        <button id="codeShortcutsBtn" title="Tareas habituales con instrucciones pensadas para cada una">⚡<span class="lbl"> Atajos</span> ▾</button>
         <div id="codeShortcutsMenu"></div>
         <span id="codeGitWarn" style="display:none;">Sin git: no se podrán ver ni deshacer los cambios · <a id="codeGitInit">Activar</a></span>
       </div>
@@ -1716,7 +1737,7 @@
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
-<script src="/static/js/theme.js?v=20261013l"></script>
+<script src="/static/js/theme.js?v=20261013p"></script>
 <style>
   html[data-theme="light"] {
     --bg: #f5f6f8;
@@ -1731,6 +1752,6 @@
     --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   }
 </style>
-<script src="/static/js/app.js?v=20261013l"></script>
+<script src="/static/js/app.js?v=20261013p"></script>
 </body>
 </html>

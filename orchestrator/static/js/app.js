@@ -1851,6 +1851,14 @@ function renderCodeShortcuts() {
   const own = agentShortcuts.filter((x) => x.donde === "plan" || x.donde === "build")
     .map((x) => ({ icon: "⭐", title: x.name, mode: x.donde, text: x.task,
                    desc: x.donde === "plan" ? "Tuyo · solo mira y propone" : "Tuyo · hace cambios" }));
+  if (compactQuery.matches) {
+    menu.appendChild(menuToggle("Rápido (modelo pequeño)", document.getElementById("codeFast")));
+    menu.appendChild(menuToggle("🚀 Sin preguntar", document.getElementById("codeAuto")));
+    menu.appendChild(menuItem("📋 Analizar proyecto", () => {
+      menu.classList.remove("show");
+      document.getElementById("codeAnalyzeBtn").click();
+    }));
+  }
   for (const sc of [...CODE_SHORTCUTS, ...own]) {
     const b = document.createElement("button");
     b.className = "item";
@@ -1948,8 +1956,74 @@ async function loadAgentShortcuts() {
   renderAgentShortcuts();
 }
 
+// En el movil los atajos ocupaban dos lineas encima de donde se escribe
+// (Sergio, 2026-10-13: "ocupa mucho para a lo mejor ni usarlo"): ahi van en
+// un menu que se despliega
+const compactQuery = window.matchMedia("(max-width: 760px)");
+compactQuery.addEventListener("change", () => renderAgentShortcuts());
+
+function popMenu(button, menu) {
+  button.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.querySelectorAll(".pop-menu.show").forEach((m) => { if (m !== menu) m.classList.remove("show"); });
+    menu.classList.toggle("show");
+  });
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => menu.classList.remove("show"));
+}
+
+function menuItem(text, onClick) {
+  const b = document.createElement("button");
+  b.className = "item";
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function menuToggle(text, source) {
+  // casilla del menu que maneja la de verdad (la que leen el resto de funciones)
+  const label = document.createElement("label");
+  label.className = "item toggle";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = source.checked;
+  box.addEventListener("change", () => {
+    source.checked = box.checked;
+    source.dispatchEvent(new Event("change"));
+  });
+  label.append(box, document.createTextNode(" " + text));
+  return label;
+}
+
+function renderAgentShortcutsCompact() {
+  const own = agentShortcuts.filter((x) => (x.donde || "agente") === "agente");
+  const button = document.createElement("button");
+  button.className = "compact-toggle";
+  button.textContent = "⚡ Atajos ▾" + (agentPowerToggle.checked ? " · 🧠" : "");
+  const menu = document.createElement("div");
+  menu.className = "pop-menu";
+  for (const sc of own) {
+    menu.appendChild(menuItem("⚡ " + sc.name + (sc.potente ? " 🧠" : ""), () => {
+      menu.classList.remove("show");
+      startAgentTask(sc.task, { potente: sc.potente });
+    }));
+  }
+  const power = menuToggle("Modelo potente (más lento)", agentPowerToggle);
+  power.querySelector("input").addEventListener("change", () => {
+    button.textContent = "⚡ Atajos ▾" + (agentPowerToggle.checked ? " · 🧠" : "");
+  });
+  menu.appendChild(power);
+  menu.appendChild(menuItem(own.length ? "⚙ Gestionar atajos" : "+ Crear atajo", () => {
+    menu.classList.remove("show");
+    openShortcutsModal();
+  }));
+  popMenu(button, menu);
+  agentShortcutsRow.append(button, menu);
+}
+
 function renderAgentShortcuts() {
   agentShortcutsRow.innerHTML = "";
+  if (compactQuery.matches) { renderAgentShortcutsCompact(); return; }
   for (const sc of agentShortcuts.filter((x) => (x.donde || "agente") === "agente")) {
     const b = document.createElement("button");
     b.textContent = "⚡ " + sc.name + (sc.potente ? " 🧠" : "");
