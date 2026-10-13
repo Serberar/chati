@@ -423,7 +423,8 @@ $opencodeConfig = @'
   "shell": "powershell",
   "instructions": ["AGENTS.md", "__MEMORY_INDEX__"],
   "mcp": {
-    "chati": { "type": "local", "command": ["__ORCH_PY__", "__ORCH_DIR__/agent_mcp.py"], "enabled": true }
+    "chati": { "type": "local", "command": ["__ORCH_PY__", "__ORCH_DIR__/agent_mcp.py"], "enabled": true,
+               "timeout": 600000 }
   },
   "permission": {
     "edit": "ask",

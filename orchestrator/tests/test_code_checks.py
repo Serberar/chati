@@ -163,3 +163,17 @@ def test_watch_asks_to_repeat_a_tool_call_written_as_text(tmp_path):
         main._watch_code_task("ses_1", tmp_path, False, info)
     assert len(sent) == 1 and "como texto" in sent[0][2]
     assert sent[0][3] == main.CONFIG["opencode"]["agent_code_plan"]
+
+
+def test_task_view_says_checking_while_the_watch_runs():
+    import main
+    idle = {"permissions": [], "questions": [], "status": "idle", "error": None, "steps": [], "model": None}
+    with patch.object(main.opencode_client, "get_task_view", side_effect=lambda *a: dict(idle)), \
+         patch.object(main.ollama, "running_models", return_value=[]):
+        main._code_watch["ses_v"] = {"estado": "", "solo_mirar": False}
+        main._code_watch_running.add("ses_v")
+        try:
+            assert main._task_view("http://x", "ses_v")["verificacion"].endswith("…")
+        finally:
+            main._code_watch_running.discard("ses_v")
+        assert main._task_view("http://x", "ses_v")["verificacion"] == ""

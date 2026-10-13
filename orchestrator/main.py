@@ -1011,7 +1011,12 @@ def _task_view(base_url: str, session_id: str) -> dict:
     task_model = view.get("model") or CONFIG["opencode"]["model"]
     view["model_loading"] = view["status"] != "idle" and task_model not in ollama.running_models()
     # lo que hace Chati por su cuenta con la tarea (plan -> construir, tests)
-    view["verificacion"] = (_code_watch.get(session_id) or {}).get("estado", "")
+    watch = _code_watch.get(session_id) or {}
+    view["verificacion"] = watch.get("estado", "")
+    # entre que el agente para y el vigilante lo ve pasan unos segundos: sin
+    # esto la tarjeta decia "Terminado" (y avisaba) justo antes de comprobarlo
+    if not view["verificacion"] and session_id in _code_watch_running and not watch.get("solo_mirar"):
+        view["verificacion"] = "Comprobando el trabajo…"
     view["deshacer"] = checkpoints.available(session_id)
     return view
 
