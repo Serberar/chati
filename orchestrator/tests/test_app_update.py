@@ -92,7 +92,7 @@ def test_install_runs_the_verified_installer_in_update_mode(monkeypatch):
     assert app_update.install() == "1.2.0"
 
     path, verb, args = started[0]
-    assert verb == "runas" and "/UPDATE=1" in args
+    assert verb == "open" and "/UPDATE=1" in args
     assert open(path, "rb").read() == body
 
 

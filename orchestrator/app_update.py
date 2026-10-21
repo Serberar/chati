@@ -2,8 +2,8 @@
 
 Comprobar solo lee los datos de la ultima release. Instalar lo pide el
 administrador con un boton: se baja el instalador, se compara su huella
-SHA-256 con la que publica GitHub para ese archivo y se lanza con permisos
-de administrador (el codigo vive en Archivos de Programa). El instalador
+SHA-256 con la que publica GitHub para ese archivo y se lanza (pide permiso
+de administrador: el codigo vive en Archivos de Programa). El instalador
 cierra Chati, cambia el codigo y la vuelve a abrir (setup/chati_installer.iss)."""
 
 import hashlib
@@ -110,9 +110,11 @@ def install() -> str:
     target = DOWNLOAD_DIR / f"ChatiIA-Instalador-{latest['version']}.exe"
     _download(latest["url"], latest["sha256"], target)
     try:
-        # "runas": Windows pide permiso de administrador. /UPDATE=1: sin
-        # preguntas, sin bajar modelos y vuelve a abrir Chati al acabar
-        os.startfile(str(target), "runas", "/SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1")
+        # Sin "runas": el instalador pide el permiso de administrador el mismo
+        # y recuerda al usuario normal para volver a abrir Chati sin permisos
+        # (runasoriginaluser). Lanzado ya elevado, Chati volvia a abrirse como
+        # administrador (2026-10-21). /UPDATE=1: sin preguntas ni modelos.
+        os.startfile(str(target), "open", "/SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1")
     except OSError as exc:
-        raise UpdateError("No se dio permiso de administrador: Chati no se ha actualizado.") from exc
+        raise UpdateError(f"No se pudo abrir el instalador: {exc}") from exc
     return latest["version"]
