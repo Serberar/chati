@@ -36,6 +36,8 @@ import computers
 import face_swap
 import access
 import agent_attachments
+import app_update
+import autostart
 import job_search
 import shopping
 import web_tools
@@ -634,6 +636,63 @@ def trigger_model_update(model: str = Form(...), request: Request = None):
         return JSONResponse({"detail": f"Modelo desconocido o no instalado: {model}"}, status_code=400)
     subprocess.Popen(["ollama", "pull", model], creationflags=subprocess.CREATE_NO_WINDOW)
     return {"ok": True, "message": f"Descarga de {model} iniciada en segundo plano."}
+
+
+@app.get("/app/update")
+def get_app_update(request: Request, force: bool = False):
+    """¿Hay una version de Chati mas nueva en GitHub? (app_update.py)"""
+    if request.state.session["role"] != "admin":
+        return JSONResponse({"detail": "Solo un administrador puede actualizar Chati."}, status_code=403)
+    return app_update.check(force=force)
+
+
+@app.post("/app/update")
+def install_app_update(request: Request):
+    """Baja la version nueva y lanza su instalador, que cierra Chati y la
+    vuelve a abrir. Solo desde este ordenador: Windows pide ahi el permiso
+    de administrador, y desde el movil nadie lo veria."""
+    if request.state.session["role"] != "admin":
+        return JSONResponse({"detail": "Solo un administrador puede actualizar Chati."}, status_code=403)
+    if not security.is_local_host(request.headers.get("host", "")):
+        return JSONResponse({"detail": "Actualiza desde el propio ordenador: Windows pide permiso allí."},
+                            status_code=403)
+    try:
+        version = app_update.install()
+    except app_update.UpdateError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=502)
+    log.info("Actualizacion de Chati a la %s lanzada", version)
+    return {"ok": True, "version": version}
+
+
+def _local_admin_error(request: Request) -> JSONResponse | None:
+    if request.state.session["role"] != "admin":
+        return JSONResponse({"detail": "Solo un administrador puede cambiar esto."}, status_code=403)
+    if not security.is_local_host(request.headers.get("host", "")):
+        return JSONResponse({"detail": "Esto se cambia desde el propio ordenador."}, status_code=403)
+    return None
+
+
+@app.get("/app/autostart")
+def get_autostart(request: Request):
+    """¿Chati arranca al iniciar Windows? (autostart.py) Es de este ordenador:
+    desde el movil no se ofrece."""
+    return _local_admin_error(request) or {"enabled": autostart.enabled()}
+
+
+class AutostartRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/app/autostart")
+def set_autostart(req: AutostartRequest, request: Request):
+    error = _local_admin_error(request)
+    if error:
+        return error
+    try:
+        autostart.set_enabled(req.enabled)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return JSONResponse({"detail": f"No se pudo cambiar: {exc}"}, status_code=500)
+    return {"enabled": autostart.enabled()}
 
 
 @app.delete("/models/text/{model}")

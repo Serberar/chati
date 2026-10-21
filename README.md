@@ -26,9 +26,26 @@ setup/          # Instalador, arranque, watchdog, backups y restauración
 MANUAL_DE_USO.md
 ```
 
+## Instalar
+
+Descarga **[ChatiIA-Instalador.exe](https://github.com/Serberar/chati/releases/latest/download/ChatiIA-Instalador.exe)** (la última versión, en [Releases](https://github.com/Serberar/chati/releases)) y ábrelo. Pide permisos de administrador, crea la cuenta de administrador y deja elegir qué modelos descargar y si Chati arranca al iniciar Windows. Instala lo que falte (Python, Ollama, Git, Node, ComfyUI…), así que la primera vez tarda.
+
 ## Uso
 
-Tras instalarlo, el acceso directo **«Arrancar IA Personal»** levanta Ollama, ComfyUI y el orquestador y abre **http://localhost:8899**. La guía completa para el usuario está en [MANUAL_DE_USO.md](MANUAL_DE_USO.md).
+Tras instalarlo, el acceso directo **«Chati IA»** del escritorio levanta Ollama, ComfyUI y el orquestador y abre la ventana de Chati (también en **http://localhost:8899**). La guía completa para el usuario está en [MANUAL_DE_USO.md](MANUAL_DE_USO.md).
+
+En **Opciones**:
+
+- **Buscar actualizaciones de Chati**: cuando hay una versión nueva en Releases sale un aviso arriba; con **Actualizar** se descarga, se comprueba su huella SHA-256 y se instala (Windows pide permiso), y Chati se vuelve a abrir sola. Los datos y los modelos no se tocan.
+- **Arrancar con Windows**: si está en «no», al encender el ordenador no se carga nada en memoria hasta que abres Chati.
+
+## Publicar una versión
+
+1. Sube `VERSION` en `orchestrator/version.py`.
+2. Compila: `powershell -ExecutionPolicy Bypass -File setup\build_release.ps1` (necesita `orchestrator\venv`, creado con `python -m venv orchestrator\venv` y `pip install -r orchestrator\requirements.lock.txt pyinstaller`, e [Inno Setup 6](https://jrsoftware.org/isinfo.php)).
+3. Crea una release con la etiqueta `vX.Y.Z` y adjunta `setup\Output\ChatiIA-Instalador.exe` (con ese nombre).
+
+Las Chati instaladas la verán como mucho en 6 horas, o al pulsar **Buscar actualizaciones**.
 
 ## Autor
 

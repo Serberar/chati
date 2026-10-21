@@ -1,14 +1,18 @@
-﻿; Instalador de Chati IA (Inno Setup). Para recompilar tras tocar codigo:
-;   powershell -ExecutionPolicy Bypass -File build_launcher.ps1   (ChatiIA.exe)
-;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" chati_installer.iss
-; No hace falta tocar este archivo salvo que cambies la version, anadas una
-; carpeta nueva de nivel superior, o cambies el catalogo de modelos (ver
+﻿; Instalador de Chati IA (Inno Setup). Se compila con build_release.ps1, que
+; hace antes ChatiIA.exe y le pasa la version de orchestrator\version.py.
+; No hace falta tocar este archivo salvo que anadas una carpeta nueva de
+; nivel superior, o cambies el catalogo de modelos (ver
 ; orchestrator\model_catalog.py, que es la fuente real de verdad para las
 ; URLs de descarga - la lista de aqui abajo es solo para mostrarla en el
 ; asistente, mantenla sincronizada a mano si cambias el catalogo).
+;
+; Con /UPDATE=1 (lo pasa la propia app al actualizarse, app_update.py) no
+; crea administrador ni baja modelos, y al acabar vuelve a abrir Chati.
 
 #define MyAppName "Chati IA"
-#define MyAppVersion "1.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0"
+#endif
 
 [Setup]
 AppName={#MyAppName}
@@ -39,11 +43,21 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 [CustomMessages]
 spanish.WelcomeCredit=Creada por Sergio Bernabé.
 
+[Tasks]
+Name: "autostart"; Description: "Arrancar Chati al iniciar Windows (si no, arranca al abrirla; se puede cambiar en Opciones)"
+
+[InstallDelete]
+; el lanzador de la version anterior entero: PyInstaller cambia sus archivos
+; internos entre compilaciones y los que sobran no se borrarian
+Type: filesandordirs; Name: "{app}\ChatiIA"
+
 [Files]
+; PrepareToInstall lo usa para cerrar Chati antes de copiar nada
+Source: "stop_chati.ps1"; Flags: dontcopy
 Source: "..\orchestrator\*"; DestDir: "{app}\orchestrator"; Flags: recursesubdirs ignoreversion; \
     Excludes: "venv\*,__pycache__\*,.pytest_cache\*,outputs\*,_persona_upload_*,test_*.png,test_*.mp4,test_*.wav,test_*.webm,i2v_*.png,server.log"
 Source: "..\setup\*"; DestDir: "{app}\setup"; Flags: recursesubdirs ignoreversion; \
-    Excludes: "watchdog.log,watchdog.log.old,last_backup.txt,chati_installer.iss,probar_instalador.wsb,Output\*"
+    Excludes: "watchdog.log,watchdog.log.old,last_backup.txt,chati_installer.iss,build_release.ps1,probar_instalador.wsb,Output\*"
 Source: "..\AGENTS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\MANUAL_DE_USO.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\icono.ico"; DestDir: "{app}"; Flags: ignoreversion
@@ -59,23 +73,27 @@ Name: "{userdesktop}\Chati IA"; Filename: "{app}\ChatiIA\ChatiIA.exe"; \
 
 [Run]
 Filename: "powershell.exe"; \
-    Parameters: "-ExecutionPolicy Bypass -File ""{app}\setup\install.ps1"" -AiRoot ""{app}"""; \
+    Parameters: "-ExecutionPolicy Bypass -File ""{app}\setup\install.ps1"" -AiRoot ""{app}"" -Autostart {code:AutostartArg}"; \
     StatusMsg: "Instalando Ollama, ComfyUI y los entornos de Python (puede tardar varios minutos)..."; \
     Flags: waituntilterminated
 Filename: "{app}\orchestrator\venv\Scripts\python.exe"; \
     Parameters: "installer_create_admin.py --from-file ""{tmp}\chati_admin.txt"""; \
     WorkingDir: "{app}\orchestrator"; \
     StatusMsg: "Creando el usuario administrador..."; \
-    Flags: waituntilterminated runhidden
+    Flags: waituntilterminated runhidden; Check: not IsUpdate
 Filename: "{app}\orchestrator\venv\Scripts\python.exe"; \
     Parameters: "installer_download_models.py --selected-file ""{tmp}\chati_selected_models.txt"""; \
     WorkingDir: "{app}\orchestrator"; \
     StatusMsg: "Descargando los modelos elegidos..."; \
-    Flags: waituntilterminated
+    Flags: waituntilterminated; Check: not IsUpdate
 Filename: "{app}\ChatiIA\ChatiIA.exe"; \
     WorkingDir: "{app}\ChatiIA"; \
     Description: "Arrancar Chati IA ahora"; \
     Flags: postinstall nowait skipifsilent runasoriginaluser
+; al actualizar se vuelve a abrir lo que cerro stop_chati.ps1 (la ventana
+; arranca tambien los servicios y el vigilante, ver start_all.ps1)
+Filename: "{app}\ChatiIA\ChatiIA.exe"; WorkingDir: "{app}\ChatiIA"; \
+    Flags: nowait runasoriginaluser; Check: IsUpdate
 
 [Code]
 type
@@ -181,6 +199,34 @@ begin
   if DataRoot = '' then
     DataRoot := ExpandConstant('{localappdata}\ChatiIA');
   Result := FileExists(AddBackslash(DataRoot) + 'data\users.db');
+end;
+
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
+// al actualizar se respeta lo que se eligio en Opciones de la app
+function AutostartArg(Param: String): String;
+begin
+  if IsUpdate then
+    Result := 'igual'
+  else if WizardIsTaskSelected('autostart') then
+    Result := 'si'
+  else
+    Result := 'no';
+end;
+
+// Con Chati abierta no se pueden cambiar sus archivos (la ventana los
+// bloquea) y el orquestador seguiria con el codigo viejo
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  ExtractTemporaryFile('stop_chati.ps1');
+  Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\stop_chati.ps1') +
+       '" -AiRoot "' + ExpandConstant('{app}') + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -289,8 +335,9 @@ var
 begin
   // Al terminar: si alguna descarga de modelos fallo, decirlo (antes fallaba
   // en silencio y el chat decia luego "model not found" - Windows Sandbox,
-  // 2026-09-30). Lo escribe installer_download_models.py.
-  if CurStep = ssDone then
+  // 2026-09-30). Lo escribe installer_download_models.py. Al actualizar no
+  // se bajan modelos y el registro seria el de la instalacion anterior.
+  if (CurStep = ssDone) and not IsUpdate then
   begin
     DataRoot := GetEnv('CHATI_DATA_ROOT');
     if DataRoot = '' then

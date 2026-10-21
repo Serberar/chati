@@ -87,5 +87,18 @@ if (-not $ocUp) {
     Write-Host "El agente de codigo ya esta corriendo." -ForegroundColor Green
 }
 
+# Sin "arrancar con Windows" (Opciones) el vigilante no arranca al iniciar
+# sesion: se arranca aqui, para que siga reiniciando lo que se caiga y
+# haciendo la copia diaria mientras Chati se usa. Como el acceso directo de
+# install_watchdog.ps1.
+$watchdogScript = "$PSScriptRoot\watchdog.ps1"
+$watchdogRunning = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+    Where-Object { $_.CommandLine -like "*$watchdogScript*" }
+if (-not $watchdogRunning) {
+    Write-Host "=== Arrancando el vigilante ===" -ForegroundColor Cyan
+    Start-Process -FilePath "conhost.exe" -WorkingDirectory $PSScriptRoot `
+        -ArgumentList "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$watchdogScript`""
+}
+
 Start-Sleep -Seconds 5
 Write-Host "`n=== Listo. Abre http://localhost:8899 en el navegador. ===" -ForegroundColor Cyan

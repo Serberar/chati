@@ -242,6 +242,8 @@ async function initSessionUI() {
   loadAvatar();
   if (me.role === "admin") document.getElementById("adminBtn").style.display = "";
   if (me.role === "admin") document.getElementById("optErrorsBtn").style.display = "";
+  if (me.role === "admin") setupAppUpdates();
+  if (me.role === "admin" && ["127.0.0.1", "localhost"].includes(location.hostname)) setupAutostart();
   // las metricas son de todo el sistema: solo el administrador
   if (me.role !== "admin") document.getElementById("optMetricsBtn").style.display = "none";
   // OpenCode solo escucha en este ordenador (127.0.0.1): desde el movil el enlace no abria nada
@@ -2223,6 +2225,88 @@ async function announceOtherComputers() {
   const dismiss = () => { banner.style.display = "none"; try { sessionStorage.setItem("chati_other_pc_seen", "1"); } catch (e) { /* nada */ } };
   document.getElementById("otherComputerClose").addEventListener("click", dismiss);
   open.addEventListener("click", dismiss);
+}
+
+// --- Actualizaciones de Chati desde GitHub (app_update.py): solo el administrador ---
+async function fetchAppUpdate(force) {
+  try {
+    const resp = await fetch(`/app/update${force ? "?force=true" : ""}`);
+    return resp.ok ? await resp.json() : null;
+  } catch (e) { return null; }
+}
+
+function showAppUpdateBanner(info) {
+  document.getElementById("appUpdateText").textContent =
+    `Hay una versión nueva de Chati: la ${info.latest} (tienes la ${info.current}).`;
+  document.getElementById("appUpdateInstall").style.display = "";
+  document.getElementById("appUpdateBanner").style.display = "flex";
+}
+
+async function installAppUpdate() {
+  if (!confirm("Se va a descargar e instalar la versión nueva. Windows pedirá permiso de administrador y Chati se cerrará un par de minutos; luego se vuelve a abrir sola. ¿Continuar?")) return;
+  const text = document.getElementById("appUpdateText");
+  const btn = document.getElementById("appUpdateInstall");
+  btn.style.display = "none";
+  text.textContent = "Descargando la versión nueva...";
+  const resp = await fetch("/app/update", { method: "POST" }).catch(() => null);
+  const data = resp ? await resp.json().catch(() => ({})) : {};
+  if (!resp || !resp.ok) {
+    text.textContent = data.detail || "No se pudo actualizar.";
+    btn.style.display = "";
+    return;
+  }
+  text.textContent = `Instalando la ${data.version}: acepta el aviso de Windows. Chati se volverá a abrir sola.`;
+}
+
+async function setupAppUpdates() {
+  const row = document.getElementById("optAppUpdateBtn");
+  row.style.display = "";
+  row.addEventListener("click", async () => {
+    const info = await fetchAppUpdate(true);
+    if (!info) { alert("No se pudo comprobar si hay actualizaciones."); return; }
+    if (info.error) { alert(`No se pudo comprobar si hay actualizaciones: ${info.error}`); return; }
+    if (!info.available) { alert(`Chati está al día (versión ${info.current}).`); return; }
+    optionsModal.style.display = "none";
+    showAppUpdateBanner(info);
+  });
+  document.getElementById("appUpdateInstall").addEventListener("click", installAppUpdate);
+  document.getElementById("appUpdateClose").addEventListener("click", () => {
+    document.getElementById("appUpdateBanner").style.display = "none";
+  });
+  const info = await fetchAppUpdate(false);
+  if (!info) return;
+  document.getElementById("optAppUpdateText").textContent = `Buscar actualizaciones de Chati (v${info.current})`;
+  if (info.available) showAppUpdateBanner(info);
+}
+
+// --- Arrancar Chati con Windows o solo al abrirla (autostart.py) ---
+async function setupAutostart() {
+  const row = document.getElementById("optAutostartBtn");
+  const text = document.getElementById("optAutostartText");
+  let enabled;
+  const show = () => { text.textContent = `Arrancar con Windows: ${enabled ? "sí" : "no"}`; };
+  try {
+    const resp = await fetch("/app/autostart");
+    if (!resp.ok) return;
+    enabled = (await resp.json()).enabled;
+  } catch (e) { return; }
+  show();
+  row.style.display = "";
+  row.addEventListener("click", async () => {
+    const question = enabled
+      ? "Chati dejará de arrancar al encender el ordenador: no ocupará memoria hasta que la abras (tardará un poco más en estar lista). ¿Continuar?"
+      : "Chati arrancará al encender el ordenador y estará lista al abrirla, pero ocupará memoria aunque no la uses. ¿Continuar?";
+    if (!confirm(question)) return;
+    const resp = await fetch("/app/autostart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !enabled }),
+    }).catch(() => null);
+    const data = resp ? await resp.json().catch(() => ({})) : {};
+    if (!resp || !resp.ok) { alert(data.detail || "No se pudo cambiar."); return; }
+    enabled = data.enabled;
+    show();
+  });
 }
 
 // --- Avisos al movil aunque Chati este cerrado (push.py y /sw.js) ---

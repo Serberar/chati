@@ -29,12 +29,16 @@ QUE NO HACE FALTA COPIAR (este script lo clona/genera de nuevo si falta):
                             se clona de kohya-ss/sd-scripts)
     <DataRoot>\ComfyUI\venv, <DataRoot>\sd-scripts\venv, <AiRoot>\orchestrator\venv
 
-Uso:  powershell -ExecutionPolicy Bypass -File install.ps1 [-AiRoot D:\IA] [-DataRoot D:\IA]
+-Autostart  si: Chati arranca al iniciar Windows; no: al abrirla; igual:
+            como estuviera (al actualizar, lo elegido en Opciones).
+
+Uso:  powershell -ExecutionPolicy Bypass -File install.ps1 [-AiRoot D:\IA] [-DataRoot D:\IA] [-Autostart si|no|igual]
 #>
 
 param(
     [string]$AiRoot = (Split-Path -Parent $PSScriptRoot),
-    [string]$DataRoot = $(if ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" } else { (Split-Path -Parent $PSScriptRoot) })
+    [string]$DataRoot = $(if ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" } else { (Split-Path -Parent $PSScriptRoot) }),
+    [ValidateSet("si", "no", "igual")] [string]$Autostart = "si"
 )
 
 $ErrorActionPreference = "Stop"
@@ -357,24 +361,33 @@ if (-not (Test-Path "$sdScripts\venv")) {
 # de usuario, y no cambia salvo que se reinstale la app.
 $orch = "$AiRoot\orchestrator"
 if (Test-Path $orch) {
-    if (-not (Test-Path "$orch\venv")) {
+    $newVenv = -not (Test-Path "$orch\venv")
+    if ($newVenv) {
         Write-Host "Creando entorno virtual del orquestador..." -ForegroundColor Yellow
         & $PythonExe -m venv "$orch\venv"
         & "$orch\venv\Scripts\python.exe" -m pip install --upgrade pip
+    }
 
-        $lockFile = "$orch\requirements.lock.txt"
-        if (Test-Path $lockFile) {
-            & "$orch\venv\Scripts\python.exe" -m pip install -r $lockFile
+    # Al actualizar Chati el venv ya existe: si la version nueva trae otras
+    # librerias (otro requirements.lock.txt), se instalan; si no, nada
+    $lockFile = "$orch\requirements.lock.txt"
+    $lockStamp = "$orch\venv\chati_lock.sha256"
+    $lockHash = (Get-FileHash $lockFile -Algorithm SHA256).Hash
+    if ($newVenv -or -not (Test-Path $lockStamp) -or (Get-Content $lockStamp -Raw).Trim() -ne $lockHash) {
+        Write-Host "Instalando las librerias del orquestador..." -ForegroundColor Yellow
+        & "$orch\venv\Scripts\python.exe" -m pip install -r $lockFile
+        if ($LASTEXITCODE -eq 0) {
+            Set-Content -Path $lockStamp -Value $lockHash -NoNewline -Encoding ascii
         } else {
-            Write-Host "AVISO: no se encontro requirements.lock.txt, instalando desde requirements.txt (versiones sin fijar)" -ForegroundColor Yellow
-            & "$orch\venv\Scripts\python.exe" -m pip install -r "$orch\requirements.txt"
+            Write-Host "AVISO: pip no pudo instalar todas las librerias (se reintenta en la proxima instalacion)." -ForegroundColor Yellow
         }
-
-        & "$orch\venv\Scripts\python.exe" -m playwright install chromium
-
-        Write-Host "Entorno del orquestador creado." -ForegroundColor Green
     } else {
-        Write-Host "El venv del orquestador ya existe, no se toca." -ForegroundColor Green
+        Write-Host "Librerias del orquestador al dia." -ForegroundColor Green
+    }
+
+    if ($newVenv) {
+        & "$orch\venv\Scripts\python.exe" -m playwright install chromium
+        Write-Host "Entorno del orquestador creado." -ForegroundColor Green
     }
 } else {
     Write-Host "No se encontro $orch - copia la carpeta orchestrator antes de ejecutar esto." -ForegroundColor Red
@@ -525,7 +538,14 @@ $shortcut.IconLocation = "$AiRoot\icono.ico"
 $shortcut.Save()
 Write-Host "Acceso directo 'Chati IA' creado en el escritorio." -ForegroundColor Green
 
-& powershell -ExecutionPolicy Bypass -File "$AiRoot\setup\install_watchdog.ps1"
+$startupLink = Join-Path ([Environment]::GetFolderPath("Startup")) "IA-Personal-Watchdog.lnk"
+if ($Autostart -eq "si" -or ($Autostart -eq "igual" -and (Test-Path $startupLink))) {
+    # tambien con "igual": el acceso directo apunta a la carpeta del programa
+    & powershell -ExecutionPolicy Bypass -File "$AiRoot\setup\install_watchdog.ps1"
+} elseif ($Autostart -eq "no") {
+    Remove-Item $startupLink -ErrorAction SilentlyContinue
+    Write-Host "Chati no arrancara al iniciar Windows (se puede cambiar en Opciones)." -ForegroundColor Green
+}
 
 # 6. Acceso desde el movil (opcional): si Tailscale esta instalado y con la
 # sesion iniciada, se publica Chati solo dentro de la red de Tailscale
