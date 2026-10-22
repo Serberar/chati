@@ -20,6 +20,7 @@ import access
 import auth_sessions
 import rate_limit
 import users
+from version import VERSION
 
 router = APIRouter()
 
@@ -166,6 +167,7 @@ def auth_me(request: Request):
         "username": session["username"], "role": session["role"], "pc_access": access.can_use_pc(session),
         "display_name": user["display_name"] if user else None,
         "security_question": user["security_question"] if user else None,
+        "version": VERSION,
     }
 
 

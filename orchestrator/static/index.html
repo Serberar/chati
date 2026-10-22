@@ -247,7 +247,9 @@
     background: var(--panel-3); color: var(--text); cursor: pointer; }
   .bgp-row .acts button.stop:hover { border-color: var(--error); color: var(--error); }
   #accountBox { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--border); }
-  #creditLine { position: fixed; right: 10px; bottom: 4px; font-size: 10px; color: var(--muted); pointer-events: none; z-index: 1; }
+  #pageFooter { flex-shrink: 0; background: var(--panel); text-align: center; padding: 4px 12px 8px; font-size: 11px; color: var(--muted); }
+  #footerUpdateLink { background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer; }
+  #footerUpdateLink:hover { color: var(--text); text-decoration: underline; }
   #whoamiChip { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 4px; }
   #optionsBtn { width: 34px; height: 34px; flex-shrink: 0; border-radius: var(--radius-sm); border: 1px solid var(--border);
     background: var(--panel-2); color: var(--muted); cursor: pointer; font-size: 16px; }
@@ -777,7 +779,7 @@
   .stopped-note { font-size: 12px; color: var(--muted); margin-top: 6px; font-style: italic; }
   #cancelBtn { flex-shrink: 0; height: 40px; border-radius: var(--radius-sm); border: none; padding: 0 16px; cursor: pointer; }
   #inputFooter { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 10px; }
-  #inputFooter .hint { font-size: 11px; color: var(--muted); }
+  #inputFooter .hint, #topbar .hint { font-size: 11px; color: var(--muted); }
 
   .spinner {
     display: inline-block; width: 14px; height: 14px;
@@ -999,7 +1001,7 @@
     #prompt { font-size: 16px; }  /* con menos de 16 px el iPhone hace zoom al tocar */
     #send, #cancelBtn, #micBtn { padding-left: 12px; padding-right: 12px; min-height: 44px; }
     #inputFooter { flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; }
-    #inputFooter .hint { display: none; }
+    #inputFooter .hint, #topbar .hint { display: none; }
     #codeBar { flex-wrap: wrap; }
     /* lo que se usa poco va dentro del menu de atajos (renderCodeShortcuts) */
     #codeBar > label, #codeAnalyzeBtn { display: none !important; }
@@ -1012,9 +1014,7 @@
     /* "Modelo potente" esta dentro del menu de atajos del modo Agente */
     #agentPowerLabel.show { display: none; }
     input, select, textarea { font-size: 16px; }
-    #topbar select { font-size: 14px; }
-    #creditLine { bottom: 0; font-size: 9px; }
-    /* ventanas: a pantalla completa (muchas llevan margenes en linea) */
+    #topbar select { font-size: 14px; }    /* ventanas: a pantalla completa (muchas llevan margenes en linea) */
     .modal-box {
       width: 100% !important; max-width: 100% !important; margin: 0 !important;
       height: 100dvh !important; max-height: 100dvh !important; border-radius: 0 !important;
@@ -1293,7 +1293,10 @@
       <input type="file" id="agentFilesInput" multiple style="display:none;">
     </div>
   </div>
-  <div id="creditLine">Creado por Sergio Bernabé</div>
+  <footer id="pageFooter">
+    Creado por Sergio Bernabé · Versión <span id="appVersion"></span>
+    <button id="footerUpdateLink" style="display:none;">· Buscar actualizaciones</button>
+  </footer>
 </div>
 
 <div id="knowledgeModal" class="modal-overlay">

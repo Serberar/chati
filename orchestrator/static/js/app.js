@@ -239,6 +239,7 @@ async function initSessionUI() {
   setLoggedIn(me.role); // refresca el rol guardado por si cambio
 
   currentMe = me;
+  document.getElementById("appVersion").textContent = me.version;
   loadAvatar();
   if (me.role === "admin") document.getElementById("adminBtn").style.display = "";
   if (me.role === "admin") document.getElementById("optErrorsBtn").style.display = "";
@@ -1563,6 +1564,9 @@ const AGENT_STATUS_ICON = { completed: "✓", error: "✕", running: "●", pend
 const agentViews = {};  // session_id -> vista abierta en el log (no duplicar)
 
 function setModeDesc(m) {
+  // arriba junto al modelo; agente, codigo y voz no tienen esa barra
+  if (m.showTopbar) personaSelect.after(modeDesc);
+  else document.getElementById("inputFooter").prepend(modeDesc);
   modeDesc.textContent = m.desc;
   if (m.credits) {
     const credit = document.createElement("span");
@@ -2259,16 +2263,19 @@ async function installAppUpdate() {
 }
 
 async function setupAppUpdates() {
-  const row = document.getElementById("optAppUpdateBtn");
-  row.style.display = "";
-  row.addEventListener("click", async () => {
+  const checkNow = async () => {
     const info = await fetchAppUpdate(true);
     if (!info) { alert("No se pudo comprobar si hay actualizaciones."); return; }
     if (info.error) { alert(`No se pudo comprobar si hay actualizaciones: ${info.error}`); return; }
     if (!info.available) { alert(`Chati está al día (versión ${info.current}).`); return; }
     optionsModal.style.display = "none";
     showAppUpdateBanner(info);
-  });
+  };
+  for (const id of ["optAppUpdateBtn", "footerUpdateLink"]) {
+    const el = document.getElementById(id);
+    el.style.display = "";
+    el.addEventListener("click", checkNow);
+  }
   document.getElementById("appUpdateInstall").addEventListener("click", installAppUpdate);
   document.getElementById("appUpdateClose").addEventListener("click", () => {
     document.getElementById("appUpdateBanner").style.display = "none";
