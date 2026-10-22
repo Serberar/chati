@@ -195,9 +195,10 @@ function UsersAlreadyExist: Boolean;
 var
   DataRoot: String;
 begin
-  DataRoot := GetEnv('CHATI_DATA_ROOT');
-  if DataRoot = '' then
-    DataRoot := ExpandConstant('{localappdata}\ChatiIA');
+  // la carpeta en la que instala install.ps1, no CHATI_DATA_ROOT: con una
+  // copia de desarrollo en el equipo apunta al repo, que ya tiene usuarios,
+  // y el asistente se saltaba esta pagina (2026-10-22)
+  DataRoot := ExpandConstant('{localappdata}\ChatiIA');
   Result := FileExists(AddBackslash(DataRoot) + 'data\users.db');
 end;
 
@@ -339,9 +340,7 @@ begin
   // se bajan modelos y el registro seria el de la instalacion anterior.
   if (CurStep = ssDone) and not IsUpdate then
   begin
-    DataRoot := GetEnv('CHATI_DATA_ROOT');
-    if DataRoot = '' then
-      DataRoot := ExpandConstant('{localappdata}\ChatiIA');
+    DataRoot := ExpandConstant('{localappdata}\ChatiIA');  // ver UsersAlreadyExist
     LogFile := AddBackslash(DataRoot) + 'data\logs\instalacion_modelos.log';
     if LoadStringsFromFile(LogFile, Lines) then
       for I := 0 to GetArrayLength(Lines) - 1 do
