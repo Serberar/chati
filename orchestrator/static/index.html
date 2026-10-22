@@ -201,6 +201,11 @@
     font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
     padding: 4px 10px 2px;
   }
+  summary.options-section-label { cursor: pointer; padding: 8px 10px; border-radius: var(--radius-sm); list-style: none; }
+  summary.options-section-label::-webkit-details-marker { display: none; }
+  summary.options-section-label::before { content: "\25B8"; display: inline-block; width: 14px; transition: transform 0.15s; }
+  details[open] > summary.options-section-label::before { transform: rotate(90deg); }
+  summary.options-section-label:hover { background: var(--panel-3); color: var(--text); }
 
   .model-section-title {
     font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
@@ -1514,15 +1519,18 @@
       <button id="closeOptionsBtn" class="modal-close">&times;</button>
     </div>
     <div style="padding:10px;">
-      <div class="options-section-label">Cuenta</div>
+      <details>
+      <summary class="options-section-label">Cuenta</summary>
       <button class="options-row" id="profileBtn"><span class="ic">&#128100;</span>Mi perfil</button>
       <button class="options-row" id="optDevicesBtn"><span class="ic">&#128241;</span>Dispositivos (usar desde el móvil)</button>
       <button class="options-row" id="optPushBtn"><span class="ic">&#128276;</span><span id="optPushText">Avisos en este dispositivo</span></button>
       <button class="options-row" id="optComputersBtn"><span class="ic">&#128421;</span>Ordenadores (casa / trabajo)</button>
       <button class="options-row" id="adminBtn" style="display:none;"><span class="ic">&#128273;</span>Administracion</button>
       <button class="options-row" id="optErrorsBtn" style="display:none;"><span class="ic">&#9888;</span>Registro de errores</button>
+      </details>
       <div class="options-divider"></div>
-      <div class="options-section-label">Herramientas</div>
+      <details>
+      <summary class="options-section-label">Herramientas</summary>
       <button class="options-row" id="knowledgeBtn"><span class="ic">&#128218;</span>Mis documentos</button>
       <button class="options-row" id="optMetricsBtn"><span class="ic">&#128202;</span>Metricas</button>
       <button class="options-row" id="optModelUpdatesBtn"><span class="ic">&#8635;</span>Modelos</button>
@@ -1531,6 +1539,7 @@
       <a class="options-row" id="optCodeAgentLink" href="http://127.0.0.1:8901" target="_blank" rel="noopener" style="display:none;" title="Pide usuario y contraseña: la contraseña se copia al portapapeles al pulsar"><span class="ic">&#128187;</span>OpenCode (vista avanzada) ↗</a>
       <button class="options-row" id="optMemoryBtn"><span class="ic">&#129504;</span>Memoria</button>
       <button class="options-row" id="optPersonasBtn"><span class="ic">&#129489;</span>Personas</button>
+      </details>
       <div class="options-divider"></div>
       <button class="options-row" id="optCreditsBtn"><span class="ic">&#128220;</span>Créditos</button>
       <div class="options-divider"></div>
