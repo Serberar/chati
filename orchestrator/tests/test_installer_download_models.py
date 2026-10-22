@@ -222,3 +222,25 @@ def test_every_model_download_is_pinned_and_fingerprinted():
         for url, sha in files:
             assert "/resolve/main/" not in url, url  # "main" lo puede cambiar el autor
             assert sha and len(sha) == 64, url
+
+
+def test_updates_download_only_base_models_never_offered_and_retry_failures(tmp_path, monkeypatch):
+    """Al actualizar se bajan solos los modelos base nuevos del catalogo; lo
+    desmarcado al instalar no, y lo que falla se reintenta la proxima vez."""
+    offered = tmp_path / "modelos_ofrecidos.txt"
+    monkeypatch.setattr(installer_download_models, "OFFERED_FILE", offered)
+    all_ids = set(installer_download_models._all_entries())
+    offered.write_text("\n".join(all_ids - {"video-ltxv", "imagen-sdxl", "imagen-editar"}), encoding="utf-8")
+    # imagen-editar no es base: aunque nunca se ofreciera, no se baja solo
+    assert installer_download_models.new_base_models() == ["imagen-sdxl", "video-ltxv"]
+
+    downloaded = []
+    def fake_download(ids):
+        downloaded.extend(ids)
+        return ["LTX-Video (2B, destilado)"]
+    monkeypatch.setattr(installer_download_models, "download_selected", fake_download)
+    monkeypatch.setattr(installer_download_models.sys, "argv", ["x", "--new-base"])
+    with pytest.raises(SystemExit):
+        installer_download_models.main()
+    assert downloaded == ["imagen-sdxl", "video-ltxv"]
+    assert installer_download_models.new_base_models() == ["video-ltxv"]

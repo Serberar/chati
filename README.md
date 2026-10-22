@@ -30,6 +30,23 @@ MANUAL_DE_USO.md
 
 Descarga **[ChatiIA-Instalador.exe](https://github.com/Serberar/chati/releases/latest/download/ChatiIA-Instalador.exe)** (la última versión, en [Releases](https://github.com/Serberar/chati/releases)) y ábrelo. Pide permisos de administrador, crea la cuenta de administrador y deja elegir qué modelos descargar y si Chati arranca al iniciar Windows. Instala lo que falte (Python, Ollama, Git, Node, ComfyUI…), así que la primera vez tarda.
 
+## Modelos base
+
+La lista vive en un solo sitio: `orchestrator/model_catalog.py`. Los modelos base son las entradas con `recommended_by_default=True`:
+
+| Para | Modelo |
+| --- | --- |
+| Chat y modo Agente | `qwen3:8b` |
+| Chat de calidad y Código | `qwen3-coder:30b-cpu` |
+| Comentar fotos | `qwen2.5vl:7b-gpu` |
+| Crear imágenes | FLUX.1 schnell (GGUF Q4) |
+| Editar fotos | Qwen-Image-Edit 2511 (GGUF Q4) |
+| Caras, ControlNet, inpaint | SDXL base 1.0 |
+| Vídeo | LTX-Video 2B destilado |
+| Voz | Piper `es_ES-davefx-medium` |
+
+Al instalar salen marcados en el asistente. **Al actualizar se descargan solos los modelos base que traiga la versión nueva** (por ejemplo, otro modelo de vídeo): basta con añadir su entrada al catálogo con su URL y su huella SHA-256. Lo que se desmarcó al instalar no se vuelve a bajar, y lo que falla se reintenta en la siguiente actualización (registro en `data\modelos_ofrecidos.txt` y `data\logs\instalacion_modelos.log`).
+
 ## Uso
 
 Tras instalarlo, el acceso directo **«Chati IA»** del escritorio levanta Ollama, ComfyUI y el orquestador y abre la ventana de Chati (también en **http://localhost:8899**). La guía completa para el usuario está en [MANUAL_DE_USO.md](MANUAL_DE_USO.md).

@@ -3,8 +3,9 @@ asistente (ver setup/chati_installer.iss) - reutiliza model_catalog.py como
 unica fuente de verdad de que hay y de donde se baja, asi que nunca hay dos
 copias de una URL que puedan desincronizarse.
 
-Se puede llamar de dos formas:
+Se puede llamar de tres formas:
   installer_download_models.py --selected-file RUTA   (lo que usa el instalador)
+  installer_download_models.py --new-base              (al actualizar, ver new_base_models)
   installer_download_models.py --selected id1 id2 ...  (para probarlo a mano)
 
 Imprime una linea por paso a stdout - el instalador (o quien lo llame) puede
@@ -28,6 +29,26 @@ from paths import DATA_DIR, MODELS_DIR
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 LOG_FILE = DATA_DIR / "logs" / "instalacion_modelos.log"
+# ids del catalogo que ya se ofrecieron (en el asistente o en una
+# actualizacion): lo que se desmarco al instalar no se vuelve a bajar
+OFFERED_FILE = DATA_DIR / "modelos_ofrecidos.txt"
+
+
+def _offered() -> set[str]:
+    return set(OFFERED_FILE.read_text(encoding="utf-8").split()) if OFFERED_FILE.exists() else set()
+
+
+def _all_entries() -> dict[str, model_catalog.CatalogEntry]:
+    return {e.id: e for tier in ["cpu_only", "minimo", "8gb", "12gb", "16gb_plus"]
+            for e in model_catalog.catalog_for_tier(tier)}
+
+
+def new_base_models() -> list[str]:
+    """Modelos base (recommended_by_default) que una version nueva de Chati
+    anade al catalogo: se bajan solos al actualizar. Sin registro (instalado
+    antes de que existiera) se repasan todos: los que ya estan no se bajan."""
+    offered = _offered()
+    return [i for i, e in _all_entries().items() if e.recommended_by_default and i not in offered]
 
 
 def _destination_for(entry: model_catalog.CatalogEntry) -> Path:
@@ -163,8 +184,7 @@ def _log(line: str, error: bool = False) -> None:
 def download_selected(entry_ids: list[str]) -> list[str]:
     """Descarga lo elegido; si uno falla, sigue con los demas (antes el primer
     fallo cortaba todo y en silencio). Devuelve los que fallaron."""
-    all_entries = {e.id: e for tier in ["cpu_only", "minimo", "8gb", "12gb", "16gb_plus"]
-                   for e in model_catalog.catalog_for_tier(tier)}
+    all_entries = _all_entries()
     failed = []
     for entry_id in entry_ids:
         entry = all_entries.get(entry_id)
@@ -191,14 +211,23 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--selected-file", type=Path, help="Archivo con un id de catalogo por linea")
     group.add_argument("--selected", nargs="+", help="Ids de catalogo directamente")
+    group.add_argument("--new-base", action="store_true", help="Los modelos base que aun no se ofrecieron")
     args = parser.parse_args()
 
     if args.selected_file:
         ids = [line.strip() for line in args.selected_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    elif args.new_base:
+        ids = new_base_models()
     else:
         ids = args.selected
 
     failed = download_selected(ids)
+    # todo el catalogo cuenta como ofrecido (el asistente lo enseña entero),
+    # salvo lo que fallo: se reintenta en la siguiente actualizacion
+    failed_ids = {i for i, e in _all_entries().items() if e.label in failed}
+    OFFERED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    OFFERED_FILE.write_text("\n".join(sorted((_offered() | set(_all_entries())) - failed_ids)) + "\n",
+                            encoding="utf-8")
     if failed:
         _log(f"No se pudieron descargar: {', '.join(failed)}. Detalles en {LOG_FILE}")
         sys.exit(1)

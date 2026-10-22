@@ -86,6 +86,13 @@ Filename: "{app}\orchestrator\venv\Scripts\python.exe"; \
     WorkingDir: "{app}\orchestrator"; \
     StatusMsg: "Descargando los modelos elegidos..."; \
     Flags: waituntilterminated; Check: not IsUpdate
+; al actualizar: los modelos base que traiga la version nueva (ver
+; installer_download_models.new_base_models y el README)
+Filename: "{app}\orchestrator\venv\Scripts\python.exe"; \
+    Parameters: "installer_download_models.py --new-base"; \
+    WorkingDir: "{app}\orchestrator"; \
+    StatusMsg: "Descargando los modelos nuevos de esta version (si los hay)..."; \
+    Flags: waituntilterminated runhidden; Check: IsUpdate
 Filename: "{app}\ChatiIA\ChatiIA.exe"; \
     WorkingDir: "{app}\ChatiIA"; \
     Description: "Arrancar Chati IA ahora"; \

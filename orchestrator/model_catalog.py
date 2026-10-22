@@ -25,6 +25,8 @@ class CatalogEntry:
     architecture: str | None = None
     download_url: str | None = None
     filename: str | None = None
+    # Modelo base: marcado en el asistente y, si una version nueva lo anade,
+    # se descarga solo al actualizar (installer_download_models.new_base_models)
     recommended_by_default: bool = True
     # Archivos que el modelo necesita ademas del suyo: (url, ruta dentro de
     # models/img, sha256). Sin ellos no funcionaba nada de imagen en un equipo
