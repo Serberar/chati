@@ -752,6 +752,9 @@ class AgentTaskRequest(BaseModel):
     # "sin preguntar": Chati concede los permisos normales de la tarea (editar,
     # tests...) y solo pregunta lo peligroso (code_checks.auto_approvable)
     autonomo: bool = False
+    # la ultima tarea de la conversacion: si el mensaje la sigue, se continua
+    # en ella en vez de abrir otra (ver _follows_task)
+    continuar: str | None = None
 
 
 IMAGE_DESCRIBE_PROMPT = ("Describe en una sola frase, en español, que se ve en esta imagen, para poder "
@@ -894,6 +897,13 @@ def agent_start_task(request: Request, req: AgentTaskRequest):
     if not req.task.strip():
         return JSONResponse({"detail": "Describe la tarea."}, status_code=400)
     task = req.task.strip()
+    if req.continuar and _owns_task(request, req.continuar) and _follows_task(req.continuar, task, req.project):
+        note = agent_attachments.task_note(req.attachments)
+        result = _continue_task(req.continuar, f"{task}\n\n{note}" if note else task,
+                                ("plan" if req.plan else "build") if req.project else None)
+        if isinstance(result, JSONResponse):
+            return result
+        return {"session_id": req.continuar, "continued": True, **result}
     if req.project:
         project = Path(req.project)
         if not project.is_dir():
@@ -1504,23 +1514,54 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
         return _not_your_task()
     if not req.text.strip():
         return JSONResponse({"detail": "Escribe que quieres que haga."}, status_code=400)
+    return _continue_task(session_id, req.text, req.code_mode)
+
+
+def _follows_task(session_id: str, message: str, project: str | None) -> bool:
+    """¿El mensaje sigue la ultima tarea de la conversacion? (Sergio,
+    2026-10-22: nada de un segundo campo para corregir; en la misma
+    conversacion se entiende que es lo mismo). Solo si la tarea ha terminado
+    y no espera nada. En Codigo decide la carpeta del proyecto; en Agente, el
+    modelo rapido, y si no sabe, se sigue."""
+    base = CONFIG["opencode"]["base_url"]
+    try:
+        if session_id in opencode_client.busy_session_ids(base) or session_id in opencode_client.waiting_sessions(base):
+            return False
+        folder = opencode_client.session_dir(base, session_id)
+        summary = opencode_client.task_summary(base, session_id)
+    except requests.RequestException:
+        return False
+    if project:
+        return bool(folder) and Path(folder).resolve() == Path(project).resolve()
+    if session_id in _code_watch:  # una tarea del modo Codigo no se sigue desde el modo Agente
+        return False
+    try:
+        return router.same_task(summary, message)
+    except Exception as exc:  # noqa: BLE001 - sin decidir: misma conversacion, misma tarea
+        log.warning("No se pudo valorar si el mensaje sigue la tarea: %s", exc)
+        return True
+
+
+def _continue_task(session_id: str, text: str, code_mode: str | None):
+    """Seguir una tarea ya hecha (corregirla o pedir mas), en la misma sesion de OpenCode."""
     agent = None
-    code_mode = req.code_mode
+    requested_mode = code_mode
     # contestar a las opciones del plan eligiendo una ("la 2", "adelante") es
     # pasar a construir, aunque el selector siga en Planificar (2026-10-13)
-    if code_mode == "plan" and code_checks.is_approval(req.text):
+    if code_mode == "plan" and code_checks.is_approval(text):
         code_mode = "build"
     if code_mode in ("plan", "build"):
         agent = CONFIG["opencode"]["agent_code_plan" if code_mode == "plan" else "agent_code"]
-    text = req.text.strip()
-    if code_mode == "build" and req.code_mode == "plan":
+    request_text = text.strip()
+    text = request_text
+    if code_mode == "build" and requested_mode == "plan":
         text = (f"{text}\n\n[Chati] El usuario ha elegido. Hazlo ahora paso a paso, marcando cada paso con "
                 "todowrite, y comprueba con los tests al final.")
     folder = opencode_client.session_dir(CONFIG["opencode"]["base_url"], session_id) if code_mode else None
     if folder and Path(folder).is_dir():
         text += _code_facts(text, Path(folder))
         if code_mode == "build":
-            checkpoints.snapshot(session_id, Path(folder), req.text.strip())
+            checkpoints.snapshot(session_id, Path(folder), request_text)
     result = _opencode_call(opencode_client.continue_task, session_id, text, agent)
     if isinstance(result, JSONResponse):
         return result

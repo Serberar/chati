@@ -1569,6 +1569,62 @@ def test_code_mode_tasks_go_to_the_project_with_the_chosen_agent(tmp_path):
     assert mock_continue.call_args.args[1:] == ("ses_c", "adelante", "chati-code")
 
 
+def test_a_new_message_follows_the_finished_task_of_the_conversation(tmp_path):
+    """Sin segundo campo para corregir (Sergio, 2026-10-22): lo que se escribe
+    abajo sigue la ultima tarea si es del mismo proyecto (Codigo) o si el
+    modelo ve que va de lo mismo (Agente); si no, tarea nueva."""
+    other = tmp_path / "otro"
+    other.mkdir()
+    idle = [patch.object(main.opencode_client, "busy_session_ids", return_value=[]),
+            patch.object(main.opencode_client, "waiting_sessions", return_value={}),
+            patch.object(main.opencode_client, "task_summary", return_value="crear host manager"),
+            patch.object(main.opencode_client, "session_dir", return_value=str(tmp_path)),
+            patch.object(main, "_start_code_watch")]
+    for p in idle:
+        p.start()
+    try:
+        with patch.object(main.opencode_client, "continue_task") as mock_continue, \
+             patch.object(main.opencode_client, "start_task", return_value="ses_nueva") as mock_start:
+            same = client.post("/agent/tasks", json={"task": "pon los desactivados en gris", "project": str(tmp_path),
+                                                     "continuar": "ses_c"}).json()
+            assert same == {"session_id": "ses_c", "continued": True, "ok": True, "mode": "build"}
+            assert mock_continue.call_args.args[1:3] == ("ses_c", "pon los desactivados en gris")
+            mock_start.assert_not_called()
+
+            new = client.post("/agent/tasks", json={"task": "haz una web", "project": str(other),
+                                                    "continuar": "ses_c"}).json()
+            assert new == {"session_id": "ses_nueva"}
+
+            with patch.object(main.router, "same_task", return_value=False):
+                new = client.post("/agent/tasks", json={"task": "ordena mis descargas", "continuar": "ses_a",
+                                                        "confirmed": True}).json()
+            assert new == {"session_id": "ses_nueva"}
+            with patch.object(main.router, "same_task", return_value=True):
+                same = client.post("/agent/tasks", json={"task": "no, en la carpeta Trabajo", "continuar": "ses_a"})
+            assert same.json()["continued"] is True
+        with patch.object(main.opencode_client, "busy_session_ids", return_value=["ses_a"]), \
+             patch.object(main.opencode_client, "start_task", return_value="ses_otra"):
+            # trabajando todavia: no se le mete nada en medio
+            busy = client.post("/agent/tasks", json={"task": "y otra cosa", "continuar": "ses_a", "confirmed": True})
+            assert busy.json() == {"session_id": "ses_otra"}
+    finally:
+        for p in idle:
+            p.stop()
+
+
+def test_the_router_says_if_a_message_follows_the_task():
+    from unittest.mock import MagicMock
+
+    from router import Router
+    r = Router(MagicMock(), "m")
+    r.client.chat.return_value = '{"misma": "no"}'
+    assert r.same_task("ordenar descargas", "haz una web nueva") is False
+    r.client.chat.return_value = '{"misma": "si"}'
+    assert r.same_task("ordenar descargas", "no, mejor por fecha") is True
+    r.client.chat.return_value = "no se"
+    assert r.same_task("a", "b") is True  # ante la duda, la misma
+
+
 def test_code_projects_are_remembered_and_git_is_only_activated_on_request(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "README.md").write_text("x")

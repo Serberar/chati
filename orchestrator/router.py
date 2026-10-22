@@ -81,6 +81,19 @@ para el y responde EXACTAMENTE con este JSON, sin nada mas alrededor:
 Tarea: "{task}"
 """
 
+SAME_TASK_PROMPT = """En una conversacion, el usuario le encargo una tarea a un agente que
+trabaja con sus archivos. El agente ya ha terminado. Ahora el usuario escribe un
+mensaje nuevo. ¿Sigue con lo MISMO (corregir, cambiar, ampliar, preguntar por lo
+hecho, seguir con ese proyecto o esos archivos) o es un encargo DISTINTO que no
+tiene nada que ver? Ante la duda, es lo mismo. Responde EXACTAMENTE con este
+JSON, sin nada mas alrededor:
+
+{{"misma": "<si|no>"}}
+
+Tarea anterior: "{previous}"
+Mensaje nuevo: "{message}"
+"""
+
 
 # Pistas fijas de tarea compleja: el modelo pequeño no siempre las ve
 # (medido: "crea un script que cada noche haga copia..." lo daba por simple).
@@ -154,3 +167,17 @@ class Router:
             if hint:
                 complex_, reason = True, hint
         return {"complex": complex_, "reason": reason}
+
+    def same_task(self, previous: str, message: str) -> bool:
+        """Si el mensaje nuevo sigue la tarea anterior del agente. Ante un
+        formato raro, si: en la misma conversacion es lo normal."""
+        raw = self.client.chat(
+            self.routing_model,
+            [{"role": "user", "content": SAME_TASK_PROMPT.format(previous=previous, message=message)}],
+            temperature=0.0,
+        )
+        try:
+            data = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+        except ValueError:
+            return True
+        return str(data.get("misma", "si")).strip().lower() != "no"

@@ -3335,6 +3335,36 @@ async function uploadAgentAttachments(files) {
   return data.files;
 }
 
+// La tarea sigue con un mensaje nuevo: su tarjeta baja debajo de ese mensaje
+// (lo que se ve al final de la conversacion es lo que esta pasando ahora)
+function resumeAgentView(view, reply) {
+  // elegir una opcion del plan ("la 2", "adelante") pasa a Construir
+  if (view.codeMode === "plan" && reply.mode === "build") {
+    view.codeMode = codeState.mode = "build";
+    try { localStorage.setItem("ia_code_mode", "build"); } catch (e) { /* nada */ }
+    renderCodeBar();
+  }
+  view.followEl.style.display = "none";
+  log.appendChild(view.row);
+  view.row.scrollIntoView({ behavior: "smooth", block: "start" });
+  // no dar la tarea por terminada hasta ver la respuesta a esto
+  // +1: el propio mensaje del usuario aparece como paso nuevo y no es
+  // respuesta del agente (sin esto la tarjeta decia "Terminado" al segundo)
+  view.stepsAtSend = (JSON.parse(view.lastSteps || "[]")).length + 1;
+  view.sentAt = Date.now();
+  view.startedAt = Date.now();
+  followAgentView(view);
+}
+
+// la ultima tarea de esta conversacion, si ha terminado y no espera nada: un
+// mensaje nuevo puede seguirla (lo decide el servidor, ver _follows_task)
+function lastFinishedAgentTask() {
+  const cards = log.querySelectorAll(".agent-card");
+  const view = cards.length ? agentViews[cards[cards.length - 1].dataset.session] : null;
+  const d = view && view.data;
+  return d && d.status === "idle" && !d.questions.length && !d.permissions.length ? view : null;
+}
+
 async function startAgentTask(text, opts = {}) {
   askNotificationPermission();  // para avisar cuando termine (la pide una sola vez)
   const files = agentPendingFiles;
@@ -3370,8 +3400,13 @@ async function startAgentTask(text, opts = {}) {
                             rapido: codeState.fast, potente: false,
                             autonomo: document.getElementById("codeAuto").checked });
     }
+    const previous = lastFinishedAgentTask();
+    if (previous) body.continuar = previous.sessionId;
     const data = await agentPost("/agent/tasks", body);
-    if (data.needs_choice) renderAgentChoice(data.task, data.reason, data.attachments || []);
+    if (data.continued) {
+      if (previous.codeMode) previous.codeMode = opts.codeMode || codeState.mode;
+      resumeAgentView(previous, data);
+    } else if (data.needs_choice) renderAgentChoice(data.task, data.reason, data.attachments || []);
     else openAgentView(data.session_id, Date.now(), MODES[currentMode].isCode ? (opts.codeMode || codeState.mode) : null);
   } catch (err) {
     const bubble = addMessage("assistant", "agente");
@@ -3399,9 +3434,10 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
     '<div class="agent-todos" style="display:none;"></div>' +
     '<div class="agent-steps"></div><div class="agent-asks"></div>' +
     '<div class="agent-changes" style="display:none;"></div>' +
-    '<div class="agent-follow" style="display:none;"><input type="text" placeholder="Corregir o continuar la tarea… (p.ej. no, ponlo en la carpeta Trabajo)">' +
-    '<button>Enviar</button></div>' +
+    // corregir o seguir la tarea: desde el campo de abajo de siempre (startAgentTask)
+    '<div class="agent-follow" style="display:none;"></div>' +
     `<div class="agent-credit">${OPENCODE_CREDIT_HTML}</div>`;
+  card.dataset.session = sessionId;
   bubble.appendChild(card);
 
   const view = {
@@ -3418,11 +3454,9 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
     saveScEl: null, task: "",
     stepsAtSend: 0, sentAt: null,
     codeMode,  // modo Codigo: "plan" o "build"; null en el modo Agente
+    row: bubble.parentElement,
   };
-  const followInput = view.followEl.querySelector("input");
-  const followBtn = view.followEl.querySelector("button");
   if (codeMode) {
-    followInput.placeholder = "Sigue… (p.ej. explícame el archivo X, o cambia esto)";
     // tras un plan: hacerlo tal cual, ya en modo Construir
     const doIt = document.createElement("button");
     doIt.className = "do-it";
@@ -3457,41 +3491,15 @@ function openAgentView(sessionId, startedAt, codeMode = null) {
     view.followEl.appendChild(undo);
     view.undoBtn = undo;
   }
-  const sendFollowUp = async (presetText, presetMode) => {
-    const text = presetText || followInput.value.trim();
-    if (!text) return;
-    followInput.disabled = followBtn.disabled = true;
-    const body = { text };
-    if (view.codeMode) {
-      view.codeMode = presetMode || codeState.mode;
-      body.code_mode = view.codeMode;
-    }
+  const sendFollowUp = async (text, mode) => {
+    addMessage("user").textContent = text;
+    view.codeMode = mode;
     try {
-      const reply = await agentPost(`/agent/tasks/${sessionId}/message`, body);
-      // elegir una opcion del plan ("la 2", "adelante") pasa a Construir
-      if (view.codeMode === "plan" && reply.mode === "build") {
-        view.codeMode = codeState.mode = "build";
-        try { localStorage.setItem("ia_code_mode", "build"); } catch (e) { /* nada */ }
-        renderCodeBar();
-      }
+      resumeAgentView(view, await agentPost(`/agent/tasks/${sessionId}/message`, { text, code_mode: mode }));
     } catch (err) {
       alert("No se pudo mandar: " + (err.message || err));
-      followInput.disabled = followBtn.disabled = false;
-      return;
     }
-    followInput.value = "";
-    followInput.disabled = followBtn.disabled = false;
-    view.followEl.style.display = "none";
-    // no dar la tarea por terminada hasta ver la respuesta a esto
-    // +1: el propio mensaje del usuario aparece como paso nuevo y no es
-    // respuesta del agente (sin esto la tarjeta decia "Terminado" al segundo)
-    view.stepsAtSend = (JSON.parse(view.lastSteps || "[]")).length + 1;
-    view.sentAt = Date.now();
-    view.startedAt = Date.now();
-    followAgentView(view);
   };
-  followBtn.addEventListener("click", () => sendFollowUp());
-  followInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendFollowUp(); });
   agentViews[sessionId] = view;
   view.retryBtn.addEventListener("click", async () => {
     view.retryBtn.disabled = true;
@@ -3620,6 +3628,7 @@ function askNotificationPermission() {
 }
 
 function renderAgentView(view, data) {
+  view.data = data;  // lastFinishedAgentTask
   noticeAgent(view, data);
   const busy = data.status !== "idle";
   let cls = "agent-status", text;
@@ -3702,8 +3711,9 @@ function renderAgentView(view, data) {
 
   renderAgentChanges(view, data, busy);
 
-  // continuar la tarea: solo cuando el agente ha terminado y no espera nada
-  const canFollow = !busy && !data.questions.length && !data.permissions.length && data.steps.length > view.stepsAtSend;
+  // "Hacerlo" / "Deshacer" (modo Codigo): cuando el agente ha terminado y no espera nada
+  const canFollow = !!view.codeMode && !busy && !data.questions.length && !data.permissions.length
+    && data.steps.length > view.stepsAtSend;
   if (canFollow && view.followEl.style.display === "none") {
     view.followEl.style.display = "flex";
   } else if (!canFollow) {
