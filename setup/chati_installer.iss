@@ -275,6 +275,19 @@ begin
   end;
 end;
 
+function SetEnvironmentVariable(lpName, lpValue: String): BOOL;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+// Los pasos de [Run] heredan las variables de este proceso: con un
+// CHATI_DATA_ROOT antiguo (p.ej. la copia de desarrollo) el descargador de
+// modelos miraba esa carpeta, los daba por bajados y la instalada se quedaba
+// sin modelos de imagen (2026-10-22). Se fija a la que usa install.ps1.
+function InitializeSetup: Boolean;
+begin
+  SetEnvironmentVariable('CHATI_DATA_ROOT', ExpandConstant('{localappdata}\ChatiIA'));
+  Result := True;
+end;
+
 procedure InitializeWizard;
 var
   Tier, GpuName: String;
