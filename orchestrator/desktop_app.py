@@ -217,7 +217,9 @@ def main() -> None:
     # text_select: pywebview desactiva la seleccion de texto por defecto - sin
     # esto no se podia seleccionar ni copiar nada de la conversacion
     window = webview.create_window("Chati IA", html=LOADING_HTML, width=1280, height=800,
-                                   min_size=(720, 480), background_color="#14161a", text_select=True,
+                                   # 360: el ancho de movil para el que ya esta hecha la pagina;
+                                   # Sergio la pone de lado junto a otras ventanas
+                                   min_size=(360, 480), background_color="#14161a", text_select=True,
                                    js_api=DesktopApi())
     window.events.closing += _on_closing
     tray = _tray_icon(window)
