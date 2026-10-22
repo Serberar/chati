@@ -181,3 +181,43 @@ def test_web_and_github_refuse_what_they_should():
     assert "Solo webs de este ordenador" in t.use_local_page("https://google.com", [{"accion": "clic", "en": "x"}])
     assert "usuario/proyecto" in t.github_read("no es un repo")
     assert "Que quieres ver" in t.github_read("Serberar/chati", "borrar")
+
+
+def test_build_exe_replaces_the_old_exe_next_to_the_script_and_tests_it(tmp_path, monkeypatch):
+    """El agente compilaba en su carpeta de trabajo y el .exe nuevo se quedaba
+    en dist/: el que abria el usuario seguia siendo el roto (2026-10-22)."""
+    monkeypatch.setattr(t, "PROGRAMS_DIR", tmp_path / "prog")
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "notas.py").write_text("import tkinter as tk\ntk.Tk().mainloop()\n", encoding="utf-8")
+    (app / "Notas.exe").write_bytes(b"viejo")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        dist = cmd[cmd.index("--distpath") + 1]
+        name = cmd[cmd.index("--name") + 1]
+        (t.Path(dist)).mkdir(parents=True, exist_ok=True)
+        (t.Path(dist) / f"{name}.exe").write_bytes(b"nuevo")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(t.subprocess, "run", fake_run)
+    monkeypatch.setattr(t, "try_program", lambda path: "BIEN: se abre una ventana ('Notas')")
+    out = t.build_exe(str(app / "notas.py"))
+    assert (app / "Notas.exe").read_bytes() == b"nuevo"
+    assert "--windowed" in calls[0] and "BIEN" in out
+    assert sorted(p.name for p in app.iterdir()) == ["Notas.exe", "notas.py"]  # sin dist/ ni build/
+
+    (app / "notas.py").write_text("print(input('x'))\n", encoding="utf-8")
+    t.build_exe(str(app / "notas.py"), admin=True)
+    assert "--windowed" not in calls[1] and "--uac-admin" in calls[1]
+
+
+def test_build_exe_reports_pyinstaller_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(t, "PROGRAMS_DIR", tmp_path / "prog")
+    (tmp_path / "a.py").write_text("print(1)\n", encoding="utf-8")
+    monkeypatch.setattr(t.subprocess, "run",
+                        lambda cmd, **kw: MagicMock(returncode=1, stdout="", stderr="No module named PyInstaller"))
+    out = t.build_exe(str(tmp_path / "a.py"))
+    assert out.startswith("MAL") and "pip install pyinstaller" in out
+    assert t.build_exe(str(tmp_path / "no.py")).startswith("No existe")

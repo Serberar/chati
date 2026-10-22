@@ -681,6 +681,51 @@ def try_program(path: str, seconds: int = 6) -> str:
     return f"{verdict}\nLo que ha escrito:\n{said}\n(Ya lo he cerrado.)"
 
 
+_GUI_IMPORT = re.compile(r"^\s*(import|from)\s+(tkinter|customtkinter|PyQt\d|PySide\d|wx|pygame)\b", re.MULTILINE)
+
+
+def build_exe(script: str, admin: bool = False) -> str:
+    """Crea el .exe de un .py con PyInstaller, lo pone en la carpeta del script
+    (sustituyendo el que hubiera) y lo prueba. El agente compilaba en su
+    carpeta de trabajo y dejaba el .exe nuevo en dist/ sin moverlo: el que
+    abria el usuario seguia siendo el roto (banco del 2026-10-22)."""
+    import tempfile
+    source = Path(script)
+    if not source.is_file() or source.suffix.lower() not in (".py", ".pyw"):
+        return f"No existe el programa Python {script}."
+    window = bool(_GUI_IMPORT.search(source.read_text(encoding="utf-8", errors="replace")))
+    olds = [p for p in source.parent.glob("*.exe")]
+    target = olds[0] if len(olds) == 1 else source.with_suffix(".exe")
+    python = shutil.which("python") or sys.executable
+    PROGRAMS_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=PROGRAMS_DIR) as tmp:
+        cmd = [python, "-m", "PyInstaller", "--noconfirm", "--onefile", "--log-level", "WARN",
+               "--name", target.stem, "--distpath", f"{tmp}/dist", "--workpath", f"{tmp}/build", "--specpath", tmp]
+        cmd += ["--windowed"] if window else []
+        cmd += ["--uac-admin"] if admin else []
+        try:
+            out = subprocess.run(cmd + [str(source)], cwd=source.parent, capture_output=True, text=True,
+                                 timeout=900, check=False, encoding="utf-8", errors="replace")
+        except subprocess.TimeoutExpired:
+            return "PyInstaller no ha terminado en 15 minutos."
+        built = Path(tmp) / "dist" / f"{target.stem}.exe"
+        if out.returncode != 0 or not built.exists():
+            tail = "\n".join((out.stdout + out.stderr).splitlines()[-25:])
+            if "No module named PyInstaller" in tail:
+                tail += "\n(Falta PyInstaller: instalalo con: python -m pip install pyinstaller)"
+            return f"MAL: PyInstaller ha fallado:\n{tail}"
+        try:
+            os.replace(built, target)
+        except PermissionError:
+            return (f"MAL: {target.name} esta abierto y no se puede sustituir. Cierralo (Stop-Process -Name "
+                    f"\"{target.stem}\") y vuelve a crear el .exe.")
+    kind = "con ventana (--windowed)" if window else "de consola"
+    made = f"Creado {target} ({kind}{', pide administrador al abrirse' if admin else ''})."
+    if admin:
+        return f"{made}\nComo pide administrador no se puede abrir solo: prueba {source.name} con probar_programa."
+    return f"{made}\nPrueba del .exe nuevo: {try_program(str(target))}"
+
+
 # ---------- renombrar ----------
 # qwen renombraba a base de comandos de bash archivo por archivo: 25-40 pasos
 # y ~15 minutos para cambiar un nombre en 3 archivos (banco 2026-10-13).

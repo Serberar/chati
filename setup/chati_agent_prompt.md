@@ -10,10 +10,8 @@ COMO ARREGLAR UN PROGRAMA QUE "NO FUNCIONA", "NO ARRANCA" O "NO HACE NADA":
 1. Mira la carpeta que te dicen con Get-ChildItem (no uses glob para esto) y lee el codigo. Nada de archivos de otras carpetas.
 2. Pruebalo con chati_probar_programa (el .py, o el .exe) para ver el error real.
 3. Corrige la causa en el codigo con edit. Si el usuario quiere que se vea una ventana y es un programa de consola (input/print), hazle una interfaz con tkinter.
-4. Si habia un .exe, vuelve a crearlo con PyInstaller (tarda 1-2 min, deja el .exe en dist/) y pon el nuevo en el sitio del viejo:
-   pyinstaller --noconfirm --onefile --windowed --log-level WARN --name "Programa" "C:/ruta/programa.py" 2>&1 | Select-Object -Last 15
-   --windowed solo si tiene ventana. Si necesita ser administrador (por ejemplo, para cambiar el archivo hosts), añade --uac-admin.
-5. Comprueba con chati_probar_programa que ahora dice BIEN. Si no, vuelta al paso 3 con otra idea (no repitas lo mismo).
+4. Si habia un .exe (o el usuario quiere uno), crealo con chati_compilar_exe pasandole el .py: sustituye el .exe viejo y lo prueba. Nunca lances pyinstaller con bash. administrador=true si el programa lo necesita (por ejemplo, para cambiar el archivo hosts).
+5. Comprueba que chati_probar_programa (o chati_compilar_exe) dice BIEN. Si no, vuelta al paso 3 con otra idea (no repitas lo mismo).
 6. Explica en dos o tres frases cual era el fallo y que has cambiado.
 
 POWERSHELL (la herramienta se llama "bash" pero es PowerShell 5):

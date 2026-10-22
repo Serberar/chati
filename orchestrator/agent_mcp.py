@@ -146,6 +146,12 @@ TOOLS = [
                     "lanzarlo con bash (con bash se queda esperando a que alguien cierre la ventana).",
      "inputSchema": _schema({"ruta": _STR, "segundos": {"type": "integer", "description": "Espera (6)"}},
                             ["ruta"])},
+    {"name": "compilar_exe", "fn": lambda a: t.build_exe(a["script"], bool(a.get("administrador", False))),
+     "description": "Crea el .exe de un programa .py con PyInstaller (con ventana o de consola, segun el codigo), "
+                    "lo pone en la carpeta del .py sustituyendo el .exe que hubiera, y lo prueba. Usalo en vez de "
+                    "lanzar pyinstaller con bash. administrador=true si necesita permisos (p.ej. cambia el archivo "
+                    "hosts): Windows los pedira al abrirlo.",
+     "inputSchema": _schema({"script": _STR, "administrador": {"type": "boolean"}}, ["script"])},
 ]
 _BY_NAME = {tool["name"]: tool for tool in TOOLS}
 

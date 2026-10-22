@@ -254,8 +254,24 @@ Cada hito es una demo que se puede repetir delante de cualquiera, no una sensaci
 
 ## 6. Pendiente inmediato
 
-- [ ] Publicar en Chati lo de hoy: `chati_probar_programa`, prompt nuevo del modo Agente, `glob` desactivado, "arreglar" → modelo potente.
-- [ ] `chati_compilar_exe` (Fase 2) y otra ronda: objetivo 4/4.
+### Donde lo dejamos (22/10, 18:00)
+
+- **Hecho, en el repo y sin publicar todavía**: `chati_probar_programa`, `chati_compilar_exe` (probado a mano: crea el .exe de notas en 14 s, sustituye el viejo y dice BIEN), prompt nuevo del modo Agente, `glob` desactivado, "arreglar" → modelo potente y tests (694 en verde).
+- **4ª ronda de la batería**: lanzada con `chati_compilar_exe` y **parada a mano** al empezar (Sergio se iba). No hay resultado.
+- **Mañana, en este orden**:
+  1. Repetir la 4ª ronda: `powershell -ExecutionPolicy Bypass -File pendiente\bateria\bateria.ps1` (antes, `python pendiente\bateria\crear_pruebas.py` para dejar los casos rotos, y que OpenCode esté arrancado). Objetivo: 4/4.
+  2. Si sale 4/4: subir la versión, compilar con `setup\build_release.ps1` y publicar la release.
+  3. Seguir con el "Orden de ataque" desde el punto 3.
+
+### Ojo
+
+- La configuración de OpenCode de tu perfil (`~/.config/opencode/opencode.json`) apunta ahora al código del repo (`agent_mcp.py` del repo y su venv) y lleva activadas `chati_probar_programa` y `chati_compilar_exe`. La copia anterior está en `opencode.json.antes-pruebas`. Al publicar e instalar la versión nueva, `install.ps1` la regenera apuntando a la Chati instalada.
+- Los scripts de la batería viven en `pendiente/bateria/` (crear casos, comprobar, lanzar el agente y la batería entera). Los casos se crean en `Escritorio/pruebas`.
+
+### Lista
+
+- [ ] Publicar en Chati lo de hoy: `chati_probar_programa`, `chati_compilar_exe`, prompt nuevo del modo Agente, `glob` desactivado, "arreglar" → modelo potente.
+- [ ] Repetir la 4ª ronda con `chati_compilar_exe`: objetivo 4/4.
 - [ ] Tras actualizar, la configuración de OpenCode del perfil vuelve a apuntar a la Chati instalada. Mientras tanto apunta al repo; la copia anterior está en `~/.config/opencode/opencode.json.antes-pruebas`.
 - [ ] Pasar la batería y su comprobador al repo (Fase 0).
 - [ ] Borrar `Escritorio/pruebas` cuando la batería viva en el repo.
