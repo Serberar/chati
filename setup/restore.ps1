@@ -16,7 +16,8 @@ param(
 )
 
 $AiRoot = Split-Path -Parent $PSScriptRoot
-$chatiDataRoot = if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+$chatiDataRoot = if (Test-Path "$AiRoot\.git") { $AiRoot }  # copia de desarrollo, ver paths.py
+                 elseif ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
                  elseif ([Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User")) {
                      [Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User") }
                  elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }

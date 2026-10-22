@@ -12,11 +12,15 @@ Log de reinicios: watchdog.log, en <carpeta de datos>\data\logs.
 # salvo que se haya instalado en modo "todo junto" (ver ROADMAP.md punto
 # 3b / 8b).
 $AiRoot = Split-Path -Parent $PSScriptRoot
+. "$PSScriptRoot\comfy_args.ps1"
 foreach ($name in "OLLAMA_MODELS", "CHATI_DATA_ROOT") {  # ver Update-EnvFromUser
     $value = [Environment]::GetEnvironmentVariable($name, "User")
     if ($value) { Set-Item -Path "Env:$name" -Value $value }
 }
-$DataRoot = if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+# la copia de desarrollo (el repo) usa sus propios datos aunque haya una Chati
+# instalada que fije CHATI_DATA_ROOT para todo el usuario (ver paths.py)
+$DataRoot = if (Test-Path "$AiRoot\.git") { $AiRoot }
+            elseif ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
                            elseif ([Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User")) {
                                [Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User") }
             elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
@@ -166,7 +170,7 @@ function Ensure-ComfyUI {
         Write-Log "ComfyUI caido. Reiniciando..."
         Stop-ByPort 8188
         Start-Sleep -Seconds 2
-        Start-Process -FilePath "$DataRoot\ComfyUI\venv\Scripts\python.exe" -ArgumentList "main.py" `
+        Start-Process -FilePath "$DataRoot\ComfyUI\venv\Scripts\python.exe" -ArgumentList (Get-ComfyArgs $AiRoot $DataRoot) `
             -WorkingDirectory "$DataRoot\ComfyUI" -WindowStyle Hidden
         Write-Log "ComfyUI reiniciado (tardara ~20-30s en responder)."
     }

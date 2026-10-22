@@ -38,7 +38,7 @@ Uso:  powershell -ExecutionPolicy Bypass -File install.ps1 [-AiRoot D:\IA] [-Dat
 param(
     [string]$AiRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$DataRoot = $(if ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" } else { (Split-Path -Parent $PSScriptRoot) }),
-    [ValidateSet("si", "no", "igual")] [string]$Autostart = "si"
+    [ValidateSet("si", "no", "igual")] [string]$Autostart = "no"
 )
 
 $ErrorActionPreference = "Stop"

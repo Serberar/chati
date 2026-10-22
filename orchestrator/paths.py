@@ -44,14 +44,22 @@ def _user_env_from_registry(name: str) -> str | None:
 
 _data_root_override = os.environ.get("CHATI_DATA_ROOT") or _user_env_from_registry("CHATI_DATA_ROOT")
 if _data_root_override:
-    DATA_ROOT = Path(_data_root_override)
+    _installed_root = Path(_data_root_override)
 elif os.environ.get("LOCALAPPDATA"):
-    DATA_ROOT = Path(os.environ["LOCALAPPDATA"]) / "ChatiIA"
+    _installed_root = Path(os.environ["LOCALAPPDATA"]) / "ChatiIA"
 else:
     # sin LOCALAPPDATA (Linux/Mac, o un Windows raro sin esa variable) -
     # cae al lado del codigo, el comportamiento de siempre antes de separar
-    DATA_ROOT = CODE_ROOT
+    _installed_root = CODE_ROOT
+
+# Copia de desarrollo (el repo): sus propios datos aunque haya una Chati
+# instalada en el mismo equipo (CHATI_DATA_ROOT es de todo el usuario y la
+# instalacion lo apunta a la suya), pero los modelos de la instalada si los
+# hay, para no tenerlos dos veces en disco (cientos de GB)
+DEV_CHECKOUT = (CODE_ROOT / ".git").exists()
+DATA_ROOT = CODE_ROOT if DEV_CHECKOUT else _installed_root
 
 DATA_DIR = DATA_ROOT / "data"
-MODELS_DIR = DATA_ROOT / "models"
+MODELS_DIR = (_installed_root / "models" if DEV_CHECKOUT and (_installed_root / "models").is_dir()
+              else DATA_ROOT / "models")
 OUTPUT_DIR = DATA_ROOT / "outputs"

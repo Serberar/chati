@@ -44,7 +44,7 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 spanish.WelcomeCredit=Creada por Sergio Bernabé.
 
 [Tasks]
-Name: "autostart"; Description: "Arrancar Chati al iniciar Windows (si no, arranca al abrirla; se puede cambiar en Opciones)"
+Name: "autostart"; Description: "Arrancar Chati al iniciar Windows (si no, arranca al abrirla; se puede cambiar en Opciones)"; Flags: unchecked
 
 [InstallDelete]
 ; el lanzador de la version anterior entero: PyInstaller cambia sus archivos

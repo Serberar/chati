@@ -7,22 +7,33 @@ Es lo que ejecuta el acceso directo del escritorio, con pythonw.exe (sin
 consola): la ventana aparece al momento con una pantalla de carga, y
 mientras tanto arranca Ollama/ComfyUI/el orquestador (setup/start_all.ps1)
 en segundo plano, tambien sin ventana. Antes el acceso directo lanzaba
-PowerShell y se veia una terminal negra durante todo el arranque."""
+PowerShell y se veia una terminal negra durante todo el arranque.
+
+Como cualquier programa con icono junto al reloj: cerrar la ventana solo la
+esconde (los servicios siguen, para volver al momento). "Cerrar Chati" en ese
+icono para todo, Ollama y ComfyUI incluidos, y libera memoria y GPU."""
 
 import logging
+import socket
 import subprocess
 import threading
 import time
 import webbrowser
 
+import pystray
 import requests
 import webview
+from PIL import Image
 
 from paths import CODE_ROOT, DATA_DIR
 
 URL = "http://127.0.0.1:8899"
 ICON_PATH = str(CODE_ROOT / "icono.ico")
 START_SCRIPT = CODE_ROOT / "setup" / "start_all.ps1"
+STOP_SCRIPT = CODE_ROOT / "setup" / "stop_chati.ps1"
+# una segunda ChatiIA.exe (doble clic con la primera escondida) se conecta
+# aqui para que la primera se muestre, y se cierra
+INSTANCE_PORT = 8897
 LOG_PATH = DATA_DIR / "arranque.log"
 BACKEND_TIMEOUT = 180  # primer arranque tras reiniciar: ComfyUI solo ya tarda ~30s
 
@@ -61,7 +72,7 @@ def _start_services() -> None:
     with open(LOG_PATH, "w", encoding="utf-8", errors="replace") as log:
         subprocess.Popen(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-WindowStyle", "Hidden", "-File", str(START_SCRIPT)],
+             "-WindowStyle", "Hidden", "-File", str(START_SCRIPT), "-Stay"],
             stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
@@ -95,7 +106,66 @@ def _fallback_to_browser(window) -> None:
     while not _backend_up() and time.time() < deadline:
         time.sleep(2)
     webbrowser.open(URL)
+    _quitting.set()
     window.destroy()
+
+
+_quitting = threading.Event()
+
+
+def _show(window) -> None:
+    window.show()
+    window.restore()
+
+
+def _on_closing(window) -> bool:
+    if _quitting.is_set():
+        return True
+    threading.Thread(target=window.hide, daemon=True).start()
+    return False
+
+
+def _quit(icon, window) -> None:
+    _quitting.set()
+    icon.stop()
+    # suelto: ChatiIA.exe vive en la carpeta del programa y el script la cierra tambien
+    subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STOP_SCRIPT),
+         "-AiRoot", str(CODE_ROOT), "-All"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    window.destroy()
+
+
+def _tray_icon(window) -> pystray.Icon:
+    icon = pystray.Icon("ChatiIA", Image.open(ICON_PATH), "Chati IA")
+    icon.menu = pystray.Menu(
+        pystray.MenuItem("Abrir Chati", lambda: _show(window), default=True),
+        pystray.MenuItem("Cerrar Chati", lambda: _quit(icon, window)),
+    )
+    return icon
+
+
+def _claim_single_instance() -> socket.socket | None:
+    srv = socket.socket()
+    try:
+        srv.bind(("127.0.0.1", INSTANCE_PORT))
+    except OSError:
+        try:
+            socket.create_connection(("127.0.0.1", INSTANCE_PORT), timeout=3).close()
+        except OSError:
+            pass
+        return None
+    srv.listen()
+    return srv
+
+
+def _show_on_request(srv: socket.socket, window) -> None:
+    while True:
+        conn, _ = srv.accept()
+        conn.close()
+        _show(window)
 
 
 def _boot(window) -> None:
@@ -135,6 +205,9 @@ class DesktopApi:
 
 
 def main() -> None:
+    instance = _claim_single_instance()
+    if instance is None:
+        return
     _set_taskbar_identity()
     # sin esto el boton "Descargar" de las imagenes no hacia nada en la app (en
     # el navegador si); y Chati nunca abre archivos locales por file://
@@ -146,8 +219,13 @@ def main() -> None:
     window = webview.create_window("Chati IA", html=LOADING_HTML, width=1280, height=800,
                                    min_size=(720, 480), background_color="#14161a", text_select=True,
                                    js_api=DesktopApi())
+    window.events.closing += _on_closing
+    tray = _tray_icon(window)
+    threading.Thread(target=tray.run, daemon=True).start()
+    threading.Thread(target=_show_on_request, args=(instance, window), daemon=True).start()
     webview.start(lambda: threading.Thread(target=_boot, args=(window,), daemon=True).start(),
                   icon=ICON_PATH)
+    tray.stop()
 
 
 if __name__ == "__main__":

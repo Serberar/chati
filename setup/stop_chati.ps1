@@ -6,13 +6,18 @@ ventana ChatiIA.exe bloquea sus archivos, y el orquestador y las
 herramientas del agente usan su venv) y OpenCode, que carga esas
 herramientas. Ollama y ComfyUI no se tocan: viven fuera de esa carpeta.
 
-Uso:  powershell -ExecutionPolicy Bypass -File stop_chati.ps1 -AiRoot "C:\Program Files\Chati IA"
+-All: "Cerrar Chati" desde el icono junto al reloj (desktop_app.py). Ademas
+cierra ComfyUI y Ollama (tambien su propio icono), para liberar la memoria y
+la GPU que tienen los modelos cargados.
+
+Uso:  powershell -ExecutionPolicy Bypass -File stop_chati.ps1 -AiRoot "C:\Program Files\Chati IA" [-All]
 #>
 
-param([Parameter(Mandatory = $true)] [string]$AiRoot)
+param([Parameter(Mandatory = $true)] [string]$AiRoot, [switch]$All)
 
 $root = [IO.Path]::GetFullPath($AiRoot).TrimEnd("\") + "\"
-$watchdog = [regex]::Escape("$root" + "setup\watchdog.ps1")
+# start_all.ps1 -Stay lleva el vigilante dentro
+$watchdog = [regex]::Escape("$root" + "setup\") + "(watchdog|start_all)\.ps1"
 
 function Get-ChatiProcesses {
     Get-CimInstance Win32_Process | Where-Object {
@@ -22,6 +27,9 @@ function Get-ChatiProcesses {
 }
 
 foreach ($p in Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match $watchdog }) {
+    # con -All, todo lo que lanzo (y lo que lanzaron esos, p.ej. los modelos
+    # de Ollama o los procesos de OpenCode)
+    if ($All) { taskkill.exe /PID $p.ProcessId /T /F *> $null }
     Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
 }
 foreach ($p in Get-ChatiProcesses) {
@@ -33,6 +41,19 @@ foreach ($port in 8899, 8901) {
     foreach ($c in Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
         Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
     }
+}
+if ($All) {
+    foreach ($c in Get-NetTCPConnection -LocalPort 8188 -State Listen -ErrorAction SilentlyContinue) {
+        # ComfyUI tambien va en pareja (su venv); el padre solo si es python,
+        # por si se arranco a mano desde una terminal
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)" -ErrorAction SilentlyContinue
+        $parent = if ($parent) { Get-Process -Id $parent.ParentProcessId -ErrorAction SilentlyContinue }
+        if ($parent -and $parent.Name -eq "python") { Stop-Process -Id $parent.Id -Force -ErrorAction SilentlyContinue }
+        Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
+    }
+    # "ollama app" es su icono junto al reloj; los modelos cargados son
+    # procesos ollama.exe hijos del servidor
+    Get-Process -Name "ollama app", "ollama" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 $deadline = (Get-Date).AddSeconds(20)

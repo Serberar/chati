@@ -14,11 +14,17 @@ Luego abre http://localhost:8899 en el navegador.
 # punto 3b / 8b).
 param(
     [string]$AiRoot = (Split-Path -Parent $PSScriptRoot),
-    [string]$DataRoot = $(if ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
+    [string]$DataRoot = $(if (Test-Path "$(Split-Path -Parent $PSScriptRoot)\.git") {  # copia de desarrollo, ver paths.py
+                               Split-Path -Parent $PSScriptRoot }
+                           elseif ($env:CHATI_DATA_ROOT) { $env:CHATI_DATA_ROOT }
                            elseif ([Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User")) {
                                [Environment]::GetEnvironmentVariable("CHATI_DATA_ROOT", "User") }
                            elseif ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\ChatiIA" }
-                           else { (Split-Path -Parent $PSScriptRoot) })
+                           else { (Split-Path -Parent $PSScriptRoot) }),
+    # lo usa ChatiIA.exe (desktop_app.py): el vigilante corre dentro de este
+    # mismo proceso, que se queda vivo, para que los servicios cuelguen de
+    # Chati en el Administrador de tareas en vez de salir sueltos
+    [switch]$Stay
 )
 
 function Test-Url($url) {
@@ -43,7 +49,8 @@ if (-not (Test-Url "http://127.0.0.1:11434/api/tags")) {
 
 Write-Host "=== Arrancando ComfyUI ===" -ForegroundColor Cyan
 if (-not (Test-Url "http://127.0.0.1:8188/system_stats")) {
-    Start-Process -FilePath "$DataRoot\ComfyUI\venv\Scripts\python.exe" -ArgumentList "main.py" -WorkingDirectory "$DataRoot\ComfyUI" -WindowStyle Hidden
+    . "$PSScriptRoot\comfy_args.ps1"
+    Start-Process -FilePath "$DataRoot\ComfyUI\venv\Scripts\python.exe" -ArgumentList (Get-ComfyArgs $AiRoot $DataRoot) -WorkingDirectory "$DataRoot\ComfyUI" -WindowStyle Hidden
     Write-Host "ComfyUI arrancando (tarda ~20-30s en estar listo)..." -ForegroundColor Yellow
 } else {
     Write-Host "ComfyUI ya esta corriendo." -ForegroundColor Green
@@ -94,7 +101,10 @@ if (-not $ocUp) {
 $watchdogScript = "$PSScriptRoot\watchdog.ps1"
 $watchdogRunning = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     Where-Object { $_.CommandLine -like "*$watchdogScript*" }
-if (-not $watchdogRunning) {
+if ($Stay -and -not $watchdogRunning) {
+    Write-Host "=== Vigilando (este proceso sigue vivo) ===" -ForegroundColor Cyan
+    & $watchdogScript
+} elseif (-not $watchdogRunning) {
     Write-Host "=== Arrancando el vigilante ===" -ForegroundColor Cyan
     Start-Process -FilePath "conhost.exe" -WorkingDirectory $PSScriptRoot `
         -ArgumentList "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$watchdogScript`""
