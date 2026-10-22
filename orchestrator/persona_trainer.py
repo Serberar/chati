@@ -129,7 +129,7 @@ def _read_status(owner: str, name: str, architecture: str) -> dict | None:
 def _pid_alive(pid: int) -> bool:
     try:
         result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True, timeout=10,
+            ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, check=False, text=True, timeout=10,
         )
         return str(pid) in result.stdout
     except (subprocess.SubprocessError, OSError):

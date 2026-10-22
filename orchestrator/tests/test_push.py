@@ -1,4 +1,4 @@
-"""Avisos al movil (push.py): el cifrado se comprueba descifrandolo como lo
+﻿"""Avisos al movil (push.py): el cifrado se comprueba descifrandolo como lo
 haria el navegador, y la firma VAPID con la clave publica."""
 import base64
 import json
@@ -57,7 +57,7 @@ def test_vapid_signature_is_valid(push_dir):
     header = push._vapid_header("https://web.push.apple.com/abc")
     token = header.split("t=")[1].split(",")[0]
     head, claims, sig = token.split(".")
-    pad = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))  # noqa: E731
+    pad = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
     assert json.loads(pad(claims))["aud"] == "https://web.push.apple.com"
     raw = pad(sig)
     der = encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big"))
@@ -125,14 +125,11 @@ def test_watch_notifies_asks_once_and_done_after_chati_checks():
                     ("✓ Tarea terminada", "tarea a · ✓ Chati ha ejecutado los tests y pasan.")]
 
 
-def test_a_task_without_progress_is_reported_as_stuck_once():
-    import main
-    state = {"busy": set(), "asked": set(), "done": set(), "progress": {}}
-    sent = []
-    clock = {"now": 1000.0}
-
+def _stall_ticker(main, state, sent, clock, life, retries=lambda: 0):
     def tick():
         with patch.object(main.time, "time", side_effect=lambda: clock["now"]), \
+             patch.object(main.llm_status, "last_sign_of_life", side_effect=lambda: life["last"]), \
+             patch.object(main.llm_status, "retries", side_effect=retries), \
              patch.object(main.requests, "get"), \
              patch.object(main.opencode_client, "busy_session_ids", return_value=["s"]), \
              patch.object(main.opencode_client, "waiting_sessions", return_value={}), \
@@ -142,8 +139,42 @@ def test_a_task_without_progress_is_reported_as_stuck_once():
              patch.object(main.push, "has_devices", return_value=True), \
              patch.object(main.push, "notify", side_effect=lambda u, t, b, tag: sent.append((t, b))):
             main._push_tick(state)
+    return tick
 
-    main._llm_activity["last"] = 1000.0
+
+def test_a_retry_loop_is_reported_as_stuck_even_if_ollama_is_busy():
+    """El 2026-10-16: Ollama trabajaba (leyendo), pero OpenCode cortaba a los
+    5 min y volvia a empezar; horas asi sin que nada avisara."""
+    import main
+    state = {"busy": set(), "asked": set(), "done": set(), "progress": {}}
+    sent, clock = [], {"now": 1000.0}
+    life = {"last": 1000.0}
+    tries = {"n": 0}
+    tick = _stall_ticker(main, state, sent, clock, life, retries=lambda: tries["n"])
+    try:
+        tick()
+        clock["now"] += 300
+        life["last"] = clock["now"]  # Ollama gastando procesador todo el rato
+        tries["n"] = 1
+        tick()
+        assert sent == []
+        clock["now"] += 330
+        life["last"] = clock["now"]
+        tries["n"] = 2
+        tick()
+        assert "s" in main._stalled
+        assert sent[0][1].startswith("Lleva 10 min el modelo no llega a contestar")
+    finally:
+        main._stalled.clear()
+
+
+def test_a_task_without_progress_is_reported_as_stuck_once():
+    import main
+    state = {"busy": set(), "asked": set(), "done": set(), "progress": {}}
+    sent = []
+    clock = {"now": 1000.0}
+    life = {"last": 1000.0}
+    tick = _stall_ticker(main, state, sent, clock, life)
     try:
         tick()                                  # primera vez: se apunta
         clock["now"] += 300
@@ -155,7 +186,7 @@ def test_a_task_without_progress_is_reported_as_stuck_once():
         tick()                                  # no se repite el aviso
         assert sent == [("⚠ El agente parece atascado", "Lleva 11 min sin avanzar: renombrar. Abre Chati y pulsa Reintentar.")]
         assert "s" in main._stalled
-        main._llm_activity["last"] = clock["now"]  # el modelo vuelve a escribir
+        life["last"] = clock["now"]  # el modelo vuelve a escribir
         tick()
         assert "s" not in main._stalled
     finally:

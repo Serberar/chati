@@ -13,7 +13,7 @@ DEK = Fernet.generate_key()
 
 
 def test_short_document_goes_whole_into_the_context_and_is_encrypted_on_disk():
-    session_docs.save("u1", "s1", "contrato.txt", "La permanencia es de 12 meses.".encode(), DEK, 1)
+    session_docs.save("u1", "s1", "contrato.txt", b"La permanencia es de 12 meses.", DEK, 1)
 
     context, evidence = session_docs.context_for("u1", "s1", "resumeme esto", DEK, 1)
 

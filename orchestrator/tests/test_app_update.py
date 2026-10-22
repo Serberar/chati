@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -93,7 +94,7 @@ def test_install_runs_the_verified_installer_in_update_mode(monkeypatch):
 
     path, verb, args = started[0]
     assert verb == "open" and "/UPDATE=1" in args
-    assert open(path, "rb").read() == body
+    assert Path(path).read_bytes() == body
 
 
 def test_install_without_newer_version_does_nothing(monkeypatch):

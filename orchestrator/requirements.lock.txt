@@ -76,6 +76,7 @@ pluggy==1.6.0
 propcache==0.5.4
 protobuf==7.36.2
 proxy_tools==0.1.0
+psutil==7.2.2
 pybase64==1.5.0
 pycparser==3.0
 pydantic-settings==2.15.0

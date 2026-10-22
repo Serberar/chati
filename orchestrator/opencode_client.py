@@ -14,8 +14,8 @@ import re
 import secrets
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import requests
 
@@ -216,8 +216,8 @@ def delegate(base_url: str, task: str, agent: str | None = None) -> tuple[str, s
     except requests.RequestException as exc:
         return f"No se pudo contactar con el agente de codigo (¿esta arrancado?): {exc}", None
     return (
-        "Se lo he pasado al agente. Veras aqui debajo lo que va haciendo, y te pedira "
-        "permiso antes de cambiar nada. Puede tardar unos minutos.",
+        ("Se lo he pasado al agente. Veras aqui debajo lo que va haciendo, y te pedira "
+         "permiso antes de cambiar nada. Puede tardar unos minutos."),
         session_id,
     )
 

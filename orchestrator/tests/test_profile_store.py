@@ -94,6 +94,7 @@ def test_delete_all_for_user_does_not_raise_when_nothing_to_delete():
 
 def _png(width, height):
     import io
+
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (width, height), (200, 30, 30)).save(buf, format="PNG")
@@ -102,6 +103,7 @@ def _png(width, height):
 
 def test_avatar_is_cropped_square_encrypted_and_readable():
     import io
+
     from PIL import Image
     dek = Fernet.generate_key()
 
@@ -131,7 +133,7 @@ def test_avatar_rejects_non_images_and_can_be_removed():
 
 def test_agent_shortcuts_defaults_until_saved_then_encrypted_roundtrip():
     dek = Fernet.generate_key()
-    assert [s["name"] for s in profile_store.get_agent_shortcuts("u1", dek, 1)][0] == "Ordenar Descargas"
+    assert next(s["name"] for s in profile_store.get_agent_shortcuts("u1", dek, 1)) == "Ordenar Descargas"
 
     saved = profile_store.save_agent_shortcuts(
         [{"name": "  Fotos  ", "task": "ordena mis fotos por año", "potente": True}], "u1", dek, 1)

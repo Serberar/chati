@@ -36,7 +36,7 @@ def test_encrypted_document_not_stored_as_plaintext_in_chroma(tmp_path, monkeypa
     kb = _kb(tmp_path, monkeypatch)
     dek = Fernet.generate_key()
 
-    kb.add_document("secreto.txt", "informacion confidencial de verdad".encode("utf-8"), dek=dek, key_generation=1)
+    kb.add_document("secreto.txt", b"informacion confidencial de verdad", dek=dek, key_generation=1)
 
     raw = kb.collection.get(where={"source": "secreto.txt"})
     assert "informacion confidencial" not in raw["documents"][0]
@@ -45,7 +45,7 @@ def test_encrypted_document_not_stored_as_plaintext_in_chroma(tmp_path, monkeypa
 def test_query_with_correct_dek_decrypts_result(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
     dek = Fernet.generate_key()
-    kb.add_document("doc.txt", "contenido de prueba".encode("utf-8"), dek=dek, key_generation=1)
+    kb.add_document("doc.txt", b"contenido de prueba", dek=dek, key_generation=1)
 
     results = kb.query("contenido de prueba", k=3, dek=dek, key_generation=1)
 
@@ -56,7 +56,7 @@ def test_query_with_correct_dek_decrypts_result(tmp_path, monkeypatch):
 def test_query_without_dek_never_returns_plaintext_of_encrypted_doc(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
     dek = Fernet.generate_key()
-    kb.add_document("doc.txt", "contenido de prueba".encode("utf-8"), dek=dek, key_generation=1)
+    kb.add_document("doc.txt", b"contenido de prueba", dek=dek, key_generation=1)
 
     results = kb.query("contenido de prueba", k=3)  # sin dek
 
@@ -68,7 +68,7 @@ def test_query_excludes_orphaned_key_generation(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
     old_dek = Fernet.generate_key()
     new_dek = Fernet.generate_key()
-    kb.add_document("doc.txt", "contenido de antes del reset".encode("utf-8"), dek=old_dek, key_generation=1)
+    kb.add_document("doc.txt", b"contenido de antes del reset", dek=old_dek, key_generation=1)
 
     # tras un reset de contraseña: nueva dek, key_generation distinta
     results = kb.query("contenido de antes del reset", k=3, dek=new_dek, key_generation=2)
@@ -78,7 +78,7 @@ def test_query_excludes_orphaned_key_generation(tmp_path, monkeypatch):
 
 def test_legacy_unencrypted_document_still_queryable_without_dek(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
-    kb.add_document("legado.txt", "documento subido antes del sistema de usuarios".encode("utf-8"))  # sin dek
+    kb.add_document("legado.txt", b"documento subido antes del sistema de usuarios")  # sin dek
 
     results = kb.query("documento subido antes del sistema de usuarios", k=3)
 
@@ -90,7 +90,7 @@ def test_legacy_unencrypted_document_still_queryable_even_when_dek_given(tmp_pat
     # documentos guardados antes del cifrado no tienen key_generation en su
     # metadata - deben seguir siendo legibles tal cual, no tratarse como huerfanos
     kb = _kb(tmp_path, monkeypatch)
-    kb.add_document("legado.txt", "documento legado".encode("utf-8"))  # sin dek
+    kb.add_document("legado.txt", b"documento legado")  # sin dek
 
     results = kb.query("documento legado", k=3, dek=Fernet.generate_key(), key_generation=1)
 
@@ -100,8 +100,8 @@ def test_legacy_unencrypted_document_still_queryable_even_when_dek_given(tmp_pat
 
 def test_documents_isolated_by_user_id(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
-    kb.add_document("doc.txt", "contenido de usuario uno".encode("utf-8"), user_id="user-1")
-    kb.add_document("doc.txt", "contenido de usuario dos".encode("utf-8"), user_id="user-2")
+    kb.add_document("doc.txt", b"contenido de usuario uno", user_id="user-1")
+    kb.add_document("doc.txt", b"contenido de usuario dos", user_id="user-2")
 
     docs_user1 = kb.list_documents(user_id="user-1")
     docs_user2 = kb.list_documents(user_id="user-2")
@@ -115,7 +115,7 @@ def test_documents_isolated_by_user_id(tmp_path, monkeypatch):
 
 def test_query_scoped_to_user_does_not_leak_other_users_documents(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
-    kb.add_document("doc.txt", "secreto de otro usuario".encode("utf-8"), user_id="user-2")
+    kb.add_document("doc.txt", b"secreto de otro usuario", user_id="user-2")
 
     results = kb.query("secreto de otro usuario", k=3, user_id="user-1")
 
@@ -124,8 +124,8 @@ def test_query_scoped_to_user_does_not_leak_other_users_documents(tmp_path, monk
 
 def test_delete_document_scoped_to_user_does_not_affect_other_users(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
-    kb.add_document("doc.txt", "de usuario uno".encode("utf-8"), user_id="user-1")
-    kb.add_document("doc.txt", "de usuario dos".encode("utf-8"), user_id="user-2")
+    kb.add_document("doc.txt", b"de usuario uno", user_id="user-1")
+    kb.add_document("doc.txt", b"de usuario dos", user_id="user-2")
 
     kb.delete_document("doc.txt", user_id="user-1")
 
@@ -135,9 +135,9 @@ def test_delete_document_scoped_to_user_does_not_affect_other_users(tmp_path, mo
 
 def test_delete_all_for_user_removes_documents_and_conversations(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
-    kb.add_document("doc.txt", "de usuario uno".encode("utf-8"), user_id="user-1")
+    kb.add_document("doc.txt", b"de usuario uno", user_id="user-1")
     kb.add_conversation("sesion-x", "pregunta", "respuesta", user_id="user-1")
-    kb.add_document("doc.txt", "de usuario dos".encode("utf-8"), user_id="user-2")
+    kb.add_document("doc.txt", b"de usuario dos", user_id="user-2")
 
     kb.delete_all_for_user("user-1")
 
@@ -178,7 +178,7 @@ def test_add_context_note_appears_in_list_memory_entries(tmp_path, monkeypatch):
 
 def test_list_memory_entries_includes_conversations_and_notes_but_not_documents(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
-    kb.add_document("doc.txt", "contenido de un documento".encode("utf-8"))
+    kb.add_document("doc.txt", b"contenido de un documento")
     kb.add_conversation("sesion-1", "hola", "hola, como estas?")
     kb.add_context_note("una nota manual")
 
@@ -273,7 +273,7 @@ def test_delete_memory_entry_returns_false_for_unknown_id(tmp_path, monkeypatch)
 def test_original_file_on_disk_is_encrypted_and_deleted_with_the_document(tmp_path, monkeypatch):
     kb = _kb(tmp_path, monkeypatch)
     dek = Fernet.generate_key()
-    kb.add_document("secreto.txt", "informacion confidencial de verdad".encode("utf-8"),
+    kb.add_document("secreto.txt", b"informacion confidencial de verdad",
                     user_id="u1", dek=dek, key_generation=1)
     files = list((rag.DOCS_DIR / "u1").iterdir())
     assert [f.name for f in files] == ["secreto.txt.enc"]

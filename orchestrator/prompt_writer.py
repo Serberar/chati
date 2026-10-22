@@ -73,10 +73,10 @@ camara fija o con un acercamiento muy suave (nunca por detras).
 # marcos e iconos de movil
 _PURPOSE = [
     (re.compile(r"\b(?:phone |mobile |smartphone |desktop |computer )?wallpaper\b(?:\s+(?:featuring|with|of|showing))?",
-                re.I), "image of"),
+                re.IGNORECASE), "image of"),
     (re.compile(r",?\s*\bfor (?:my|his|her|your|a|the) (?:little |young )?"
                 r"(?:nephew|niece|son|daughter|mother|father|mom|dad|wife|husband|friend|kid|child|children|"
-                r"brother|sister|grandson|granddaughter|boy|girl)\b", re.I), ""),
+                r"brother|sister|grandson|granddaughter|boy|girl)\b", re.IGNORECASE), ""),
 ]
 
 

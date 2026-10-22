@@ -9,9 +9,8 @@ import session_docs
 def test_a_failed_write_leaves_the_previous_file_intact(tmp_path):
     target = tmp_path / "datos.json"
     atomic.write_text(target, '{"v": 1}')
-    with patch("atomic.os.replace", side_effect=OSError("se fue la luz")):
-        with pytest.raises(OSError):
-            atomic.write_text(target, '{"v": 2}')
+    with patch("atomic.os.replace", side_effect=OSError("se fue la luz")), pytest.raises(OSError):
+        atomic.write_text(target, '{"v": 2}')
     assert target.read_text(encoding="utf-8") == '{"v": 1}'
     assert list(tmp_path.iterdir()) == [target]  # sin temporales sueltos
 

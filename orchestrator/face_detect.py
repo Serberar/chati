@@ -95,7 +95,7 @@ def load_rgb(image_bytes: bytes) -> np.ndarray | None:
     lado no se detectaba."""
     try:
         return np.array(ImageOps.exif_transpose(Image.open(io.BytesIO(image_bytes))).convert("RGB"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - no es una imagen valida: sin caras
         return None
 
 

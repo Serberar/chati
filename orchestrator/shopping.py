@@ -15,10 +15,18 @@ import statistics
 import threading
 import time
 import uuid
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import urlparse
 
-from web_tools import Blocked, Browser, ChatFn, EncryptedStore, is_private_host, json_from, site_label
+from web_tools import (
+    Blocked,
+    Browser,
+    ChatFn,
+    EncryptedStore,
+    is_private_host,
+    json_from,
+    site_label,
+)
 
 MAX_HISTORY = 10
 PAGE_MAX_CHARS = 6000
@@ -299,7 +307,8 @@ def run_search(chat: ChatFn, browser, req: dict, progress: Callable[[str, int, i
         progress(f"Buscando «{query}»…", i, len(plan["busquedas"]))
         try:
             found = browser.bing(f"{query} comprar precio", 10)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - Bing caido: se sigue con lo demas
+            logging.getLogger("chati").warning("Compras: Bing fallo: %s", exc)
             found = []
         for url in found:
             if url not in candidates and not any(bad in url for bad in _NOT_SHOPS):
@@ -322,7 +331,8 @@ def run_search(chat: ChatFn, browser, req: dict, progress: Callable[[str, int, i
         except Blocked:
             blocked.add(site_label(url))
             continue
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - una tienda que no se puede leer: la siguiente
+            logging.getLogger("chati").warning("Compras: no se pudo leer una tienda: %s", exc)
             continue
         if item and item.get("tipo") == "listado":
             known = set(queue)

@@ -20,7 +20,7 @@ Asistente de inteligencia artificial que **funciona entero en local**, sin depen
 
 ## Estructura
 
-```
+```text
 orchestrator/   # Servidor FastAPI, agentes (texto, imagen, vídeo, voz) y la web
 setup/          # Instalador, arranque, watchdog, backups y restauración
 MANUAL_DE_USO.md
@@ -49,7 +49,7 @@ Al instalar salen marcados en el asistente. **Al actualizar se descargan solos l
 
 ## Uso
 
-Tras instalarlo, el acceso directo **«Chati IA»** del escritorio levanta Ollama, ComfyUI y el orquestador y abre la ventana de Chati (también en **http://localhost:8899**). La guía completa para el usuario está en [MANUAL_DE_USO.md](MANUAL_DE_USO.md).
+Tras instalarlo, el acceso directo **«Chati IA»** del escritorio levanta Ollama, ComfyUI y el orquestador y abre la ventana de Chati (también en **<http://localhost:8899>**). La guía completa para el usuario está en [MANUAL_DE_USO.md](MANUAL_DE_USO.md).
 
 En **Opciones**:
 

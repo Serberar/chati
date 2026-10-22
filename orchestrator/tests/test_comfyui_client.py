@@ -197,6 +197,7 @@ def test_each_upload_gets_its_own_name():
 
 def test_each_generation_remembers_who_asked_for_it():
     from unittest.mock import MagicMock
+
     from agents import comfyui_client
     post = MagicMock()
     post.json.return_value = {"prompt_id": "p-1"}
@@ -207,9 +208,9 @@ def test_each_generation_remembers_who_asked_for_it():
         with patch("agents.comfyui_client.requests.post", return_value=post), \
              patch("agents.comfyui_client.requests.get", return_value=hist), \
              patch("agents.comfyui_client._is_still_queued", return_value=True), \
-             patch("agents.comfyui_client.time.sleep", side_effect=lambda s: None):
-            with pytest.raises(TimeoutError):
-                comfyui_client.submit_and_wait("http://x", {}, "save", "images", timeout=0)
+             patch("agents.comfyui_client.time.sleep", side_effect=lambda s: None), \
+             pytest.raises(TimeoutError):
+            comfyui_client.submit_and_wait("http://x", {}, "save", "images", timeout=0)
     finally:
         comfyui_client.current_owner.reset(token)
     # se apunta al enviarla y se olvida al terminar (aqui, al agotar el tiempo)
@@ -218,8 +219,9 @@ def test_each_generation_remembers_who_asked_for_it():
 
 def test_a_slow_answer_from_comfyui_does_not_kill_the_generation():
     # 2026-10-06: "Read timed out" en una consulta de estado tiraba una edicion de 4 min
-    import requests as real_requests
     from unittest.mock import MagicMock
+
+    import requests as real_requests
     done = {"p": {"status": {"status_str": "success"},
                   "outputs": {"save": {"images": [{"filename": "a.png", "type": "output"}]}}}}
     post = MagicMock()

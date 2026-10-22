@@ -3,9 +3,9 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Callable
 
 import requests
 
@@ -56,6 +56,83 @@ _active_lock = threading.Lock()
 def generation_running() -> bool:
     with _active_lock:
         return _active > 0
+
+
+# --- Que esta haciendo cada generacion (ComfyUI, WebSocket /ws) ---
+# ComfyUI solo manda el progreso ("executing" un nodo, "progress" paso x/y) al
+# client_id que envio el trabajo: uno fijo para todo Chati y un hilo que lo escucha.
+CLIENT_ID = f"chati-{uuid.uuid4().hex}"
+_progress: dict[str, dict] = {}  # prompt_id -> {"nodes": {id: class_type}, "node", "value", "max", "since"}
+_listener_started = threading.Event()
+
+
+def _describe_node(class_type: str) -> str:
+    c = class_type.lower()
+    for words, text in ((("loader", "load"), "Cargando el modelo"), (("sampler",), "Generando"),
+                        (("decode",), "Pasando el resultado a imagen"), (("upscale",), "Ampliando"),
+                        (("save", "videocombine", "preview"), "Guardando"),
+                        (("encode", "cliptext"), "Preparando la descripción")):
+        if any(w in c for w in words):
+            return text
+    return "Preparando la generación"
+
+
+def _on_comfy_event(msg: dict) -> None:
+    kind, data = msg.get("type"), msg.get("data") or {}
+    with _owners_lock:
+        p = _progress.get(data.get("prompt_id"))
+        if p is None:
+            return
+        if kind == "executing" and data.get("node"):
+            p.update(node=str(data["node"]), value=0, max=0, since=time.time())
+        elif kind == "progress":
+            if str(data.get("node")) != p["node"]:
+                p.update(node=str(data.get("node")), since=time.time())
+            p.update(value=data.get("value", 0), max=data.get("max", 0), last_step=time.time())
+
+
+def _listen(base_url: str) -> None:
+    from websockets.sync.client import connect
+    url = base_url.replace("http", "ws", 1) + f"/ws?clientId={CLIENT_ID}"
+    while True:
+        try:
+            with connect(url, open_timeout=5, max_size=None) as ws:
+                for frame in ws:
+                    if isinstance(frame, str):  # los binarios son vistas previas
+                        try:
+                            _on_comfy_event(json.loads(frame))
+                        except ValueError:
+                            pass
+        except Exception:  # noqa: BLE001 - ComfyUI caido o reiniciado: se reconecta
+            time.sleep(3)
+
+
+def _ensure_listener(base_url: str) -> None:
+    if not _listener_started.is_set():
+        _listener_started.set()
+        threading.Thread(target=_listen, args=(base_url,), daemon=True).start()
+
+
+def conversation_progress(conversation: str) -> dict | None:
+    """Lo que hace ahora la generacion de esa conversacion, si hay una en marcha."""
+    with _owners_lock:
+        ids = [pid for pid, conv in _conversations.items() if conv == conversation]
+    return next((p for p in map(job_progress, ids) if p), None)
+
+
+def job_progress(prompt_id: str) -> dict | None:
+    """Que esta haciendo ahora una generacion, en una frase, y desde cuando."""
+    with _owners_lock:
+        p = _progress.get(prompt_id)
+        if not p or not p["node"]:
+            return None
+        text = _describe_node(p["nodes"].get(p["node"], ""))
+        if p["max"]:
+            text += f": paso {p['value']} de {p['max']}"
+        elif text == "Generando":
+            # antes del primer paso ComfyUI sube el modelo a la tarjeta (medido: 34 s con FLUX)
+            text += ": pasando el modelo a la tarjeta gráfica"
+        return {"texto": text, "desde": p["since"], "ultimo_paso": p.get("last_step")}
 
 
 _queue_seen = {"at": 0.0, "busy": False}
@@ -154,16 +231,19 @@ def submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: 
 def _submit_and_wait(base_url: str, workflow: dict, save_node: str, output_keys: list[str],
                      timeout: int) -> dict:
 
-    client_id = str(uuid.uuid4())
+    _ensure_listener(base_url)
     resp = requests.post(
         f"{base_url}/prompt",
-        json={"prompt": workflow, "client_id": client_id},
+        json={"prompt": workflow, "client_id": CLIENT_ID},
         timeout=30,
     )
     resp.raise_for_status()
     prompt_id = resp.json()["prompt_id"]
     owner, conversation = current_owner.get(), current_conversation.get()
     with _owners_lock:
+        _progress[prompt_id] = {"nodes": {k: v.get("class_type", "") for k, v in workflow.items()
+                                          if isinstance(v, dict)},
+                                "node": None, "value": 0, "max": 0, "since": time.time()}
         conversation = conversation or (_last_conversation.get(owner) if owner else None)
         if owner:
             _owners[prompt_id] = owner
@@ -272,6 +352,7 @@ def forget(base_url: str, prompt_id: str, workflow: dict, output_info: dict | No
     with _owners_lock:
         _owners.pop(prompt_id, None)
         _conversations.pop(prompt_id, None)
+        _progress.pop(prompt_id, None)
     root = COMFY_DIR() if callable(COMFY_DIR) else COMFY_DIR
     targets = []
     if output_info and output_info.get("filename"):
@@ -336,7 +417,9 @@ def user_jobs(base_url: str) -> list[dict]:
 
     def job(item, state: str) -> dict:
         with _owners_lock:
-            return {"id": item[1], "state": state, "session_id": _conversations.get(item[1])}
+            session_id = _conversations.get(item[1])
+        return {"id": item[1], "state": state, "session_id": session_id,
+                "progreso": job_progress(item[1]) if state == "running" else None}
 
     return ([job(item, "running") for item in queue.get("queue_running", []) if is_user_job(item)]
             + [job(item, "queued") for item in queue.get("queue_pending", []) if is_user_job(item)])

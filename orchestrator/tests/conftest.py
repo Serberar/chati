@@ -23,6 +23,6 @@ def pytest_sessionfinish(session, exitstatus):
 
 # TestClient llama al servidor "testserver": para los tests cuenta como local
 # (security.LocalOnlyMiddleware rechaza cualquier otro Host)
-import security  # noqa: E402
+import security
 
 security.LOCAL_HOSTS.add("testserver")

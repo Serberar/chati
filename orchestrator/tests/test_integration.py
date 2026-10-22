@@ -1,4 +1,4 @@
-"""
+﻿"""
 Pruebas de integracion contra el orquestador real. Requieren Ollama corriendo
 en localhost:11434 (texto/codigo/verificador/embeddings). No tocan ComfyUI
 salvo las marcadas @pytest.mark.slow.
@@ -25,7 +25,7 @@ import main
 import plans
 import users as users_module
 from agents.comfyui_client import GenerationCancelled
-from main import CONFIG, app, knowledge_base, _generation_error_message
+from main import CONFIG, _generation_error_message, app, knowledge_base
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -280,9 +280,9 @@ def test_verifier_gates_fabricated_entity():
 @pytest.mark.live
 def test_rag_answers_from_uploaded_document_with_source():
     doc_content = (
-        "El proyecto de prueba Nebula fue creado en 2021 por Clara Fonseca. "
-        "Tiene un presupuesto de 12000 euros."
-    ).encode("utf-8")
+        b"El proyecto de prueba Nebula fue creado en 2021 por Clara Fonseca. "
+        b"Tiene un presupuesto de 12000 euros."
+    )
     client.post("/knowledge", files={"file": ("test_nebula.txt", doc_content, "text/plain")})
 
     try:
@@ -660,9 +660,8 @@ def test_chat_stream_final_event_for_image_video_opencode_has_a_type_field():
     cuando type=='done' - la burbuja se quedaba vacia para siempre aunque el
     backend respondiera 200 con los datos correctos. streamChatInto() en
     static/index.html es el consumidor real de este contrato."""
-    with patch.object(main.opencode_client, "delegate", return_value=("Tarea enviada.", "ses_x")):
-        with client.stream("POST", "/chat/stream", json={"message": "hola", "agent": "opencode"}) as resp:
-            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    with patch.object(main.opencode_client, "delegate", return_value=("Tarea enviada.", "ses_x")), client.stream("POST", "/chat/stream", json={"message": "hola", "agent": "opencode"}) as resp:
+        lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     assert lines[0]["type"] == "start"
     assert lines[-1]["type"] == "done"
     assert lines[-1]["response"] == "Tarea enviada."
@@ -796,13 +795,13 @@ def test_vision_chat_ignores_the_text_model_profile():
 
 def test_vision_chat_stream_ignores_the_text_model_profile():
     with patch.object(main.vision_agent, "respond_with_image_stream",
-                       return_value=iter(["describe algo"])) as mock_respond:
-        with client.stream("POST", "/chat/stream", json={
-            "message": "describeme esta imagen",
-            "image_base64": "aWdub3JhZG8=",
-            "model_profile": "seguridad",
-        }) as resp:
-            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+                       return_value=iter(["describe algo"])) as mock_respond, \
+                       client.stream("POST", "/chat/stream", json={
+        "message": "describeme esta imagen",
+        "image_base64": "aWdub3JhZG8=",
+        "model_profile": "seguridad",
+    }) as resp:
+        lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     assert lines[-1]["type"] == "done"
     mock_respond.assert_called_once()
     assert "model" not in mock_respond.call_args.kwargs
@@ -892,10 +891,10 @@ def test_chat_with_a_photo_and_a_change_request_edits_the_photo():
     with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
          patch.object(main.photo_edit, "wants_edit", return_value=True), \
          patch.object(main, "_edit_photo", return_value=(b"fake-jpg", "He hecho esto: os pongo en una playa.")) as mock_edit, \
-         patch.object(main.vision_agent, "respond_with_image_stream") as mock_vision:
-        with client.stream("POST", "/chat/stream", json={"message": "ponnos en una playa",
-                                                         "image_base64": _tiny_jpeg_b64()}) as resp:
-            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+         patch.object(main.vision_agent, "respond_with_image_stream") as mock_vision, \
+         client.stream("POST", "/chat/stream", json={"message": "ponnos en una playa",
+                                                     "image_base64": _tiny_jpeg_b64()}) as resp:
+        lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     assert lines[0]["agent_used"] == "image_edit"
     assert lines[-1]["file_url"].endswith(".jpg")
     assert lines[-1]["response"] == "He hecho esto: os pongo en una playa."
@@ -905,6 +904,7 @@ def test_chat_with_a_photo_and_a_change_request_edits_the_photo():
 
 def _tiny_jpeg_b64(color=(120, 90, 60)):
     import io
+
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (64, 48), color).save(buf, format="JPEG")
@@ -971,6 +971,7 @@ def test_image_from_a_simple_request_goes_through_the_prompt_writer():
 
 def test_edit_photo_chains_plan_kontext_and_composition():
     import io
+
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (64, 48), (10, 20, 30)).save(buf, format="PNG")
@@ -996,10 +997,9 @@ def test_edit_photo_chains_plan_kontext_and_composition():
 # --- Activar el agente desde el chat normal (sin cambiar al modo Agente) ---
 
 def test_chat_stream_to_agent_includes_task_id_for_the_inline_card():
-    with patch.object(main.opencode_client, "delegate", return_value=("Se lo he pasado al agente.", "ses_9")):
-        with client.stream("POST", "/chat/stream",
-                           json={"message": "usa un agente y crea hola.txt en el escritorio"}) as resp:
-            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+    with patch.object(main.opencode_client, "delegate", return_value=("Se lo he pasado al agente.", "ses_9")), client.stream("POST", "/chat/stream",
+                       json={"message": "usa un agente y crea hola.txt en el escritorio"}) as resp:
+        lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     start = next(e for e in lines if e["type"] == "start")  # puede ir precedido de un aviso de carga
     assert start["agent_used"] == "opencode"
     assert lines[-1]["agent_task_id"] == "ses_9"
@@ -1068,7 +1068,7 @@ def test_chat_with_someone_elses_session_id_starts_a_new_one():
 # --- Documentos adjuntos con el clip (solo para esa conversacion) ---
 
 def test_attach_doc_creates_conversation_and_reaches_the_model():
-    resp = client.post("/sessions/docs", files={"file": ("nota.txt", "El codigo secreto es 4711.".encode(), "text/plain")})
+    resp = client.post("/sessions/docs", files={"file": ("nota.txt", b"El codigo secreto es 4711.", "text/plain")})
     assert resp.status_code == 200
     sid = resp.json()["session_id"]
     assert client.get(f"/sessions/{sid}/docs").json() == [{"name": "nota.txt", "chars": 26}]
@@ -1164,9 +1164,9 @@ def test_chat_stream_warns_when_the_model_has_to_be_loaded():
         yield "hola"
     with patch.object(main.ollama, "running_models", return_value=[]), \
          patch.object(main, "_ensure_active_model"), \
-         patch.object(main.text_agent, "respond_with_tools_stream", side_effect=fake_stream):
-        with client.stream("POST", "/chat/stream", json={"message": "hola", "model_profile": "rapido", "verify": False}) as resp:
-            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+         patch.object(main.text_agent, "respond_with_tools_stream", side_effect=fake_stream), \
+         client.stream("POST", "/chat/stream", json={"message": "hola", "model_profile": "rapido", "verify": False}) as resp:
+        lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     statuses = [e for e in lines if e["type"] == "status"]
     assert len(statuses) == 1  # router y respuesta usan el mismo modelo: un solo aviso
     assert "Cargando el modelo" in statuses[0]["text"]
@@ -1178,9 +1178,9 @@ def test_chat_stream_says_nothing_when_the_model_is_already_loaded():
         yield "hola"
     with patch.object(main.ollama, "running_models", return_value=["qwen3:8b"]), \
          patch.object(main, "_ensure_active_model"), \
-         patch.object(main.text_agent, "respond_with_tools_stream", side_effect=fake_stream):
-        with client.stream("POST", "/chat/stream", json={"message": "hola", "model_profile": "rapido", "verify": False}) as resp:
-            lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+         patch.object(main.text_agent, "respond_with_tools_stream", side_effect=fake_stream), \
+         client.stream("POST", "/chat/stream", json={"message": "hola", "model_profile": "rapido", "verify": False}) as resp:
+        lines = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     assert not [e for e in lines if e["type"] == "status"]
     client.delete(f"/sessions/{lines[-1]['session_id']}")
 
@@ -1288,7 +1288,7 @@ def test_pending_work_lists_working_and_waiting_tasks_and_generations():
          patch.object(main.comfyui_client, "user_jobs",
                       return_value=[{"id": "p1", "state": "running"}, {"id": "p2", "state": "queued"}]):
         data = client.get("/work/pending").json()
-    assert data["agent_tasks"] == [{"session_id": "ses_1", "title": "tarea ses_1"}]
+    assert data["agent_tasks"] == [{"session_id": "ses_1", "title": "tarea ses_1", "modelo_ahora": None, "atascada_min": 0}]
     assert data["waiting_tasks"] == [{"session_id": "ses_viejo", "title": "tarea ses_viejo", "reason": "question"}]
     assert (data["generations_running"], data["generations_queued"], data["any"]) == (1, 1, True)
 
@@ -1522,6 +1522,7 @@ def test_live_shows_text_while_it_is_being_written():
 
 def test_attachments_are_copied_images_described_and_listed_in_the_task(tmp_path, monkeypatch):
     import io
+
     from PIL import Image
     monkeypatch.setattr(main.agent_attachments, "ATTACH_ROOT", tmp_path)
     png = io.BytesIO()
@@ -1766,6 +1767,7 @@ def test_generations_are_recorded_under_whoever_asked():
 
 def test_upscaling_an_already_huge_image_is_refused_before_reaching_comfyui():
     import io
+
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (3000, 2000), (1, 2, 3)).save(buf, format="PNG")  # 6 MP: saldria de 96 MP
@@ -1778,6 +1780,7 @@ def test_upscaling_an_already_huge_image_is_refused_before_reaching_comfyui():
 def test_an_edit_that_misses_part_of_the_request_is_retried_insisting_on_it():
     # Sergio, 2026-10-05: "ha hecho la mitad de lo que he pedido"
     import io
+
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (64, 48), (10, 20, 30)).save(buf, format="PNG")
@@ -1816,6 +1819,7 @@ def test_an_edit_that_misses_part_of_the_request_is_retried_insisting_on_it():
 def test_an_edit_that_comes_out_the_same_is_not_delivered():
     # Sergio, 2026-10-08: "que no me haga la misma imagen con manchas"
     import io
+
     from PIL import Image
     buf = io.BytesIO()
     Image.new("RGB", (64, 48), (10, 20, 30)).save(buf, format="PNG")
@@ -1832,7 +1836,7 @@ def test_an_edit_that_comes_out_the_same_is_not_delivered():
 
 def test_a_request_it_does_not_understand_is_asked_before_editing():
     question = "No sé qué es «el flurbo». ¿Es una prenda, un objeto o un sitio?"
-    with patch.object(main.ollama, "chat", return_value='{"pregunta": "%s"}' % question), \
+    with patch.object(main.ollama, "chat", return_value=f'{{"pregunta": "{question}"}}'), \
          pytest.raises(main.photo_edit.NeedsClarification) as asked:
         main.photo_edit.plan_edit(main.ollama, "m", "ponme el flurbo", ["centro"], "a man")
     assert str(asked.value) == question
@@ -1848,10 +1852,10 @@ def test_a_long_photo_edit_tells_what_it_is_doing_while_it_works():
         return photo, "Listo: hecho."
     with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
          patch.object(main.photo_edit, "wants_edit", return_value=True), \
-         patch.object(main, "_edit_photo", side_effect=fake_edit):
-        with client.stream("POST", "/chat/stream", json={"message": "ponme en la playa",
-                                                         "image_base64": _tiny_jpeg_b64()}) as resp:
-            events = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+         patch.object(main, "_edit_photo", side_effect=fake_edit), \
+         client.stream("POST", "/chat/stream", json={"message": "ponme en la playa",
+                                                     "image_base64": _tiny_jpeg_b64()}) as resp:
+        events = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     assert [e["type"] for e in events] == ["start", "status", "done"]
     assert events[1]["text"].startswith("Editando") and events[2]["response"] == "Listo: hecho."
 
@@ -1880,10 +1884,10 @@ def test_a_photo_in_image_mode_is_always_edited_and_streams_its_progress():
         return photo, "Listo: te he puesto en Paris."
     with patch.object(main.model_registry, "get_edit_model", return_value=object()), \
          patch.object(main.photo_edit, "wants_edit", return_value=False) as mock_wants, \
-         patch.object(main, "_edit_photo", side_effect=fake_edit):
-        with client.stream("POST", "/chat/stream", json={"message": "Paris", "agent": "image",
-                                                         "image_base64": _tiny_jpeg_b64()}) as resp:
-            events = [json.loads(line) for line in resp.iter_lines() if line.strip()]
+         patch.object(main, "_edit_photo", side_effect=fake_edit), \
+         client.stream("POST", "/chat/stream", json={"message": "Paris", "agent": "image",
+                                                     "image_base64": _tiny_jpeg_b64()}) as resp:
+        events = [json.loads(line) for line in resp.iter_lines() if line.strip()]
     assert [e["type"] for e in events] == ["start", "status", "done"]
     assert events[-1]["agent_used"] == "image_edit" and events[-1]["file_url"]
     mock_wants.assert_not_called()  # en modo Imagen una foto siempre es para editarla

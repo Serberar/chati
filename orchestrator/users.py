@@ -19,7 +19,7 @@ import secrets
 import sqlite3
 import uuid
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -189,7 +189,7 @@ def create_user(username: str, password: str, role: str,
             "key_generation, security_question, security_answer_hash, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
             (user_id, username, role, password_hash, salt, wrapped_dek,
-             security_question, security_answer_hash, datetime.now(timezone.utc).isoformat()),
+             security_question, security_answer_hash, datetime.now(UTC).isoformat()),
         )
         conn.commit()
     return user_id
@@ -324,7 +324,7 @@ def get_or_create_registration_key() -> str:
 def log_security_event(event: str, username: str) -> None:
     """Aviso dentro de la app (panel de admin) en vez de email real -
     decision tomada con Sergio el 2026-09-23, ver ROADMAP.md punto 0."""
-    entry = {"event": event, "username": username, "at": datetime.now(timezone.utc).isoformat()}
+    entry = {"event": event, "username": username, "at": datetime.now(UTC).isoformat()}
     with open(SECURITY_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 

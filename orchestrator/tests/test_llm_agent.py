@@ -1,9 +1,10 @@
 import base64
 import io
 
+import pytest
 from PIL import Image
 
-from agents.llm_agent import LLMAgent, _parse_fallback_tool_call
+from agents.llm_agent import InvalidImageError, LLMAgent, _parse_fallback_tool_call
 
 
 def _real_image_base64(fmt="PNG") -> str:
@@ -295,7 +296,7 @@ def test_respond_with_image_stream_sends_image_on_user_message():
 
     assert chunks == ["Veo ", "un circulo rojo."]
     sent_messages = client.chat_stream_calls[0]
-    user_msg = [m for m in sent_messages if m["role"] == "user"][0]
+    user_msg = next(m for m in sent_messages if m["role"] == "user")
     # la imagen se re-codifica siempre a JPEG (ver _normalize_image_for_vision) -
     # no sera un byte a byte igual a la entrada, pero debe seguir siendo una
     # imagen valida y no vacia
@@ -320,7 +321,7 @@ def test_respond_with_image_stream_defaults_message_when_empty():
 
     list(agent.respond_with_image_stream("", _real_image_base64()))
 
-    user_msg = [m for m in client.chat_stream_calls[0] if m["role"] == "user"][0]
+    user_msg = next(m for m in client.chat_stream_calls[0] if m["role"] == "user")
     assert "Describe" in user_msg["content"]
 
 
@@ -328,11 +329,8 @@ def test_respond_with_image_stream_raises_clearly_on_invalid_image():
     client = FakeOllamaClient(stream_chunks=["no deberia llegar aqui"])
     agent = LLMAgent("vision", "modelo-vision", client)
 
-    try:
+    with pytest.raises(InvalidImageError):
         list(agent.respond_with_image_stream("que ves?", "esto-no-es-una-imagen-de-verdad"))
-        assert False, "deberia haber lanzado InvalidImageError"
-    except Exception as exc:
-        assert type(exc).__name__ == "InvalidImageError"
     assert client.chat_stream_calls == [], "no deberia haber llamado a Ollama con una imagen invalida"
 
 

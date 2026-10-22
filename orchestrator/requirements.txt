@@ -29,5 +29,7 @@ python-docx
 pytest
 httpx2  # cliente de pruebas de Starlette (TestClient)
 pywebview
+# cuanto procesador gasta Ollama: si una tarea trabaja o esta atascada (llm_status.py)
+psutil
 # icono de Chati junto al reloj: cerrar la ventana la esconde ahi (desktop_app.py)
 pystray

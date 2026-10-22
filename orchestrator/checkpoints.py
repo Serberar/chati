@@ -31,7 +31,7 @@ def _git(folder: Path, *args: str) -> subprocess.CompletedProcess:
     repo = _repo(folder)
     return subprocess.run(["git", f"--git-dir={repo}", f"--work-tree={folder}", "-c", "user.name=Chati",
                            "-c", "user.email=chati@local", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
-                           *args], capture_output=True, text=True, timeout=300, encoding="utf-8", errors="replace")
+                           *args], capture_output=True, check=False, text=True, timeout=300, encoding="utf-8", errors="replace")
 
 
 def _load() -> dict:
@@ -50,7 +50,7 @@ def _commit(folder: Path, label: str) -> str | None:
     repo = _repo(folder)
     if not repo.exists():
         COPIES_DIR.mkdir(parents=True, exist_ok=True)
-        if subprocess.run(["git", "init", "--bare", "-q", str(repo)], capture_output=True).returncode != 0:
+        if subprocess.run(["git", "init", "--bare", "-q", str(repo)], capture_output=True, check=False).returncode != 0:
             return None
         (repo / "info").mkdir(exist_ok=True)
         (repo / "info" / "exclude").write_text("\n".join(IGNORE) + "\n", encoding="utf-8")

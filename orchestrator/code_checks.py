@@ -57,7 +57,7 @@ def run_tests(folder: Path) -> tuple[bool, str] | None:
     fresh = tempfile.mkdtemp(prefix="chati_pyc_")
     env = {**os.environ, "PYTHONPYCACHEPREFIX": fresh, "PYTHONDONTWRITEBYTECODE": "1"}
     try:
-        out = subprocess.run(cmd, cwd=folder, capture_output=True, text=True, timeout=TEST_TIMEOUT,
+        out = subprocess.run(cmd, cwd=folder, capture_output=True, check=False, text=True, timeout=TEST_TIMEOUT,
                              encoding="utf-8", errors="replace", env=env)
     except subprocess.TimeoutExpired:
         return False, f"Los tests no terminaron en {TEST_TIMEOUT // 60} minutos."
@@ -82,7 +82,7 @@ def _ruff(folder: Path) -> list[str] | None:
     """El ruff de Chati (va en sus dependencias): analiza los archivos sin
     ejecutarlos, asi que sirve para cualquier proyecto Python."""
     import sys
-    if subprocess.run([sys.executable, "-m", "ruff", "--version"], capture_output=True).returncode == 0:
+    if subprocess.run([sys.executable, "-m", "ruff", "--version"], capture_output=True, check=False).returncode == 0:
         return [sys.executable, "-m", "ruff"]
     exe = shutil.which("ruff")
     return [exe] if exe else None
@@ -110,7 +110,7 @@ def run_lint(folder: Path, changed: list[str]) -> tuple[bool, str] | None:
     if not cmd:
         return None
     try:
-        out = subprocess.run(cmd, cwd=folder, capture_output=True, text=True, timeout=TEST_TIMEOUT,
+        out = subprocess.run(cmd, cwd=folder, capture_output=True, check=False, text=True, timeout=TEST_TIMEOUT,
                              encoding="utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError) as exc:
         return None if isinstance(exc, OSError) else (False, "El analizador no termino a tiempo.")

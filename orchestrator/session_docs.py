@@ -15,10 +15,10 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import atomic
 import crypto_utils
 from paths import DATA_DIR
 from rag import _chunk_text, _extract_text, _sanitize_filename
-import atomic
 
 SESSION_DOCS_DIR = DATA_DIR / "session_docs"
 ALLOWED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}

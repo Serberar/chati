@@ -13,12 +13,12 @@ import json
 import re
 import socket
 import time
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
+import atomic
 import crypto_utils
 import profile_store
-import atomic
 
 BING = "https://www.bing.com/search?setlang=es&cc=es&q={q}"
 
@@ -131,7 +131,7 @@ class Blocked(Exception):
 
 
 _BLOCK_PAGE = re.compile(r"eres humano o un robot|not a robot|are you a human|captcha|cloudflare|"
-                         r"verificaci[oó]n adicional|tr[aá]fico inusual|unusual traffic", re.I)
+                         r"verificaci[oó]n adicional|tr[aá]fico inusual|unusual traffic", re.IGNORECASE)
 
 
 def _as_list(x) -> list:
@@ -195,7 +195,7 @@ class Browser:
                 "--disable-blink-features=AutomationControlled"]
         try:
             self._browser = self._pw.chromium.launch(channel="msedge", headless=False, args=args)
-        except Exception:
+        except Exception:  # noqa: BLE001 - sin Edge: el Chromium de Playwright
             self._browser = self._pw.chromium.launch(headless=False, args=args)  # sin Edge: el de Playwright
         self._ctx = self._browser.new_context(locale="es-ES", viewport={"width": 1280, "height": 900})
         self._ctx.route("**/*", _guard)

@@ -1,0 +1,4 @@
+# Reglas por defecto de ruff. FastAPI declara los archivos subidos con
+# File(...) en los argumentos: es su forma normal, no un valor por defecto mutable.
+[lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.File", "fastapi.Form", "fastapi.Query", "fastapi.Depends"]

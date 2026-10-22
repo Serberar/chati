@@ -5,7 +5,7 @@ Los invitados no llegan aqui: el middleware de main.py solo les deja su lista
 de rutas. Lo que estas rutas necesitan del orquestador (el modelo, liberar
 memoria, describir una foto) se lo da main.py con configure()."""
 
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse

@@ -99,25 +99,22 @@ def test_chat_with_tools_includes_think_false_when_given():
 def test_chat_raises_with_ollamas_actual_error_message():
     client = OllamaClient("http://localhost:11434")
     fake_resp = _fake_error_response(400, error_body={"error": "image bytes could not be decoded"})
-    with patch("agents.ollama_client.requests.post", return_value=fake_resp):
-        with pytest.raises(requests.HTTPError, match="image bytes could not be decoded"):
-            client.chat("qwen2.5vl:7b-cpu", [{"role": "user", "content": "hola"}])
+    with patch("agents.ollama_client.requests.post", return_value=fake_resp), pytest.raises(requests.HTTPError, match="image bytes could not be decoded"):
+        client.chat("qwen2.5vl:7b-cpu", [{"role": "user", "content": "hola"}])
 
 
 def test_chat_stream_raises_with_ollamas_actual_error_message():
     client = OllamaClient("http://localhost:11434")
     fake_resp = _fake_error_response(400, error_body={"error": "context length exceeded"})
-    with patch("agents.ollama_client.requests.post", return_value=fake_resp):
-        with pytest.raises(requests.HTTPError, match="context length exceeded"):
-            list(client.chat_stream("qwen2.5vl:7b-cpu", [{"role": "user", "content": "hola"}]))
+    with patch("agents.ollama_client.requests.post", return_value=fake_resp), pytest.raises(requests.HTTPError, match="context length exceeded"):
+        list(client.chat_stream("qwen2.5vl:7b-cpu", [{"role": "user", "content": "hola"}]))
 
 
 def test_raises_plain_status_error_when_body_has_no_json():
     client = OllamaClient("http://localhost:11434")
     fake_resp = _fake_error_response(500, raw_text="")
-    with patch("agents.ollama_client.requests.post", return_value=fake_resp):
-        with pytest.raises(requests.HTTPError):
-            client.chat("qwen2.5:7b", [{"role": "user", "content": "hola"}])
+    with patch("agents.ollama_client.requests.post", return_value=fake_resp), pytest.raises(requests.HTTPError):
+        client.chat("qwen2.5:7b", [{"role": "user", "content": "hola"}])
 
 
 def test_models_in_the_no_think_list_never_think_unless_asked(monkeypatch):

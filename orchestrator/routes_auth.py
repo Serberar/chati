@@ -8,12 +8,11 @@ lo pasa con configure()."""
 import hashlib
 import hmac
 import secrets
-from typing import Callable
+from collections.abc import Callable
+from typing import Annotated
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from typing import Annotated
-
 from pydantic import BaseModel, Field
 
 import access

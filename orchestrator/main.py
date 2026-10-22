@@ -12,11 +12,10 @@ import sys
 import threading
 import time
 import uuid
-
-import requests
 from functools import partial
 from pathlib import Path
 
+import requests
 import yaml
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -25,61 +24,61 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
-import auth
-import devices
-import auth_sessions
-import face_detect
+import access
+import agent_attachments
 import agent_tools
+import app_update
+import auth
+import auth_sessions
+import autostart
 import checkpoints
 import code_checks
 import computers
-import face_swap
-import access
-import agent_attachments
-import app_update
-import autostart
-import job_search
-import shopping
-import web_tools
 import deep_search
+import devices
+import face_detect
+import face_swap
+import file_access
+import finetune_export
+import job_search
 import llm_proxy
+import llm_status
 import logging_setup
 import media_store
+import memory
+import metrics
 import model_registry
+import model_updates
+import opencode_client
 import paths
+import people
 import persona_trainer
 import photo_edit
 import photo_session
+import plans
+import profile_store
 import prompt_writer
+import push
 import routes_apps
 import routes_auth
 import security
-import users
-
-from agents import ollama_client as ollama_client_module
-from agents.ollama_client import OllamaClient
-from agents.llm_agent import LLMAgent
-from agents.image_agent import ImageAgent
-from agents.video_agent import VideoAgent
-from agents.voice_agent import VoiceAgent
-from agents import comfyui_client
-from agents.comfyui_client import GenerationCancelled
-from router import Router
-from verifier import Verifier
-import people
-import profile_store
-import push
-import memory
-import file_access
-import finetune_export
-import metrics
-import model_updates
-import opencode_client
-import plans
 import session_docs
+import shopping
 import task_owners
 import tools
+import users
+import web_tools
+from agents import comfyui_client
+from agents import ollama_client as ollama_client_module
+from agents.comfyui_client import GenerationCancelled
+from agents.image_agent import ImageAgent
+from agents.llm_agent import LLMAgent
+from agents.ollama_client import OllamaClient
+from agents.video_agent import VideoAgent
+from agents.voice_agent import VoiceAgent
 from rag import EMBED_MODEL, KnowledgeBase
+from router import Router
+from verifier import Verifier
 
 log = logging_setup.setup()
 
@@ -177,7 +176,7 @@ def _index_in_background(session_id: str, message: str, answer: str, user_id: st
         try:
             knowledge_base.add_conversation(session_id, message, answer, user_id=user_id,
                                             dek=dek, key_generation=key_generation)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - la respuesta ya se entrego
             # la respuesta ya se entrego; perder este recuerdo no debe romper nada
             log.warning("No se pudo indexar la conversacion en la memoria larga: %s", exc)
     threading.Thread(target=work, daemon=True).start()
@@ -257,6 +256,7 @@ def _free_memory_for_agent(agent: str | None, model: str | None = None, wait: bo
 
 
 comfyui_client.before_submit = _free_memory_for_generation
+llm_status.OLLAMA_URL = CONFIG["ollama"]["base_url"]
 # y mientras se genera, ningun modelo de Ollama entra en la GPU (chat en la CPU)
 OllamaClient.gpu_busy = staticmethod(lambda: comfyui_client.gpu_busy(CONFIG["comfyui"]["base_url"]))
 opencode_client.before_task = _free_memory_for_agent
@@ -489,7 +489,7 @@ def _is_busy() -> bool:
             return True
         if sum(comfyui_client.user_queue(CONFIG["comfyui"]["base_url"])):
             return True
-    except Exception:  # un servicio caido no esta ocupado
+    except Exception:  # noqa: BLE001, S110 - un servicio caido no esta ocupado
         pass
     return False
 
@@ -550,11 +550,6 @@ def _keep_agent_model_loaded(model: str | None) -> None:
     threading.Thread(target=send, daemon=True).start()
 
 
-# ultima vez que el modelo del agente dio señales de vida (empezar una
-# respuesta o escribir un trozo): para saber si una tarea esta atascada
-_llm_activity = {"last": time.time()}
-
-
 @app.api_route("/llm/v1/{path:path}", methods=["GET", "POST"])
 async def llm_proxy_route(path: str, request: Request):
     expected = f"Bearer {opencode_client.AUTH[1]}"
@@ -572,13 +567,18 @@ async def llm_proxy_route(path: str, request: Request):
     wants_stream = b'"stream":true' in body.replace(b" ", b"")
 
     def forward():
+        # leer una peticion grande en CPU puede pasar de 15 min sin un byte (ver headerTimeout en install.ps1)
         return requests.request(request.method, target, data=body or None, headers=headers,
-                                stream=wants_stream, timeout=900)
+                                stream=wants_stream, timeout=(10, 3600))
 
-    _llm_activity["last"] = time.time()
-    upstream = await run_in_threadpool(forward)
-    _llm_activity["last"] = time.time()
+    rid = llm_status.start(body, llm_proxy.model_of(body))
+    try:
+        upstream = await run_in_threadpool(forward)
+    except requests.RequestException:
+        llm_status.finish(rid)
+        raise
     if not wants_stream:
+        llm_status.finish(rid, wrote=upstream.ok)
         content = upstream.content
         if upstream.ok and b"tool_calls" in content:
             try:
@@ -591,9 +591,10 @@ async def llm_proxy_route(path: str, request: Request):
     def stream():
         try:
             for line in upstream.iter_lines():
-                _llm_activity["last"] = time.time()
+                llm_status.output(rid, line)
                 yield llm_proxy.clean_stream_line(line) + b"\n\n" if line else b""
         finally:
+            llm_status.finish(rid)
             upstream.close()
     return StreamingResponse(stream(), status_code=upstream.status_code,
                              media_type=upstream.headers.get("content-type", "text/event-stream"))
@@ -782,7 +783,8 @@ def _assess_for_fast_agent(task: str) -> dict | None:
     falla, None: nunca debe impedir lanzar una tarea."""
     try:
         verdict = router.assess_agent_task(task)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - sin decidir: se trata como una tarea normal
+        log.warning("No se pudo valorar si la tarea es compleja: %s", exc)
         return None
     return {"task": task, "reason": verdict["reason"]} if verdict["complex"] else None
 
@@ -1055,7 +1057,7 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
             if session_id in opencode_client.busy_session_ids(base):
                 continue
             view = opencode_client.get_task_view(base, session_id)
-        except Exception:  # noqa: BLE001 - OpenCode reiniciandose: se reintenta
+        except Exception:  # noqa: BLE001, S112 - OpenCode reiniciandose: se reintenta
             continue
         if view["permissions"] or view["questions"] or view["status"] != "idle":
             continue
@@ -1125,7 +1127,7 @@ def _watch_code_task(session_id: str, folder: Path, big: bool, info: dict) -> No
             updated = _update_context_file(session_id, folder, texts[-1] if texts else "")
             info["estado"] = final + (" Ficha del proyecto (AGENTS.md) actualizada." if updated else "")
             return
-        ok, output = result
+        _ok, output = result
         attempts += 1
         if attempts > CODE_TEST_RETRIES:
             info["estado"] = "✗ Los tests siguen fallando despues de devolverselo al agente: revisalo."
@@ -1163,6 +1165,7 @@ def _task_view(base_url: str, session_id: str) -> dict:
     view["deshacer"] = checkpoints.available(session_id)
     stuck_since = _stalled.get(session_id)
     view["atascada_min"] = int(time.time() - stuck_since) // 60 if stuck_since else 0
+    view["modelo_ahora"] = llm_status.snapshot() if view["status"] != "idle" else None
     return view
 
 
@@ -1286,7 +1289,6 @@ def agent_retry(request: Request, session_id: str):
         return _guest_blocked()
     if not _owns_task(request, session_id):
         return _not_your_task()
-    base = CONFIG["opencode"]["base_url"]
     watch = _code_watch.get(session_id) if session_id in _code_watch_running else None
     if watch:  # que el vigilante no la de por terminada en el hueco entre cortar y seguir
         watch["pausa_hasta"] = time.time() + 30
@@ -1411,7 +1413,7 @@ def code_pick_folder(request: Request):
     if request.state.session["role"] == "guest":
         return _guest_blocked()
     try:
-        out = subprocess.run([sys.executable, "-c", _PICK_FOLDER_SCRIPT], capture_output=True, text=True,
+        out = subprocess.run([sys.executable, "-c", _PICK_FOLDER_SCRIPT], capture_output=True, check=False, text=True,
                              timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:
         return {"path": None}
@@ -1455,7 +1457,7 @@ def code_git_init(request: Request, req: CodeProjectRequest):
         return JSONResponse({"detail": "Esa carpeta no existe."}, status_code=400)
     if not (p / ".git").exists():
         # "--": una carpeta que empiece por "-" no se toma como opcion de git
-        out = subprocess.run(["git", "init", "-q", "--", str(p.resolve())], capture_output=True, text=True,
+        out = subprocess.run(["git", "init", "-q", "--", str(p.resolve())], capture_output=True, check=False, text=True,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if out.returncode != 0:
             return JSONResponse({"detail": f"git no pudo: {out.stderr.strip()}"}, status_code=400)
@@ -1535,10 +1537,13 @@ def agent_continue(request: Request, session_id: str, req: AgentFollowUp):
 
 # --- Avisos al movil aunque Chati este cerrado (push.py) ---
 PUSH_POLL_SECONDS = 10
-# una tarea "trabajando" sin pasos nuevos ni nada del modelo en este tiempo
-# esta atascada: se avisa (Sergio, 2026-10-13: "pasan 40 minutos y no se
-# nada"; gpt-oss se quedo 55 min colgado sin que nadie se enterase)
+# una tarea "trabajando" sin pasos nuevos, sin que el modelo escriba nada y sin
+# que Ollama gaste procesador en este tiempo esta atascada: se avisa (Sergio,
+# 2026-10-13: "pasan 40 minutos y no se nada"; gpt-oss se quedo 55 min colgado)
 STALL_SECONDS = 600
+# o, aunque Ollama trabaje, si las peticiones se cortan una tras otra sin
+# respuesta: es el bucle de reintentos del 2026-10-16 (horas sin avanzar)
+STALL_RETRIES = 2
 _stalled: dict[str, float] = {}  # tarea -> desde cuando no avanza
 
 
@@ -1575,22 +1580,24 @@ def _push_tick(state: dict) -> None:
     for sid in busy:
         try:
             count = len(opencode_client.get_task_view(base, sid)["steps"])
-        except Exception:  # noqa: BLE001 - se mira en la siguiente vuelta
+        except Exception:  # noqa: BLE001, S112 - se mira en la siguiente vuelta
             continue
         seen = state["progress"].get(sid)
         if not seen or seen[0] != count:
             state["progress"][sid] = (count, now)
             _stalled.pop(sid, None)
             continue
-        quiet_since = max(seen[1], _llm_activity["last"])
-        if now - quiet_since < STALL_SECONDS:
-            _stalled.pop(sid, None)  # el modelo sigue escribiendo
+        quiet_since = max(seen[1], llm_status.last_sign_of_life())
+        looping = llm_status.retries() >= STALL_RETRIES
+        if now - quiet_since < STALL_SECONDS and not looping:
+            _stalled.pop(sid, None)  # el modelo sigue leyendo o escribiendo
         elif sid not in _stalled:
-            _stalled[sid] = quiet_since
-            minutes = int(now - quiet_since) // 60
-            log.warning("Tarea %s atascada: %d min sin avanzar", sid, minutes)
+            _stalled[sid] = seen[1] if looping else quiet_since
+            minutes = int(now - _stalled[sid]) // 60
+            why = "el modelo no llega a contestar y se reintenta una y otra vez" if looping else "sin avanzar"
+            log.warning("Tarea %s atascada: %d min, %s", sid, minutes, why)
             send(sid, "⚠ El agente parece atascado",
-                 f"Lleva {minutes} min sin avanzar: {{tarea}}. Abre Chati y pulsa Reintentar.")
+                 f"Lleva {minutes} min {why}: {{tarea}}. Abre Chati y pulsa Reintentar.")
     for sid in set(state["progress"]) - busy:
         state["progress"].pop(sid, None)
         _stalled.pop(sid, None)
@@ -1740,7 +1747,7 @@ def image_upscale(request: Request, file_path: str | None = Form(None), image: U
     try:
         with media_store.plain_copy(src_bytes, ".png") as src:
             img_bytes = image_agent.upscale(str(src))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("image_upscale", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_upscale",
                              response=_generation_error_message("escalando la imagen", exc),
@@ -1770,7 +1777,7 @@ def image_inpaint(request: Request, prompt: str = Form(...), mask: UploadFile = 
     try:
         with media_store.plain_copy(src_bytes, ".png") as src, media_store.plain_copy(mask_bytes, ".png") as mask_path:
             img_bytes = image_agent.inpaint(prompt, str(src), str(mask_path), denoise=denoise)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("image_inpaint", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_inpaint",
                              response=_generation_error_message("repintando la imagen", exc),
@@ -1936,7 +1943,7 @@ def devices_pair(request: Request):
                             status_code=400)
     import segno
     pairing = devices.start_pairing(session["user_id"])
-    host = sorted(security.REMOTE_HOSTS)[0]
+    host = min(security.REMOTE_HOSTS)
     # el secreto va tras "#": el navegador no lo manda al servidor ni queda
     # en ningun registro; pair.js lo lee y lo envia en el cuerpo
     url = f"https://{host}/pair#{pairing['secret']}"
@@ -2111,7 +2118,7 @@ def add_knowledge(request: Request, file: UploadFile = File(...)):
     try:
         n_chunks = knowledge_base.add_document(filename, _read_upload(file, MAX_DOC_BYTES), user_id=session["user_id"],
                                                 dek=session["dek"], key_generation=session["key_generation"])
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         return {"ok": False, "error": str(exc)}
     return {"ok": True, "filename": filename, "chunks": n_chunks}
 
@@ -2314,7 +2321,8 @@ def _fix_language(answer: str, message: str, model: str) -> str:
             "Este texto mezcla español con otro idioma. Reescribelo entero solo en español, sin "
             "cambiar el contenido ni el formato (markdown, listas, codigo). Devuelve solo el "
             "texto reescrito.\n\n" + answer)}], temperature=0.2, think=False)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - sin reescribir: la respuesta original
+        log.warning("No se pudo corregir el idioma de la respuesta: %s", exc)
         return answer
     return fixed.strip() if fixed.strip() and not _CJK.search(fixed) else answer
 
@@ -2365,7 +2373,7 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
         try:
             prompt, (width, height) = prompt_writer.image_prompt(ollama, CONFIG["router"]["model"], message)
             img_bytes = image_agent.generate(prompt, width=width, height=height, model_id=image_model)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
             resp = ChatResponse(agent_used="image", response=_generation_error_message("generando la imagen", exc),
                                  verifier_gated=False, session_id=session_id)
             _save_assistant_message(resp.response, "image")
@@ -2386,7 +2394,7 @@ def _generate_response(message: str, agent_name: str, is_factual: bool, session_
         try:
             vid_bytes = video_agent.generate(prompt_writer.video_prompt(ollama, CONFIG["router"]["model"], message),
                                              model_id=video_model)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
             resp = ChatResponse(agent_used="video", response=_generation_error_message("generando el video", exc),
                                  verifier_gated=False, session_id=session_id)
             _save_assistant_message(resp.response, "video")
@@ -2500,7 +2508,7 @@ def _image_mode_without_editor(message: str, image_base64: str, session_id: str,
     agent_used, response_text, error_context, ext, generate = _image_from_photo(message, photo, None)
     try:
         img_bytes = generate()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         return _assistant_reply(_generation_error_message(error_context, exc), agent_used, session_id, auth_session)
     name = media_store.save(img_bytes, ext, auth_session["dek"])
     return _assistant_reply(response_text, agent_used, session_id, auth_session, media=name)
@@ -2532,7 +2540,7 @@ def _photo_edit_reply(message: str, base_name: str, session_id: str, auth_sessio
                                 "image_edit", session_id, auth_session)
     try:
         img_bytes, done = _edit_photo(message, photo, face, earlier)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("image_edit", (time.perf_counter() - start) * 1000, error=str(exc))
         return _assistant_reply(_generation_error_message("editando la foto", exc), "image_edit",
                                 session_id, auth_session)
@@ -2562,7 +2570,7 @@ def _run_vision_chat(message: str, image_base64: str, session_id: str | None, au
     start = time.perf_counter()
     try:
         full_text = "".join(vision_agent.respond_with_image_stream(message, image_base64))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("vision", (time.perf_counter() - start) * 1000, False, error=str(exc))
         full_text = f"Fallo analizando la imagen: {exc}"
         memory.add_message(session_id, "assistant", full_text, agent="vision",
@@ -2601,7 +2609,7 @@ def _stream_vision_chat(message: str, image_base64: str, session_id: str | None,
         for chunk in vision_agent.respond_with_image_stream(message, image_base64):
             full_text += chunk
             yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("vision", (time.perf_counter() - start) * 1000, False, error=str(exc))
         yield json.dumps({"type": "done", "response": f"Fallo analizando la imagen: {exc}",
                            "verifier_gated": False, "session_id": session_id}) + "\n"
@@ -2684,13 +2692,14 @@ def _stream_chat(message: str, agent_override: str | None, session_id: str | Non
             yield _loading_event(target_model)
 
     if agent_name not in AGENTS:
-        # imagen, video, o un agente desconocido: sin streaming real, se reutiliza el pipeline normal
-        media_start = time.monotonic()
-        resp = _generate_response(message, agent_name, is_factual, session_id, auth_session, model_profile,
-                                   verify, image_model, video_model)
-        _notice_media(agent_name, media_start, resp, message)
-        metrics.log_event(resp.agent_used, (time.perf_counter() - stream_start) * 1000, resp.verifier_gated)
-        yield json.dumps({"type": "done", **resp.model_dump()}) + "\n"
+        # imagen, video, o un agente desconocido: sin texto que transmitir, pero
+        # si lo que va haciendo ComfyUI (ver _stream_with_progress)
+        def work():
+            resp = _generate_response(message, agent_name, is_factual, session_id, auth_session, model_profile,
+                                       verify, image_model, video_model)
+            metrics.log_event(resp.agent_used, (time.perf_counter() - stream_start) * 1000, resp.verifier_gated)
+            return resp
+        yield from _stream_with_progress(work, agent_name, session_id, message, announce=False)
         return
 
     agent = AGENTS[agent_name]
@@ -3007,7 +3016,7 @@ def _run_prepare(req: PrepareRequest, ticket: int) -> None:
     try:
         _prepare_work(req)
         state, detail = "ready", None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         log.warning("No se pudo preparar el modo %s: %s", req.mode, exc)
         state, detail = "error", str(exc)
     with _prepare_lock:
@@ -3041,7 +3050,9 @@ def pending_work(request: Request):
 
     # solo las tareas propias (antes cualquiera, invitados incluidos, veia los
     # titulos de las tareas del agente de todos)
-    agent_tasks = [{"session_id": sid, "title": summary(sid)}
+    now_doing = llm_status.snapshot()
+    agent_tasks = [{"session_id": sid, "title": summary(sid), "modelo_ahora": now_doing,
+                    "atascada_min": int(time.time() - _stalled[sid]) // 60 if sid in _stalled else 0}
                    for sid in opencode_client.busy_session_ids(base) if _owns_task(request, sid)]
     waiting_tasks = [{"session_id": sid, "title": summary(sid), "reason": reason}
                      for sid, reason in opencode_client.waiting_sessions(base).items()
@@ -3546,7 +3557,7 @@ def _ask_about_photo(message: str, name: str, session_id: str, auth_session: dic
     _ensure_active_model(vision_agent.model)
     try:
         text = "".join(vision_agent.respond_with_image_stream(message, base64.b64encode(photo).decode()))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         text = f"Fallo mirando la foto: {exc}"
     return _assistant_reply(text, "vision", session_id, auth_session)
 
@@ -3615,9 +3626,13 @@ def _notice_media(agent: str, started: float, resp, request_text: str) -> None:
         push.notify(owner, "💬 Chati te ha contestado", (detail or what)[:200], tag="chati-media")
 
 
-def _stream_with_progress(work, agent_used: str, session_id: str, request_text: str = ""):
+_DOING = {"image": "generando la imagen", "video": "generando el vídeo"}
+
+
+def _stream_with_progress(work, agent_used: str, session_id: str, request_text: str = "", announce: bool = True):
     """Ejecuta work() (que devuelve un ChatResponse) en un hilo y va mandando
-    sus avisos de _report como eventos "status" del streaming."""
+    sus avisos de _report, y lo que va haciendo ComfyUI con lo de esta
+    conversacion (paso 12 de 20...), como eventos "status" del streaming."""
     events: queue.Queue = queue.Queue()
     result: dict = {}
     started = time.monotonic()
@@ -3629,21 +3644,29 @@ def _stream_with_progress(work, agent_used: str, session_id: str, request_text: 
         comfyui_client.current_conversation.set(session_id)
         try:
             result["resp"] = work()
-        except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
-            log.exception("Fallo editando la foto")
+        except Exception as exc:
+            log.exception("Fallo %s", _DOING.get(agent_used, "editando la foto"))
             result["error"] = exc
         _notice_media(agent_used, started, result.get("resp"), request_text)
 
-    yield json.dumps({"type": "start", "agent_used": agent_used, "session_id": session_id}) + "\n"
+    if announce:
+        yield json.dumps({"type": "start", "agent_used": agent_used, "session_id": session_id}) + "\n"
     # copy_context: el hilo hereda el dueño de las generaciones (comfyui_client.current_owner)
     thread = threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True)
     thread.start()
     last_sent = time.monotonic()
+    last_step = None
     while thread.is_alive() or not events.empty():
         try:
             yield json.dumps({"type": "status", "text": events.get(timeout=1)}) + "\n"
             last_sent = time.monotonic()
         except queue.Empty:
+            step = comfyui_client.conversation_progress(session_id)
+            if step and step["texto"] != last_step:
+                last_step = step["texto"]
+                yield json.dumps({"type": "status", "text": step["texto"] + "…"}) + "\n"
+                last_sent = time.monotonic()
+                continue
             # latido: durante los 2-3 min de Kontext no habia nada que mandar y
             # Safari en el iPhone (o el proxy de Tailscale) cortaba la conexion
             # a los ~60 s en silencio: "TypeError: Load failed" (2026-10-07).
@@ -3653,7 +3676,8 @@ def _stream_with_progress(work, agent_used: str, session_id: str, request_text: 
                 last_sent = time.monotonic()
     thread.join()
     if "error" in result:
-        yield json.dumps({"type": "done", "response": _generation_error_message("editando la foto", result["error"]),
+        yield json.dumps({"type": "done", "response": _generation_error_message(
+                              _DOING.get(agent_used, "editando la foto"), result["error"]),
                           "verifier_gated": False, "session_id": session_id}) + "\n"
         return
     yield json.dumps({"type": "done", **result["resp"].model_dump()}) + "\n"
@@ -4034,7 +4058,7 @@ def image_with_face(request: Request, prompt: str = Form(...), image: UploadFile
         img_bytes = generate()
         if isinstance(img_bytes, tuple):  # edicion: (foto, que se ha hecho)
             img_bytes, response_text = img_bytes
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event(agent_used, (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(
             agent_used=agent_used,
@@ -4065,7 +4089,7 @@ def image_with_persona(request: Request, prompt: str = Form(...), persona: str =
         described, (width, height) = prompt_writer.image_prompt(ollama, CONFIG["router"]["model"], prompt)
         img_bytes = image_agent.generate_with_lora(described, lora[0], lora[1], model_id=model_id,
                                                    width=width, height=height)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("image_persona", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_persona", verifier_gated=False,
                             response=_generation_error_message("generando la imagen con la persona", exc))
@@ -4092,7 +4116,7 @@ def image_with_controlnet(request: Request, prompt: str = Form(...), image: Uplo
     except ValueError as exc:
         metrics.log_event("image_controlnet", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(agent_used="image_controlnet", response=str(exc), verifier_gated=False)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("image_controlnet", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(
             agent_used="image_controlnet",
@@ -4131,7 +4155,7 @@ def video_with_face(request: Request, prompt: str = Form(...), image: UploadFile
         img_bytes = _image_from_photo(prompt, ref_bytes, model_id)[4]()
         if isinstance(img_bytes, tuple):  # edicion: (foto, que se ha hecho)
             img_bytes = img_bytes[0]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("video_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
         return ChatResponse(
             agent_used="video_faceid",
@@ -4143,7 +4167,7 @@ def video_with_face(request: Request, prompt: str = Form(...), image: UploadFile
         with media_store.plain_copy(img_bytes, ".png") as frame_path:
             motion = prompt_writer.video_prompt(ollama, CONFIG["router"]["model"], prompt, from_image=True)
             vid_bytes = video_agent.generate_from_image(motion, str(frame_path))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al usuario
         metrics.log_event("video_faceid", (time.perf_counter() - start) * 1000, error=str(exc))
         return _with_bytes(
             ChatResponse(agent_used="video_faceid",

@@ -84,7 +84,7 @@ def _check_one(name: str, tag: str) -> dict:
             "update_available": bool(local and remote and local != remote),
             "error": None,
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se enseña en Opciones > Modelos
         return {"model": model_id, "update_available": False, "error": str(exc)}
 
 

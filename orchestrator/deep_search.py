@@ -19,7 +19,7 @@ import re
 import threading
 import time
 import uuid
-from typing import Callable
+from collections.abc import Callable
 
 from web_tools import Blocked, Browser, ChatFn, EncryptedStore, json_from, site_label
 
@@ -493,7 +493,8 @@ def run_search(chat: ChatFn, browser, request: str, progress: Callable[[str, int
     def search(query: str, n: int) -> None:
         try:
             found = browser.bing(query, n)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - Bing caido: se sigue con lo demas
+            logging.getLogger("chati").warning("Busqueda profunda: Bing fallo: %s", exc)
             found = []
         for url in found:
             if url not in candidates and not any(bad in url for bad in _NOT_USEFUL):
@@ -534,7 +535,8 @@ def run_search(chat: ChatFn, browser, request: str, progress: Callable[[str, int
             raise
         except Blocked:
             blocked.add(site_label(url))
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - una pagina que no se puede leer: la siguiente
+            logging.getLogger("chati").warning("Busqueda profunda: no se pudo leer una pagina: %s", exc)
             continue
     if blocked:
         warnings.append("No dejaron mirar: " + ", ".join(sorted(blocked)) + ".")

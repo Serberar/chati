@@ -98,7 +98,7 @@ def main() -> None:
     for name in ("_winapi", "winreg", "msvcrt"):
         sys.modules.pop(name, None)
     sys.addaudithook(_hook)
-    exec(compiled, {"__name__": "__main__", "__builtins__": __builtins__})
+    exec(compiled, {"__name__": "__main__", "__builtins__": __builtins__})  # noqa: S102 - es el sandbox: el codigo del usuario corre con el hook de auditoria puesto
 
 
 if __name__ == "__main__":

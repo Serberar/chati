@@ -252,7 +252,7 @@ function Install-Torch($python) {
     }
 }
 
-function Checkout-Pinned($dir, $commit) {
+function Set-PinnedCheckout($dir, $commit) {
     git -C $dir fetch --quiet origin $commit 2>$null
     git -C $dir checkout --quiet $commit
     if ($LASTEXITCODE -ne 0) { Write-Host "AVISO: no se pudo fijar $dir en $commit" -ForegroundColor Yellow }
@@ -265,7 +265,7 @@ $comfy = "$DataRoot\ComfyUI"
 if (-not (Test-Path $comfy)) {
     Write-Host "Clonando ComfyUI..." -ForegroundColor Yellow
     git clone https://github.com/Comfy-Org/ComfyUI.git $comfy
-    Checkout-Pinned $comfy $ComfyCommit
+    Set-PinnedCheckout $comfy $ComfyCommit
 }
 
 $comfyNodes = @{
@@ -281,7 +281,7 @@ foreach ($name in $comfyNodes.Keys) {
     if (-not (Test-Path $nodeDir)) {
         Write-Host "Clonando nodo personalizado $name..." -ForegroundColor Yellow
         git clone $comfyNodes[$name][0] $nodeDir
-        Checkout-Pinned $nodeDir $comfyNodes[$name][1]
+        Set-PinnedCheckout $nodeDir $comfyNodes[$name][1]
     }
 }
 
@@ -343,7 +343,7 @@ $sdScripts = "$DataRoot\sd-scripts"
 if (-not (Test-Path $sdScripts)) {
     Write-Host "Clonando sd-scripts..." -ForegroundColor Yellow
     git clone https://github.com/kohya-ss/sd-scripts.git $sdScripts
-    Checkout-Pinned $sdScripts $SdScriptsCommit
+    Set-PinnedCheckout $sdScripts $SdScriptsCommit
 }
 if (-not (Test-Path "$sdScripts\venv")) {
     Write-Host "Creando entorno virtual de sd-scripts..." -ForegroundColor Yellow
@@ -421,7 +421,8 @@ $opencodeConfig = @'
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Ollama (local)",
-      "options": { "baseURL": "http://127.0.0.1:8899/llm/v1", "apiKey": "{env:OPENCODE_SERVER_PASSWORD}" },
+      "options": { "baseURL": "http://127.0.0.1:8899/llm/v1", "apiKey": "{env:OPENCODE_SERVER_PASSWORD}",
+                   "headerTimeout": 3600000 },
       "models": {
         "qwen2.5:7b": { "name": "Qwen2.5 7B (local, GPU)", "limit": { "context": 16384, "output": 4096 } },
         "qwen3:8b": { "name": "Qwen3 8B (local, GPU)", "limit": { "context": 16384, "output": 4096 } },
@@ -498,6 +499,11 @@ $opencodeConfig = @'
 # los dos se cargaban en la GPU y se desbordaban los 8 GB.
 # baseURL: la pasarela de Chati (main.py, /llm/v1) y no Ollama directamente -
 # quita los parametros null que el modelo pequeño pone en las herramientas.
+# headerTimeout: 1 h en vez de los 5 min de OpenCode. Con un archivo grande en
+# la conversacion, qwen3-coder (casi todo en CPU) tarda mas de 5 min en leer la
+# peticion antes de escribir nada; OpenCode cortaba, reintentaba desde cero y
+# el agente se quedaba asi horas (2026-10-16). Los atascos de verdad los avisa
+# Chati (llm_status.py).
 # Agentes "chati" y "chati-potente" (los usa Chati, ver orchestrator/config.yaml):
 # instrucciones cortas propias en vez de las de OpenCode - medido: una tarea
 # "crea un archivo" paso de 8-10 min a 15s (chati) / 2-3 min (potente).

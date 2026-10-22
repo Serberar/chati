@@ -145,6 +145,10 @@ begin
     'Necesario para poder subir una foto en el chat.', True);
   AddCatalogItem('agente-rapido', 'Texto', 'Agente (tareas en el ordenador)',
     'Necesario para el modo Agente: crea, mueve y ordena archivos por ti.', True);
+  AddCatalogItem('memoria', 'Texto', 'Memoria y documentos',
+    'Necesario para que Chati recuerde conversaciones y busque en tus documentos.', True);
+  AddCatalogItem('texto-sin-limite', 'Texto', 'Chat sin limite (perfil de seguridad)',
+    'Responde sobre vulnerabilidades de tu propio codigo sin negarse. Lento.', False);
   AddCatalogItem('imagen-flux', 'Imagen', 'FLUX (rapido, buena calidad)',
     'El generador de imagen recomendado por defecto.', True);
   AddCatalogItem('imagen-sdxl', 'Imagen', 'SDXL base',

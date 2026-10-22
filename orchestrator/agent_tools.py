@@ -174,7 +174,7 @@ def web_read(url: str, start: int = 0) -> str:
             import web_tools
             with web_tools.Browser() as browser:
                 text = browser.fetch_page(url)["text"]
-        except Exception:  # noqa: BLE001 - se queda lo que hubiera
+        except Exception:  # noqa: BLE001, S110 - se queda lo que hubiera
             pass
     part = text[start:start + PAGE_CHARS]
     more = f"\n\n[... sigue: vuelve a pedirla con start={start + PAGE_CHARS}]" if len(text) > start + PAGE_CHARS else ""
@@ -314,10 +314,10 @@ def read_repo(url: str) -> str:
     clone_url = f"https://{parsed.hostname}/{parts[0]}/{parts[1]}.git"
     try:
         if (target / ".git").exists():
-            subprocess.run(["git", "-C", str(target), "pull", "--ff-only", "--depth", "1"], capture_output=True,
+            subprocess.run(["git", "-C", str(target), "pull", "--ff-only", "--depth", "1"], capture_output=True, check=False,
                            text=True, timeout=180)
         else:
-            out = subprocess.run(["git", "clone", "--depth", "1", clone_url, str(target)], capture_output=True,
+            out = subprocess.run(["git", "clone", "--depth", "1", clone_url, str(target)], capture_output=True, check=False,
                                  text=True, timeout=600)
             if out.returncode != 0:
                 return f"No se pudo descargar {clone_url}: {out.stderr.strip()[-400:]}"
@@ -505,6 +505,7 @@ def look_at_image(path: str, question: str = "") -> str:
     data = file.read_bytes()
     if file.suffix.lower() not in (".png", ".jpg", ".jpeg"):
         import io
+
         from PIL import Image
         buf = io.BytesIO()
         Image.open(io.BytesIO(data)).convert("RGB").save(buf, format="PNG")
@@ -539,6 +540,7 @@ def start_program(folder: str, command: str, wait: int = 8) -> str:
     """Arranca un programa que se queda abierto (servidor, app) en la carpeta
     del proyecto y devuelve lo que ha escrito en los primeros segundos."""
     import time
+
     import code_checks
     path = Path(folder)
     if not path.is_dir():
@@ -580,7 +582,7 @@ def stop_program(prog_id: str) -> str:
         return f"No hay ningun programa {prog_id}."
     if prog["proc"].poll() is None:
         # con /T tambien sus hijos (npm run dev arranca node, python arranca workers)
-        subprocess.run(["taskkill", "/PID", str(prog["proc"].pid), "/T", "/F"], capture_output=True)
+        subprocess.run(["taskkill", "/PID", str(prog["proc"].pid), "/T", "/F"], capture_output=True, check=False)
         try:
             prog["proc"].wait(timeout=10)
         except subprocess.TimeoutExpired:
@@ -759,7 +761,7 @@ def _locate(page, target: str):
             loc = find()
             if loc.count():
                 return loc.first
-        except Exception:  # noqa: BLE001 - selector no valido: el siguiente
+        except Exception:  # noqa: BLE001, S112 - selector no valido: el siguiente
             continue
     return None
 
@@ -860,7 +862,7 @@ def _github_token() -> str | None:
     privados del usuario). Sin ventanas: si no hay, se sigue sin el."""
     try:
         out = subprocess.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n\n",
-                             capture_output=True, text=True, timeout=15,
+                             capture_output=True, check=False, text=True, timeout=15,
                              env={**__import__("os").environ, "GCM_INTERACTIVE": "never", "GIT_TERMINAL_PROMPT": "0"})
     except (OSError, subprocess.SubprocessError):
         return None
@@ -957,7 +959,7 @@ def query_database(source: str, sql: str = "") -> str:
                         "FROM INFORMATION_SCHEMA.TABLES ORDER BY 1")
         try:
             out = subprocess.run(["sqlcmd", "-E", "-C", "-S", server, "-d", database, "-W", "-s", "|",
-                                  "-Q", f"SET NOCOUNT ON; {query}"], capture_output=True, text=True, timeout=120,
+                                  "-Q", f"SET NOCOUNT ON; {query}"], capture_output=True, check=False, text=True, timeout=120,
                                  encoding="utf-8", errors="replace")
         except FileNotFoundError:
             return "No esta instalado sqlcmd (las herramientas de SQL Server)."

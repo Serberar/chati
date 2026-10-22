@@ -17,13 +17,21 @@ import re
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 from urllib.parse import quote_plus
 
 import profile_store
 from rag import _extract_text
-from web_tools import Blocked, Browser, ChatFn, EncryptedStore, json_from, site_label, unbing
+from web_tools import (
+    Blocked,
+    Browser,
+    ChatFn,
+    EncryptedStore,
+    json_from,
+    site_label,
+    unbing,
+)
 
 # nombres de antes, usados desde los tests y otros modulos
 _json_from, _site_label, _unbing = json_from, site_label, unbing
@@ -268,15 +276,14 @@ def run_search(chat: ChatFn, browser, cv: str, prefs: dict, seen: set[str],
                               if h not in found]
                 except Blocked:
                     raise
-                except Exception:  # un reintento: Bing fallo una vez sin motivo aparente
+                except Exception:  # noqa: BLE001 - un reintento: Bing fallo una vez sin motivo aparente
                     found += [h for h in _search_site(chat, browser, site, puesto, lugar, per_source)
                               if h not in found]
         except Cancelled:
             raise
         except Blocked:
             warnings.append(f"{site['name']} no ha dejado buscar (pide comprobar que no eres un robot).")
-        except Exception:
-            # una web caida o cambiada no para la busqueda: se sigue con las demas
+        except Exception:  # noqa: BLE001 - una web caida o cambiada no para la busqueda: se sigue con las demas
             warnings.append(f"No se pudo buscar en {site['name']}.")
         if not found and not any(site["name"] in w for w in warnings):
             warnings.append(f"En {site['name']} no se encontraron ofertas.")
@@ -289,8 +296,8 @@ def run_search(chat: ChatFn, browser, cv: str, prefs: dict, seen: set[str],
             for puesto in puestos:
                 query = f"oferta de empleo {puesto} {lugar}".strip()
                 candidates += [(h, "Internet") for h in browser.bing(query, per_source)]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - la busqueda general es un extra
+            logging.getLogger("chati").warning("Busqueda de empleo: Bing fallo: %s", exc)
 
     unique: dict[str, str] = {}
     for url, source in candidates:
@@ -312,7 +319,8 @@ def run_search(chat: ChatFn, browser, cv: str, prefs: dict, seen: set[str],
             offer = evaluate_offer(chat, cv, prefs, final_url, text)
         except Cancelled:
             raise
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - una oferta que no se puede leer: la siguiente
+            logging.getLogger("chati").warning("Busqueda de empleo: no se pudo leer una oferta: %s", exc)
             continue
         if offer and offer.get("tipo") == "listado":
             # un resultado de Bing que es una lista: se miran sus ofertas
@@ -335,8 +343,8 @@ def run_search(chat: ChatFn, browser, cv: str, prefs: dict, seen: set[str],
         progress(f"Escribiendo cartas de presentacion ({i + 1} de {len(best)})…", i, len(best))
         try:
             offer["carta"] = write_letter(chat, cv, offer, pages[offer["url"]])
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - sin carta: la oferta vale igual
+            logging.getLogger("chati").warning("Busqueda de empleo: no se pudo escribir la carta: %s", exc)
     return offers, warnings
 
 

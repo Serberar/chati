@@ -87,11 +87,11 @@ Tarea: "{task}"
 # Equivocarse aqui solo cuesta una recomendacion que el usuario puede ignorar.
 _COMPLEX_HINTS = [
     (re.compile(r"\bcada (noche|d[ií]a|semana|mes|hora|ma[ñn]ana)\b|\btodas las (noches|semanas|ma[ñn]anas)\b"
-                r"|\bprogramad[ao]s?\b|\bautom[aá]tic", re.I),
+                r"|\bprogramad[ao]s?\b|\bautom[aá]tic", re.IGNORECASE),
      "Es una tarea que se repite sola: hay que programarla y comprobar que funciona."),
-    (re.compile(r"\binstal(a|ar)\b|\bconfigur(a|ar)\b", re.I),
+    (re.compile(r"\binstal(a|ar)\b|\bconfigur(a|ar)\b", re.IGNORECASE),
      "Instalar o configurar programas requiere varios pasos y comprobaciones."),
-    (re.compile(r"\bproyecto\b|\bc[oó]digo\b|\bendpoint|\btests?\b|\bbase de datos\b|\brefactori|\bdepur", re.I),
+    (re.compile(r"\bproyecto\b|\bc[oó]digo\b|\bendpoint|\btests?\b|\bbase de datos\b|\brefactori|\bdepur", re.IGNORECASE),
      "Implica trabajar sobre codigo o un proyecto, con cambios que dependen unos de otros."),
 ]
 

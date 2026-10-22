@@ -1,6 +1,7 @@
-"""Pruebas deterministas de installer_download_models.py - nunca descarga
+﻿"""Pruebas deterministas de installer_download_models.py - nunca descarga
 ni llama a ollama de verdad, todo mockeado."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -110,7 +111,7 @@ def test_cpu_variant_pulls_base_and_creates_variant_locally():
 
     def fake_run(cmd, check):
         if cmd[1] == "create":
-            modelfiles.append(open(cmd[4], encoding="utf-8").read())
+            modelfiles.append(Path(cmd[4]).read_text(encoding="utf-8"))
 
     with patch.object(installer_download_models.subprocess, "run", side_effect=fake_run) as mock_run:
         installer_download_models._pull_ollama_model("qwen3-coder:30b-cpu")
@@ -137,7 +138,7 @@ def test_chat_model_gets_the_context_the_agent_needs():
 
     def fake_run(cmd, check):
         if cmd[1] == "create":
-            modelfiles.append(open(cmd[4], encoding="utf-8").read())
+            modelfiles.append(Path(cmd[4]).read_text(encoding="utf-8"))
 
     with patch.object(installer_download_models.subprocess, "run", side_effect=fake_run):
         installer_download_models._pull_ollama_model("qwen2.5:7b")
@@ -244,3 +245,41 @@ def test_updates_download_only_base_models_never_offered_and_retry_failures(tmp_
         installer_download_models.main()
     assert downloaded == ["imagen-sdxl", "video-ltxv"]
     assert installer_download_models.new_base_models() == ["video-ltxv"]
+
+
+def test_the_installer_wizard_offers_exactly_the_catalog():
+    """El asistente (chati_installer.iss) lleva su propia copia de la lista: un
+    modelo que falte ahi no se instala nunca (nomic-embed-text, 2026-10-22)."""
+    import re
+
+    import model_catalog
+    from paths import CODE_ROOT
+    iss = (CODE_ROOT / "setup" / "chati_installer.iss").read_text(encoding="utf-8")
+    wizard = {m[0]: m[1] == "True" for m in re.findall(r"AddCatalogItem\('([^']+)'.*?(True|False)\);", iss, re.DOTALL)}
+    catalog = {e.id: e.recommended_by_default for e in model_catalog.catalog_for_tier("8gb")}
+    assert wizard == catalog
+
+
+def test_every_ollama_model_chati_uses_is_in_the_catalog():
+    """Lo que config.yaml y la memoria piden a Ollama tiene que poder instalarse."""
+    import yaml
+
+    import model_catalog
+    import rag
+    from paths import CODE_ROOT
+    config = yaml.safe_load((CODE_ROOT / "orchestrator" / "config.yaml").read_text(encoding="utf-8"))
+    used = {rag.EMBED_MODEL}
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in ("model", "model_potente", "gpu_model") and isinstance(v, str):
+                    used.add(v)
+                walk(v)
+    walk(config)
+    offered = set()
+    for tier in ("cpu_only", "8gb"):
+        for e in model_catalog.catalog_for_tier(tier):
+            if e.ollama_model:
+                offered.add(e.ollama_model)
+                offered.update(v for v, _ in installer_download_models._EXTRA_VARIANTS.get(e.ollama_model, []))
+    assert used - offered == set()

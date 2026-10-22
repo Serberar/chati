@@ -1075,6 +1075,15 @@ function noticeBackground(p) {
   } catch (e) { /* nada */ }
 }
 
+// "qwen3-coder está leyendo la petición (~19.000 tokens) · 3 min 40 s": lo que
+// hace ahora una tarea y cuanto lleva en ESE paso (llm_status.py, comfyui_client.job_progress)
+function doingText(now) {
+  if (!now) return "";
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - now.desde));
+  const clock = secs >= 60 ? `${Math.floor(secs / 60)} min ${String(secs % 60).padStart(2, "0")} s` : `${secs} s`;
+  return `${now.texto} · ${clock}`;
+}
+
 async function refreshBackgroundTasks() {
   const p = await fetchPendingWork();
   if (!p) return;
@@ -1097,7 +1106,9 @@ async function refreshBackgroundTasks() {
   const stopAgent = (sid) => () => fetch(`/work/agent/${sid}/stop`, { method: "POST" });
   const viewAgent = (sid) => () => { bgTasksPanel.classList.remove("show"); openAgentView(sid); };
   for (const t of p.agent_tasks) {
-    list.appendChild(bgRow("🤖 " + (t.title || "Tarea del agente"), "Trabajando", "",
+    const state = t.atascada_min ? `⚠ Parece atascada (${t.atascada_min} min)`
+      : doingText(t.modelo_ahora) || "Trabajando";
+    list.appendChild(bgRow("🤖 " + (t.title || "Tarea del agente"), state, t.atascada_min ? "waiting" : "",
       [["Ver", "", viewAgent(t.session_id)], ["Detener", "stop", stopAgent(t.session_id)]]));
   }
   for (const t of waiting) {
@@ -1110,7 +1121,8 @@ async function refreshBackgroundTasks() {
   for (const g of p.generations || []) {
     const actions = [["Detener", "stop", () => fetch(`/work/generation/${encodeURIComponent(g.id)}/stop`, { method: "POST" })]];
     if (g.session_id) actions.unshift(["Ver", "", viewConversation(g.session_id)]);
-    list.appendChild(bgRow("🖼️ Imagen o video", g.state === "running" ? "Generandose ahora" : "En cola", "", actions));
+    const state = g.state !== "running" ? "En cola" : doingText(g.progreso) || "Empezando en ComfyUI";
+    list.appendChild(bgRow("🖼️ Imagen o video", state, "", actions));
   }
 }
 
@@ -1561,6 +1573,7 @@ const AGENT_PERMISSION_LABELS = {
   webfetch: "acceder a internet", websearch: "buscar en internet", read: "leer archivos",
 };
 const AGENT_STATUS_ICON = { completed: "✓", error: "✕", running: "●", pending: "○" };
+const runningTool = (steps) => [...steps].reverse().find((s) => s.kind === "tool" && s.status === "running");
 const agentViews = {};  // session_id -> vista abierta en el log (no duplicar)
 
 function setModeDesc(m) {
@@ -3615,10 +3628,20 @@ function renderAgentView(view, data) {
   else if (data.status === "retry") { text = "Reintentando: " + (data.retry_message || ""); }
   else if (busy && data.atascada_min) {
     cls += " failed";
-    text = `⚠ Lleva ${data.atascada_min} min sin avanzar: puede estar atascado. Pulsa Reintentar.`;
+    const looping = (data.modelo_ahora || {}).reintentos >= 2;
+    text = looping
+      ? `⚠ El modelo no llega a contestar y se reintenta una y otra vez (${data.atascada_min} min). Pulsa Reintentar o pídelo con el modelo rápido.`
+      : `⚠ Lleva ${data.atascada_min} min sin avanzar: puede estar atascado. Pulsa Reintentar.`;
   }
   else if (busy && data.model_loading) {
     text = "Cargando el modelo del agente… un momento";
+  }
+  else if (busy && data.modelo_ahora) {
+    text = doingText(data.modelo_ahora);
+  }
+  else if (busy && runningTool(data.steps)) {
+    const t = runningTool(data.steps);
+    text = `${AGENT_TOOL_LABELS[t.tool] || t.tool}: ${t.detail || t.title}`.replace(/: $/, "");
   }
   else if (busy) {
     // tareas reabiertas desde la lista no tienen hora de inicio conocida
@@ -5314,6 +5337,8 @@ initSessionUI().then(() => {
   if (getSessionRole() !== "guest") {
     refreshBackgroundTasks();
     setInterval(refreshBackgroundTasks, 8000);
+// con el panel abierto, al dia: ahi se mira que esta haciendo cada tarea
+setInterval(() => { if (bgTasksPanel.classList.contains("show")) refreshBackgroundTasks(); }, 2000);
     announceOtherComputers();
     adoptLauncherPush();
     repairPush();

@@ -17,10 +17,10 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 import requests
 
@@ -89,7 +89,7 @@ def _snapshot(folder: Path) -> dict:
 
 def _tests_pass(folder: Path) -> bool:
     out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"], cwd=folder,
-                         capture_output=True, text=True, timeout=300)
+                         capture_output=True, check=False, text=True, timeout=300)
     return out.returncode == 0
 
 
@@ -211,10 +211,10 @@ def _run_task(session: requests.Session, task: Task, folder: Path, rapido: bool)
         if view.get("questions"):
             break
         chati_working = (view.get("verificacion") or "").endswith("…")  # tests, plan -> construir
-        if view.get("status") == "idle" and view.get("steps") and not chati_working:
-            # el vigilante de Chati tarda unos segundos en empezar a comprobar
-            if time.time() - t0 > 40 or view.get("verificacion"):
-                break
+        # el vigilante de Chati tarda unos segundos en empezar a comprobar
+        if view.get("status") == "idle" and view.get("steps") and not chati_working \
+                and (time.time() - t0 > 40 or view.get("verificacion")):
+            break
     else:
         session.post(f"{BASE}/agent/tasks/{sid}/abort", timeout=60)
         view["error"] = view.get("error") or "tiempo agotado"
@@ -238,7 +238,7 @@ def main() -> None:
     login = session.post(f"{BASE}/auth/login", json={"username": args.usuario, "password": args.clave}, timeout=60)
     session.headers["X-Session-Token"] = login.json()["token"]
     tasks = [t for t in TASKS if not args.solo or t.id in args.solo]
-    memory_before = set(p.name for p in agent_tools.MEMORY_DIR.glob("*.md"))
+    memory_before = {p.name for p in agent_tools.MEMORY_DIR.glob("*.md")}
     shutil.rmtree(BENCH_DIR / "proyecto", ignore_errors=True)  # las de otras veces, si se dejan
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     results = []
@@ -253,7 +253,7 @@ def main() -> None:
                             "segundos": round(run.seconds), "vigilante": run.check, "herramientas": run.tools, "respuesta": run.text[-600:]})
             print(f"{'OK ' if ok else 'MAL'} {task.id:20s} {round(run.seconds):5d} s  {why}", flush=True)
     # la memoria del banco no se queda en la del usuario
-    for name in set(p.name for p in agent_tools.MEMORY_DIR.glob("*.md")) - memory_before:
+    for name in {p.name for p in agent_tools.MEMORY_DIR.glob("*.md")} - memory_before:
         if name != agent_tools.MEMORY_INDEX.name:
             agent_tools.memory_delete(Path(name).stem)
 

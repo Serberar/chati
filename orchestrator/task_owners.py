@@ -9,8 +9,8 @@ anteriores a este registro no tienen dueño: se consideran del administrador
 import json
 import threading
 
-import paths
 import atomic
+import paths
 
 _lock = threading.Lock()
 

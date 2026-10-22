@@ -16,8 +16,8 @@ import hashlib
 import os
 import shutil
 import subprocess
-import tempfile
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -96,6 +96,8 @@ def _download_file(url: str, dest: Path, sha256: str | None = None) -> None:
 
 CPU_SUFFIX = "-cpu"
 GPU_SUFFIX = "-gpu"
+# modelos que no estan en la biblioteca oficial de Ollama: de donde se bajan
+_PULL_FROM = {"qwen3-abliterated:14b": "huihui_ai/qwen3-abliterated:14b"}
 # Los dos son tambien modelos del agente (OpenCode, ver opencode_client.py): su
 # prompt con las herramientas no cabe en el contexto por defecto - con menos,
 # Ollama lo recorta en silencio y el agente pierde sus instrucciones.
@@ -145,6 +147,7 @@ def _pull_ollama_model(model: str) -> None:
     # las variantes "-cpu"/"-gpu" (ver AGENTS.md) no existen en el registro de
     # Ollama - se crean en local a partir del modelo base
     base = model.removesuffix(CPU_SUFFIX).removesuffix(GPU_SUFFIX)
+    base = _PULL_FROM.get(base, base)
     _ensure_ollama_server()
     print(f"  ollama pull {base}")
     subprocess.run([_ollama_exe(), "pull", base], check=True)

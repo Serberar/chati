@@ -407,7 +407,7 @@ def test_only_the_seam_band_is_pasted_back():
     protected = np.zeros(img.shape[:2], np.float32)
     protected[250:300, 200:400] = 1                    # la cara pegada, justo encima
     seams = [(band, face, protected)]
-    box, crop_png, mask_png = photo_edit.seam_crop(img, seams)
+    box, crop_png, _mask_png = photo_edit.seam_crop(img, seams)
     repainted = photo_edit.to_png(np.full_like(photo_edit.load_rgb(crop_png), 128))
     out = photo_edit.paste_seam(img, repainted, box, seams)
     assert np.array_equal(out[:200], img[:200])        # lejos de la franja, identica
@@ -486,7 +486,7 @@ def test_the_face_angle_decides_paste_or_clone():
     # en un grupo, solo la girada se clona; la otra lleva su cara original
     two_o = [orig[0], _face(130, 30, 40, [(x + 100, y) for x, y in front])]
     two_r = [turned[0], _face(130, 30, 40, [(x + 100, y) for x, y in front])]
-    turned_o, turned_r = photo_edit.turned_faces(two_o, two_r)
+    _turned_o, turned_r = photo_edit.turned_faces(two_o, two_r)
     assert len(turned_r) == 1 and turned_r[0] is two_r[0]
 
 
@@ -516,7 +516,7 @@ def test_shrunken_faces_are_repainted_not_pasted():
     assert photo_edit.face_shrunk(big, [_face(30, 30, 120, front)])
     assert not photo_edit.face_shrunk(big, [_face(30, 30, 260, front)])
     img = _textured(seed=3)
-    box, crop_png, mask_png, mask = photo_edit.detail_crop(img, _face(20, 20, 30, front))
+    box, crop_png, _mask_png, mask = photo_edit.detail_crop(img, _face(20, 20, 30, front))
     assert mask.shape == (photo_edit.DETAIL_SIZE, photo_edit.DETAIL_SIZE) and mask.max() > 0.9
     back = photo_edit.paste_detail(img, photo_edit.load_rgb(crop_png), box, mask)
     assert back.shape == img.shape

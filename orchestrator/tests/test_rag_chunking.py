@@ -1,6 +1,6 @@
-from rag import _chunk_text, _sanitize_filename
-
 import pytest
+
+from rag import _chunk_text, _sanitize_filename
 
 
 def test_chunk_text_empty_returns_no_chunks():

@@ -45,7 +45,7 @@ def leer_archivo(ruta: str) -> str:
         return f"No es un archivo, es una carpeta: {target}"
     try:
         content = target.read_text(encoding="utf-8", errors="replace")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - se le cuenta al modelo
         return f"No se pudo leer el archivo: {exc}"
     if len(content) > MAX_FILE_CHARS:
         content = content[:MAX_FILE_CHARS] + "\n... (contenido truncado, el archivo es muy grande)"

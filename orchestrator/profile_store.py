@@ -5,9 +5,9 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+import atomic
 import crypto_utils
 from paths import DATA_DIR
-import atomic
 
 PROFILE_DIR = DATA_DIR / "profile"
 PROFILE_DIR.mkdir(parents=True, exist_ok=True)

@@ -205,6 +205,6 @@ def test_the_photo_edit_model_is_not_offered_as_a_generator(tmp_path, monkeypatc
 
 
 def test_no_photo_edit_model_when_it_is_not_installed(tmp_path, monkeypatch):
-    img, vid = _make_tree(tmp_path)
+    img, _vid = _make_tree(tmp_path)
     monkeypatch.setattr(model_registry, "IMG_DIR", img)
     assert model_registry.get_edit_model() is None

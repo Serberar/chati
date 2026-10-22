@@ -96,9 +96,8 @@ def test_start_training_refuses_when_already_training(tmp_path, monkeypatch):
     monkeypatch.setattr(persona_trainer, "ACCELERATE_EXE", tmp_path)
     persona_trainer._write_status("u1", "sergio", "sdxl", {"status": "training", "pid": 123})
 
-    with patch.object(persona_trainer, "_pid_alive", return_value=True):
-        with pytest.raises(persona_trainer.TrainingAlreadyRunningError):
-            persona_trainer.start_training("u1", "sergio", [])
+    with patch.object(persona_trainer, "_pid_alive", return_value=True), pytest.raises(persona_trainer.TrainingAlreadyRunningError):
+        persona_trainer.start_training("u1", "sergio", [])
 
 
 def test_start_training_launches_the_subprocess_and_writes_status(tmp_path, monkeypatch):

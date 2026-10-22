@@ -1,7 +1,7 @@
 import base64
 import io
 import re
-from typing import Callable, Iterator
+from collections.abc import Callable, Iterator
 
 import pillow_heif
 from PIL import Image, UnidentifiedImageError

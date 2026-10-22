@@ -7,9 +7,9 @@ el modelo de vision, porque el del agente (qwen3:8b) no ve imagenes - asi
 puede, p.ej., renombrar fotos segun lo que sale en ellas."""
 
 import base64
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 from rag import _sanitize_filename
 
@@ -59,7 +59,7 @@ def describe_images(saved: list[dict], describe: Callable[[str], str]) -> None:
         try:
             b64 = base64.b64encode(Path(item["path"]).read_bytes()).decode("ascii")
             item["description"] = describe(b64).strip() or None
-        except Exception:
+        except Exception:  # noqa: BLE001 - sin descripcion: el adjunto vale igual
             item["description"] = None
 
 

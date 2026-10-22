@@ -496,7 +496,7 @@ def plan_edit(ollama, model: str, request: str, faces: list[str], scene: str = "
             if str(data.get(key, "")).strip():
                 raise NeedsClarification(str(data[key]).strip())
     try:
-        steps = data["pasos"] if "pasos" in data else [data]
+        steps = data["pasos"] if "pasos" in data else [data]  # noqa: SIM401 - data puede ser una lista
         plans = [EditPlan(str(step["instruction"]).strip(), str(step.get("mode", "local")).strip().lower(),
                           str(step.get("resumen", "")).strip())
                  for step in steps[:2] if str(step.get("instruction", "")).strip()]
@@ -854,8 +854,6 @@ def _straighten_once(rgb: np.ndarray, min_tilt: float) -> np.ndarray:
         hole = cv2.dilate(((head > 0.02) | (new_head > 0.02)).astype(np.uint8) * 255, np.ones((k, k), np.uint8))
         hole[int(pivot[1]):] = 0  # el cuello y el cuerpo se quedan
         if hole.any():
-            small = max(1.0, max(h, w) / 1024)
-            sw, sh = int(w / small), int(h / small)
             out = fill_hole(out, hole)
         alpha = cv2.GaussianBlur(new_head, (0, 0), max(1.5, fw * 0.01))[..., None]
         out = (turned * alpha + out * (1 - alpha)).clip(0, 255).astype(np.uint8)
@@ -1030,7 +1028,7 @@ def compose_local(orig: np.ndarray, edited: np.ndarray) -> np.ndarray:
     u = max(3, int(min(h, w) / 150))
     weak = cv2.morphologyEx((diff > _WEAK_CHANGE).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((u, u), np.uint8))
     strong = cv2.morphologyEx((diff > _STRONG_CHANGE).astype(np.uint8), cv2.MORPH_OPEN, np.ones((u, u), np.uint8))
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(weak)
+    _n, labels, stats, _ = cv2.connectedComponentsWithStats(weak)
     changed = np.zeros_like(weak)
     for i in np.unique(labels[strong > 0]):
         if i and stats[i, cv2.CC_STAT_AREA] > 0.0005 * h * w:
@@ -1091,11 +1089,11 @@ def _valid_crop(valid: np.ndarray, changed: np.ndarray, shape: tuple[int, int]) 
     # la proporcion de la foto, centrado en lo valido
     ch, cw = y1 - y0, x1 - x0
     if cw / ch > w / h:
-        nw = int(round(ch * w / h))
+        nw = round(ch * w / h)
         x0 += (cw - nw) // 2
         x1 = x0 + nw
     else:
-        nh = int(round(cw * h / w))
+        nh = round(cw * h / w)
         y0 += (ch - nh) // 2
         y1 = y0 + nh
     return int(y0), int(y1), int(x0), int(x1)
@@ -1483,7 +1481,7 @@ def _seam_band(protected: np.ndarray, face: np.ndarray, face_w: float) -> np.nda
     inside = (protected > 0.5).astype(np.uint8)
     k = max(5, int(face_w * 0.12)) | 1
     band = cv2.dilate(inside, np.ones((k, k), np.uint8)) - inside
-    x, y, fw, fh = (float(v) for v in face[:4])
+    _x, y, _fw, fh = (float(v) for v in face[:4])
     band[:int(max(0, y + fh * 0.5))] = 0
     return band.astype(np.float32)
 
@@ -1565,7 +1563,7 @@ def _match_skin(out: np.ndarray, result: np.ndarray, lit: np.ndarray, head: np.n
     (Sergio, 2026-10-07)."""
     lab_r = cv2.cvtColor(result, cv2.COLOR_RGB2LAB).astype(np.float32)
     lab_l = cv2.cvtColor(lit.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
-    x, y, fw, fh = (float(v) for v in face[:4])
+    _x, y, fw, fh = (float(v) for v in face[:4])
     person = matte(result) > 0.5
     # El tono se mide justo en la union: la piel original por DENTRO del borde
     # (mandibula y barbilla) y la de Kontext por FUERA (el cuello). Comparando

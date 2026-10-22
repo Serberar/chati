@@ -34,7 +34,7 @@ def _run_nvidia_smi() -> str | None:
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, check=False, text=True, timeout=10,
         )
     except (subprocess.SubprocessError, OSError, FileNotFoundError):
         return None

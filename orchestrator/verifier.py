@@ -97,7 +97,7 @@ class Verifier:
                 temperature=0.0,
             )
             insecure, reason = self._parse_verdict(raw)
-            sources = sorted(set(e["source"] for e in evidence))
+            sources = sorted({e["source"] for e in evidence})
 
             if insecure and self.strict:
                 return VerificationResult(

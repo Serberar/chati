@@ -124,6 +124,17 @@ _BASE_CATALOG: list[CatalogEntry] = [
         ollama_model="qwen3:8b",
     ),
     CatalogEntry(
+        id="memoria", modality="texto", label="Memoria y documentos",
+        description="Necesario para que Chati recuerde conversaciones y busque en tus documentos.",
+        ollama_model="nomic-embed-text",  # rag.py, agent_tools.py
+    ),
+    CatalogEntry(
+        id="texto-sin-limite", modality="texto", label="Chat sin limite (perfil de seguridad)",
+        description="Responde sobre vulnerabilidades de tu propio codigo sin negarse. Lento (14B denso, CPU).",
+        ollama_model="qwen3-abliterated:14b-cpu",  # config.yaml, perfil "seguridad"
+        recommended_by_default=False,
+    ),
+    CatalogEntry(
         id="imagen-flux", modality="imagen", label="FLUX (rapido, buena calidad general)",
         description="El generador de imagen recomendado por defecto.",
         architecture="flux",

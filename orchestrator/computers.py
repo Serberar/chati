@@ -26,7 +26,7 @@ def _status() -> dict | None:
     if not TAILSCALE.exists():
         return None
     try:
-        out = subprocess.run([str(TAILSCALE), "status", "--json"], capture_output=True, text=True, timeout=8,
+        out = subprocess.run([str(TAILSCALE), "status", "--json"], capture_output=True, check=False, text=True, timeout=8,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return json.loads(out.stdout) if out.returncode == 0 else None
     except (OSError, subprocess.SubprocessError, ValueError):
