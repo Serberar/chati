@@ -77,7 +77,7 @@ from agents.ollama_client import OllamaClient
 from agents.video_agent import VideoAgent
 from agents.voice_agent import VoiceAgent
 from rag import EMBED_MODEL, KnowledgeBase
-from router import Router
+from router import Router, complex_hint
 from verifier import Verifier
 
 log = logging_setup.setup()
@@ -1552,6 +1552,10 @@ def _continue_task(session_id: str, text: str, code_mode: str | None):
         code_mode = "build"
     if code_mode in ("plan", "build"):
         agent = CONFIG["opencode"]["agent_code_plan" if code_mode == "plan" else "agent_code"]
+    elif complex_hint(text):
+        # "arreglalo", "no arranca": a una tarea que empezo con el rapido le
+        # sigue el potente (el rapido solo daba listas de posibles soluciones)
+        agent = CONFIG["opencode"]["agent_potente"]
     request_text = text.strip()
     text = request_text
     if code_mode == "build" and requested_mode == "plan":

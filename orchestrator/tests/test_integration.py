@@ -1601,7 +1601,11 @@ def test_a_new_message_follows_the_finished_task_of_the_conversation(tmp_path):
             assert new == {"session_id": "ses_nueva"}
             with patch.object(main.router, "same_task", return_value=True):
                 same = client.post("/agent/tasks", json={"task": "no, en la carpeta Trabajo", "continuar": "ses_a"})
-            assert same.json()["continued"] is True
+                assert same.json()["continued"] is True
+                assert mock_continue.call_args.args[3] is None  # el mismo agente
+                # arreglar algo: el rapido solo daba listas de "posibles soluciones"
+                client.post("/agent/tasks", json={"task": "no hace nada, arreglalo tu", "continuar": "ses_a"})
+                assert mock_continue.call_args.args[3] == main.CONFIG["opencode"]["agent_potente"]
         with patch.object(main.opencode_client, "busy_session_ids", return_value=["ses_a"]), \
              patch.object(main.opencode_client, "start_task", return_value="ses_otra"):
             # trabajando todavia: no se le mete nada en medio

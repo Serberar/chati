@@ -15,8 +15,11 @@ aqui solo esta la logica, para poder probarla sin OpenCode.
 - Repositorios: descargar uno de GitHub (u otro git) para leerlo."""
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from html import unescape
@@ -594,6 +597,88 @@ def stop_program(prog_id: str) -> str:
 def stop_all_programs() -> None:
     for prog_id in list(_programs):
         stop_program(prog_id)
+
+
+def _window_titles(pids: set[int]) -> list[str]:
+    """Titulos de las ventanas visibles de esos procesos (Windows)."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    titles = []
+
+    def collect(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value in pids and user32.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(hwnd, buf, 256)
+            if buf.value:
+                titles.append(buf.value)
+        return True
+    user32.EnumWindows(ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(collect), 0)
+    return titles
+
+
+def try_program(path: str, seconds: int = 6) -> str:
+    """Abre un programa como si el usuario le diera doble clic y cuenta que
+    pasa: se cierra con un error, abre una ventana o se queda sin ventana. Lo
+    cierra al acabar. El agente lo lanzaba con bash y se quedaba bloqueado
+    esperando a que alguien cerrara la ventana (banco del 2026-10-22)."""
+    import time
+
+    import psutil
+    target = Path(path)
+    if not target.is_file():
+        return f"No existe el archivo {path}."
+    ext = target.suffix.lower()
+    if ext in (".py", ".pyw"):
+        cmd = [shutil.which("python") or sys.executable, str(target)]
+    elif ext == ".exe":
+        cmd = [str(target)]
+    else:
+        return "Solo se pueden probar programas .py, .pyw o .exe."
+    PROGRAMS_DIR.mkdir(parents=True, exist_ok=True)
+    log = PROGRAMS_DIR / f"prueba_{int(time.time())}.log"
+    with open(log, "w", encoding="utf-8", errors="replace") as out:
+        try:
+            proc = subprocess.Popen(cmd, cwd=target.parent, stdout=out, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 740:
+                return ("Pide permisos de administrador al abrirse (UAC), asi que no se puede probar solo. Prueba su "
+                        ".py con probar_programa: si abre la ventana, el .exe tambien lo hara.")
+            return f"No se pudo abrir: {exc}"
+        titles: list[str] = []
+        end = time.time() + max(2, min(seconds, 30))
+        while time.time() < end and proc.poll() is None:
+            time.sleep(0.5)
+        if proc.poll() is None:
+            try:
+                pids = {proc.pid} | {c.pid for c in psutil.Process(proc.pid).children(recursive=True)}
+            except psutil.Error:
+                pids = {proc.pid}
+            titles = _window_titles(pids)
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
+            proc.wait(timeout=10)
+            code = None
+        else:
+            code = proc.returncode
+    said = _tail(log, 30) or "(no ha escrito nada)"
+    # un .exe de PyInstaller que falla abre su propia ventana de aviso: eso no es "funciona"
+    crashed = "Traceback (most recent call last)" in said or any(
+        w in title.lower() for title in titles for w in ("unhandled exception", "fatal error", "error"))
+    if code is not None or crashed:
+        verdict = "MAL: falla con un error." if crashed else f"MAL: se ha cerrado solo (codigo {code})."
+        if "EOF when reading a line" in said:
+            verdict += (" Espera que se escriba algo por teclado (input) y al abrirlo no hay donde: si el usuario"
+                        " quiere una ventana, hazle una interfaz con tkinter.")
+    elif titles:
+        verdict = f"BIEN: se abre una ventana ('{titles[0]}') y sigue abierta."
+    else:
+        verdict = ("MAL: sigue en marcha pero no abre ninguna ventana (si es de consola, esta esperando algo por"
+                   " teclado; si debia tener ventana, no la crea).")
+    return f"{verdict}\nLo que ha escrito:\n{said}\n(Ya lo he cerrado.)"
 
 
 # ---------- renombrar ----------

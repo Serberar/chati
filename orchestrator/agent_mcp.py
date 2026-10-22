@@ -139,6 +139,13 @@ TOOLS = [
     {"name": "parar_programa", "fn": lambda a: t.stop_program(a["id"]),
      "description": "Para un programa arrancado con lanzar_programa.",
      "inputSchema": _schema({"id": _STR}, ["id"])},
+    {"name": "probar_programa", "fn": lambda a: t.try_program(a["ruta"], int(a.get("segundos", 6))),
+     "description": "Abre un programa (.py, .pyw o .exe) como si el usuario le diera doble clic, espera unos "
+                    "segundos y dice si se ha cerrado con un error (y cual), si abre una ventana o si se queda sin "
+                    "ventana; despues lo cierra. Usalo SIEMPRE para comprobar si un programa funciona, en vez de "
+                    "lanzarlo con bash (con bash se queda esperando a que alguien cierre la ventana).",
+     "inputSchema": _schema({"ruta": _STR, "segundos": {"type": "integer", "description": "Espera (6)"}},
+                            ["ruta"])},
 ]
 _BY_NAME = {tool["name"]: tool for tool in TOOLS}
 

@@ -106,7 +106,17 @@ _COMPLEX_HINTS = [
      "Instalar o configurar programas requiere varios pasos y comprobaciones."),
     (re.compile(r"\bproyecto\b|\bc[oó]digo\b|\bendpoint|\btests?\b|\bbase de datos\b|\brefactori|\bdepur", re.IGNORECASE),
      "Implica trabajar sobre codigo o un proyecto, con cambios que dependen unos de otros."),
+    # el rapido no sabe depurar: daba listas de "posibles soluciones" en vez de
+    # mirar el error y arreglarlo (HostManager, 2026-10-22)
+    (re.compile(r"\bno (me )?(funciona|arranca|abre|carga|va|hace nada|se (abre|ve|ejecuta))|\barregl|\bcorrig"
+                r"|\breparar?\b|\bsoluciona|\bfall(a|o)\b|\berror", re.IGNORECASE),
+     "Hay que encontrar por que falla y arreglarlo: el modelo rapido no sabe depurar."),
 ]
+
+
+def complex_hint(text: str) -> str | None:
+    """Motivo fijo por el que una tarea es compleja, o None."""
+    return next((why for pattern, why in _COMPLEX_HINTS if pattern.search(text)), None)
 
 
 class Router:
@@ -163,7 +173,7 @@ class Router:
         except (ValueError, json.JSONDecodeError):
             complex_, reason = False, ""
         if not complex_:
-            hint = next((why for pattern, why in _COMPLEX_HINTS if pattern.search(task)), None)
+            hint = complex_hint(task)
             if hint:
                 complex_, reason = True, hint
         return {"complex": complex_, "reason": reason}

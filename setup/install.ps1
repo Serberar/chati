@@ -467,13 +467,15 @@ $opencodeConfig = @'
       "description": "Agente de Chati IA: tareas sobre los archivos del usuario (rapido, GPU)",
       "mode": "primary", "model": "ollama/qwen3:8b", "temperature": 0.1,
       "prompt": "{file:./chati_agent_prompt.md}",
-      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false, "write": false, "chati_*": false }
+      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false, "write": false, "glob": false, "chati_*": false,
+                 "chati_probar_programa": true }
     },
     "chati-potente": {
       "description": "Agente de Chati IA con el modelo grande (lento, CPU) para tareas complejas",
       "mode": "primary", "model": "ollama/qwen3-coder:30b-mixto", "temperature": 0.1,
       "prompt": "{file:./chati_agent_prompt.md}",
-      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false, "chati_*": false }
+      "tools": { "task": false, "todowrite": false, "webfetch": false, "skill": false, "glob": false, "chati_*": false,
+                 "chati_probar_programa": true }
     },
     "chati-code": {
       "description": "Chati modo Codigo: programa en el proyecto del usuario (construir)",
