@@ -40,6 +40,7 @@ import face_detect
 import face_swap
 import file_access
 import finetune_export
+import installer_download_models
 import job_search
 import llm_proxy
 import llm_status
@@ -277,6 +278,7 @@ async def _lifespan(_app):
     if purged:
         log.info("Mensajes de invitado antiguos borrados: %d", purged)
     threading.Thread(target=_push_watch, daemon=True).start()
+    threading.Thread(target=installer_download_models.download_new_base, daemon=True).start()
     log.info("Orquestador arrancado")
     yield
 

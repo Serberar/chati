@@ -86,13 +86,9 @@ Filename: "{app}\orchestrator\venv\Scripts\python.exe"; \
     WorkingDir: "{app}\orchestrator"; \
     StatusMsg: "Descargando los modelos elegidos..."; \
     Flags: waituntilterminated; Check: not IsUpdate
-; al actualizar: los modelos base que traiga la version nueva (ver
-; installer_download_models.new_base_models y el README)
-Filename: "{app}\orchestrator\venv\Scripts\python.exe"; \
-    Parameters: "installer_download_models.py --new-base"; \
-    WorkingDir: "{app}\orchestrator"; \
-    StatusMsg: "Descargando los modelos nuevos de esta version (si los hay)..."; \
-    Flags: waituntilterminated runhidden; Check: IsUpdate
+; los modelos base que traiga una version nueva los baja Chati al arrancar
+; (installer_download_models.download_new_base): aqui, como administrador, ese
+; python no llegaba a arrancar en la 1.4.0 (0xc0000142)
 Filename: "{app}\ChatiIA\ChatiIA.exe"; \
     WorkingDir: "{app}\ChatiIA"; \
     Description: "Arrancar Chati IA ahora"; \

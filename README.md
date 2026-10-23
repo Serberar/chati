@@ -45,7 +45,7 @@ La lista vive en un solo sitio: `orchestrator/model_catalog.py`. Los modelos bas
 | Vídeo | LTX-Video 2B destilado |
 | Voz | Piper `es_ES-davefx-medium` |
 
-Al instalar salen marcados en el asistente. **Al actualizar se descargan solos los modelos base que traiga la versión nueva** (por ejemplo, otro modelo de vídeo): basta con añadir su entrada al catálogo con su URL y su huella SHA-256. Lo que se desmarcó al instalar no se vuelve a bajar, y lo que falla se reintenta en la siguiente actualización (registro en `data\modelos_ofrecidos.txt` y `data\logs\instalacion_modelos.log`).
+Al instalar salen marcados en el asistente. **Al actualizar, Chati descarga sola (al arrancar, en segundo plano) los modelos base que traiga la versión nueva** (por ejemplo, otro modelo de vídeo): basta con añadir su entrada al catálogo con su URL y su huella SHA-256. Lo que se desmarcó al instalar no se vuelve a bajar, y lo que falla se reintenta en la siguiente actualización (registro en `data\modelos_ofrecidos.txt` y `data\logs\instalacion_modelos.log`).
 
 ## Uso
 

@@ -42,6 +42,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# todo lo que pasa queda escrito: el instalador no lo guarda y en la 1.4.0 este
+# script se corto a medias sin que se pudiera saber por que (2026-10-23)
+New-Item -ItemType Directory -Force -Path "$DataRoot\data\logs" -ErrorAction SilentlyContinue | Out-Null
+try { Start-Transcript -Path "$DataRoot\data\logs\instalacion.log" -Append | Out-Null } catch {}
 # En Windows PowerShell 5.1 la barra de progreso de Invoke-WebRequest ralentiza
 # muchisimo las descargas (visto en Windows Sandbox con el instalador de Ollama)
 $ProgressPreference = "SilentlyContinue"

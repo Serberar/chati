@@ -283,3 +283,16 @@ def test_every_ollama_model_chati_uses_is_in_the_catalog():
                 offered.add(e.ollama_model)
                 offered.update(v for v, _ in installer_download_models._EXTRA_VARIANTS.get(e.ollama_model, []))
     assert used - offered == set()
+
+
+def test_chati_downloads_new_base_models_on_start_and_nothing_when_up_to_date(monkeypatch):
+    """Lo hace Chati al arrancar y no el instalador como administrador, donde
+    el python no llegaba a arrancar (0xc0000142, 2026-10-23)."""
+    calls = []
+    monkeypatch.setattr(installer_download_models, "download", lambda ids: calls.append(ids) or [])
+    monkeypatch.setattr(installer_download_models, "new_base_models", lambda: [])
+    installer_download_models.download_new_base()
+    assert calls == []
+    monkeypatch.setattr(installer_download_models, "new_base_models", lambda: ["video-nuevo"])
+    installer_download_models.download_new_base()
+    assert calls == [["video-nuevo"]]

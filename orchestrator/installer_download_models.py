@@ -224,16 +224,32 @@ def main() -> None:
     else:
         ids = args.selected
 
+    if download(ids):
+        sys.exit(1)
+
+
+def download(ids: list[str]) -> list[str]:
+    """Descarga y apunta lo ofrecido. Devuelve los que fallaron."""
     failed = download_selected(ids)
     # todo el catalogo cuenta como ofrecido (el asistente lo enseña entero),
-    # salvo lo que fallo: se reintenta en la siguiente actualizacion
+    # salvo lo que fallo: se reintenta la proxima vez
     failed_ids = {i for i, e in _all_entries().items() if e.label in failed}
     OFFERED_FILE.parent.mkdir(parents=True, exist_ok=True)
     OFFERED_FILE.write_text("\n".join(sorted((_offered() | set(_all_entries())) - failed_ids)) + "\n",
                             encoding="utf-8")
     if failed:
         _log(f"No se pudieron descargar: {', '.join(failed)}. Detalles en {LOG_FILE}")
-        sys.exit(1)
+    return failed
+
+
+def download_new_base() -> None:
+    """Al arrancar Chati: los modelos base que trae una version nueva. Antes lo
+    hacia el instalador como administrador y en la 1.4.0 ese python ni arrancaba
+    (0xc0000142, 2026-10-23); los modelos van a la carpeta del usuario, no hace falta."""
+    ids = new_base_models()
+    if ids:
+        _log(f"Modelos base nuevos de esta version: {', '.join(ids)}")
+        download(ids)
 
 
 if __name__ == "__main__":
