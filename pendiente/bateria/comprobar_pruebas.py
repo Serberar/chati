@@ -1,4 +1,4 @@
-﻿"""Â¿Estan arreglados los casos de Escritorio/pruebas? Una linea por caso."""
+"""Â¿Estan arreglados los casos de Escritorio/pruebas? Una linea por caso."""
 import ast
 import ctypes
 import subprocess
@@ -41,8 +41,11 @@ def gui_opens(cmd) -> bool:
 
 
 def run(script: Path) -> str:
-    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=60,
-                         cwd=script.parent, stdin=subprocess.DEVNULL, check=False)
+    try:
+        out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=60,
+                             cwd=script.parent, stdin=subprocess.DEVNULL, check=False)
+    except subprocess.TimeoutExpired:
+        return "(colgado: no termina)"
     return out.stdout + out.stderr
 
 

@@ -221,3 +221,18 @@ def test_build_exe_reports_pyinstaller_errors(tmp_path, monkeypatch):
     out = t.build_exe(str(tmp_path / "a.py"))
     assert out.startswith("MAL") and "pip install pyinstaller" in out
     assert t.build_exe(str(tmp_path / "no.py")).startswith("No existe")
+
+
+def test_try_program_says_a_console_program_that_finishes_well_works(tmp_path, monkeypatch):
+    """Antes daba MAL a todo lo que se cierra solo: el agente convertia scripts de
+    consola en ventanas y les hacia un .exe sin que nadie lo pidiera (2026-10-23)."""
+    monkeypatch.setattr(t, "PROGRAMS_DIR", tmp_path / "prog")
+    ok = tmp_path / "total.py"
+    ok.write_text("print('Total facturado: 1312.49 EUR')\n", encoding="utf-8")
+    assert t.try_program(str(ok)).startswith("BIEN") and "1312.49" in t.try_program(str(ok))
+    broken = tmp_path / "roto.py"
+    broken.write_text("print(float('12,50'))\n", encoding="utf-8")
+    assert t.try_program(str(broken)).startswith("MAL: falla con un error")
+    window = tmp_path / "ventana.py"
+    window.write_text("import tkinter\n", encoding="utf-8")  # de ventana pero no la abre
+    assert t.try_program(str(window)).startswith("MAL")

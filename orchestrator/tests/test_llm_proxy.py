@@ -35,3 +35,41 @@ def test_disable_thinking_only_for_listed_models_and_respects_explicit_values():
     explicit = json.dumps({"model": "qwen3:8b", "reasoning_effort": "high"}).encode()
     assert llm_proxy.disable_thinking(explicit, {"qwen3:8b"}) == explicit
     assert llm_proxy.disable_thinking(b"", {"qwen3:8b"}) == b""
+
+
+def _chunk(content=None, finish=None):
+    delta = {"content": content} if content is not None else {}
+    return b"data: " + json.dumps({"id": "c1", "model": "qwen3-coder:30b-mixto",
+                                   "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}).encode()
+
+
+def _run(lines):
+    fixer = llm_proxy.TextToolCalls()
+    out = [o for line in lines for o in fixer.feed(line)] + fixer.finish()
+    return [json.loads(o[6:]) for o in out if o.startswith(b"data: {")], out
+
+
+def test_a_tool_call_written_as_text_becomes_a_real_tool_call():
+    """Lo que escribio qwen3-coder en el banco del 2026-10-23: OpenCode lo tomo
+    como respuesta final y la tarea se quedo parada."""
+    text = ("Primero, voy a probarlo.\n\n<function=chati_probar_programa>\n<parameter=ruta>\n"
+            "C:/Users/S B/Desktop/pruebas/facturas/calcular_total.py\n</parameter>\n<parameter=segundos>\n8\n"
+            "</parameter>\n</function>\n</tool_call>")
+    pieces = [text[i:i + 7] for i in range(0, len(text), 7)]  # "<function=" llega partido
+    chunks, raw = _run([_chunk(p) for p in pieces] + [_chunk("", "stop"), b"data: [DONE]"])
+    said = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks)
+    assert said.startswith("Primero, voy a probarlo.") and "parameter" not in said
+    calls = [c["choices"][0]["delta"]["tool_calls"][0] for c in chunks if c["choices"][0]["delta"].get("tool_calls")]
+    assert calls[0]["function"]["name"] == "chati_probar_programa"
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "ruta": "C:/Users/S B/Desktop/pruebas/facturas/calcular_total.py", "segundos": 8}
+    assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+    assert raw[-1] == b"data: [DONE]"
+
+
+def test_normal_answers_and_text_that_only_looks_like_a_call_pass_unchanged():
+    lines = [_chunk("Hola"), _chunk(", ya esta."), _chunk("", "stop"), b"data: [DONE]"]
+    assert _run(lines)[1] == lines
+    chunks, _ = _run([_chunk("usa <function=x> asi"), _chunk("", "stop"), b"data: [DONE]"])
+    said = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks)
+    assert said == "usa <function=x> asi" and chunks[-1]["choices"][0]["finish_reason"] == "stop"

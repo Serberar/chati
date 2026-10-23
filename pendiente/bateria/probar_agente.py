@@ -1,4 +1,4 @@
-﻿"""El agente de Chati (chati-potente, prompt nuevo) frente al fallo real del
+"""El agente de Chati (chati-potente, prompt nuevo) frente al fallo real del
 HostManager, sobre una COPIA. Concede solo permisos dentro de la copia o de
 python/pyinstaller; apunta cada paso."""
 import os
@@ -11,7 +11,9 @@ import opencode_client as oc
 BASE = "http://127.0.0.1:8901"
 DIR = sys.argv[1]
 TASK = sys.argv[2] if len(sys.argv) > 2 else None
-pw = open(os.path.join(os.environ["LOCALAPPDATA"], "ChatiIA", "data", "opencode_password.txt")).read().strip()
+# la contraseña de OpenCode de la Chati que este en marcha: la instalada o la del repo (CHATI_PW)
+pw = open(os.environ.get("CHATI_PW") or os.path.join(os.environ["LOCALAPPDATA"], "ChatiIA", "data",
+                                                     "opencode_password.txt")).read().strip()
 oc.AUTH = ("opencode", pw)
 
 task = TASK or (f"en la carpeta {DIR.replace(os.sep, '/')} hay un programa HostManager.exe. "

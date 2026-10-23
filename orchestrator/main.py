@@ -589,10 +589,14 @@ async def llm_proxy_route(path: str, request: Request):
                         media_type=upstream.headers.get("content-type", "application/json"))
 
     def stream():
+        text_calls = llm_proxy.TextToolCalls()
         try:
             for line in upstream.iter_lines():
                 llm_status.output(rid, line)
-                yield llm_proxy.clean_stream_line(line) + b"\n\n" if line else b""
+                for out in text_calls.feed(llm_proxy.clean_stream_line(line)) if line else [b""]:
+                    yield out + b"\n\n" if out else b""
+            for out in text_calls.finish():
+                yield out + b"\n\n"
         finally:
             llm_status.finish(rid)
             upstream.close()

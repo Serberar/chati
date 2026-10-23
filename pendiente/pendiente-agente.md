@@ -32,6 +32,10 @@ Batería en `Escritorio/pruebas`, con 4 casos típicos y un comprobador objetivo
 | 2ª: + herramienta `chati_probar_programa` | 2/4 | `glob` con ruta absoluta no encontraba el CSV y lo volvió a sobrescribir |
 | 3ª: + `glob` desactivado en modo Agente | 3/4 | notas a medias: hizo la ventana en `notas.py` (funciona), pero compiló el .exe nuevo en `pruebas/dist/` y no lo puso en el sitio del viejo |
 
+| 4ª: + `chati_compilar_exe` | 3/4 | facturas: el modelo escribió la llamada a la herramienta como texto (`<function=…>` sin `<tool_call>`), Ollama no la reconoció y OpenCode dio la tarea por terminada sin hacer nada |
+| 5ª: + la pasarela convierte esas llamadas en texto en llamadas de verdad | sin recuento | se pasó de la raya: convirtió `calcular_total.py` en una ventana y creó .exe que nadie pidió (facturas 28 min). Causa: `probar_programa` daba MAL a un script de consola que termina bien |
+| **6ª: + "termina bien = BIEN" y "cambio mínimo, nada de extras"** | **4/4** | — (2,3-4,2 min por caso, sin .exe ni ventanas de más) |
+
 En la 3ª ronda cada caso tardó entre 1,2 y 4,3 min (notas 4,3 · facturas 2,7 · contador 1,3 · informe 1,2). Facturas salió bien a la primera: entendió la coma decimal y el punto de miles y no tocó los datos.
 
 ### Velocidad (22/10, misma petición de ~2.800 tokens)
@@ -232,9 +236,9 @@ Cada hito es una demo que se puede repetir delante de cualquiera, no una sensaci
 
 ### Orden de ataque (lo siguiente, en este orden)
 
-1. `chati_compilar_exe` y otra ronda de la batería (objetivo 4/4).
-2. Publicar la versión con todo lo de hoy.
-3. Batería al repo y ampliarla a 20 casos (Fase 0).
+1. ~~`chati_compilar_exe` y otra ronda de la batería (objetivo 4/4).~~ Hecho: 4/4 el 23/10.
+2. ~~Publicar la versión con todo lo de hoy.~~ Hecho: 1.4.0.
+3. Batería al repo (hecho, en `pendiente/bateria/`) y ampliarla a 20 casos (Fase 0).
 4. Guardia de datos en Chati y copias con "Deshacer" en modo Agente (Fase 1).
 5. Verificación obligatoria al terminar (Fase 1) usando el contrato de la tarea (Fase 12).
 6. Mapa vivo del ordenador (Fase 12).
@@ -254,14 +258,11 @@ Cada hito es una demo que se puede repetir delante de cualquiera, no una sensaci
 
 ## 6. Pendiente inmediato
 
-### Donde lo dejamos (22/10, 18:00)
+### Donde lo dejamos (23/10)
 
-- **Hecho, en el repo y sin publicar todavía**: `chati_probar_programa`, `chati_compilar_exe` (probado a mano: crea el .exe de notas en 14 s, sustituye el viejo y dice BIEN), prompt nuevo del modo Agente, `glob` desactivado, "arreglar" → modelo potente y tests (694 en verde).
-- **4ª ronda de la batería**: lanzada con `chati_compilar_exe` y **parada a mano** al empezar (Sergio se iba). No hay resultado.
-- **Mañana, en este orden**:
-  1. Repetir la 4ª ronda: `powershell -ExecutionPolicy Bypass -File pendiente\bateria\bateria.ps1` (antes, `python pendiente\bateria\crear_pruebas.py` para dejar los casos rotos, y que OpenCode esté arrancado). Objetivo: 4/4.
-  2. Si sale 4/4: subir la versión, compilar con `setup\build_release.ps1` y publicar la release.
-  3. Seguir con el "Orden de ataque" desde el punto 3.
+- **Batería 4/4** (6ª ronda) y publicado en la versión 1.4.0: `chati_probar_programa`, `chati_compilar_exe`, la pasarela que convierte en llamadas de verdad las que el modelo escribe como texto, prompt del modo Agente (cambio mínimo, comprobar, no tocar datos), `glob` desactivado y "arreglar" → modelo potente.
+- **Lanzar la batería**: `python pendiente\bateria\crear_pruebas.py` (deja los casos rotos) y `powershell -ExecutionPolicy Bypass -File pendiente\bateria\bateria.ps1`, con OpenCode arrancado. Con la Chati del repo en marcha, antes `$env:CHATI_PW = "<repo>\data\opencode_password.txt"`.
+- **Siguiente**: el "Orden de ataque" desde el punto 3 (ampliar la batería a 20 casos).
 
 ### Ojo
 
@@ -270,8 +271,7 @@ Cada hito es una demo que se puede repetir delante de cualquiera, no una sensaci
 
 ### Lista
 
-- [ ] Publicar en Chati lo de hoy: `chati_probar_programa`, `chati_compilar_exe`, prompt nuevo del modo Agente, `glob` desactivado, "arreglar" → modelo potente.
-- [ ] Repetir la 4ª ronda con `chati_compilar_exe`: objetivo 4/4.
+- [x] Batería 4/4 y publicado en la 1.4.0.
 - [ ] Tras actualizar, la configuración de OpenCode del perfil vuelve a apuntar a la Chati instalada. Mientras tanto apunta al repo; la copia anterior está en `~/.config/opencode/opencode.json.antes-pruebas`.
 - [ ] Pasar la batería y su comprobador al repo (Fase 0).
 - [ ] Borrar `Escritorio/pruebas` cuando la batería viva en el repo.

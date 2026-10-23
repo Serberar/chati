@@ -668,7 +668,12 @@ def try_program(path: str, seconds: int = 6) -> str:
     # un .exe de PyInstaller que falla abre su propia ventana de aviso: eso no es "funciona"
     crashed = "Traceback (most recent call last)" in said or any(
         w in title.lower() for title in titles for w in ("unhandled exception", "fatal error", "error"))
-    if code is not None or crashed:
+    gui = ext != ".exe" and bool(_GUI_IMPORT.search(target.read_text(encoding="utf-8", errors="replace")))
+    if code == 0 and not crashed and not gui:
+        # un programa de consola que hace lo suyo y termina: eso es funcionar (antes salia MAL y el
+        # agente lo convertia en una ventana y le hacia un .exe sin que nadie lo pidiera)
+        verdict = "BIEN: ha terminado sin errores (codigo 0). Comprueba en lo que ha escrito que el resultado es correcto."
+    elif code is not None or crashed:
         verdict = "MAL: falla con un error." if crashed else f"MAL: se ha cerrado solo (codigo {code})."
         if "EOF when reading a line" in said:
             verdict += (" Espera que se escriba algo por teclado (input) y al abrirlo no hay donde: si el usuario"
